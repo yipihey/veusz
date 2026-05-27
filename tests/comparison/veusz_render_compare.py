@@ -102,6 +102,14 @@ def _ensure_veusz_registered() -> None:
     if _VEUSZ_REGISTERED:
         return
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # Bootstrap the scene-trace env var BEFORE any Qt paint code runs.
+    # The C++ recordpaint engine caches the env var on first paint call;
+    # we need our path established before that.
+    try:
+        from veusz.paint.scene_from_trace import _bootstrap_trace_path
+        _bootstrap_trace_path()
+    except ImportError:
+        pass
     # A QApplication must exist before any QPainter-using code runs.
     from PyQt6 import QtWidgets  # noqa: F401
     import sys as _sys
@@ -183,7 +191,16 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
     """
     _ensure_veusz_registered()
     from veusz import document
-    from veusz.paint.qt_capture import capture_document_scene
+    # Prefer the C++ recordpaint scene-trace channel: it sees QPainter
+    # calls originating from qtloops C++ helpers, which the Python-side
+    # SceneCapturingPainter cannot intercept. Falls back to the Python
+    # capture path if the C++ scene channel isn't available.
+    try:
+        from veusz.paint.scene_from_trace import capture_document_scene_via_trace as _capture
+        _via_trace = True
+    except ImportError:
+        from veusz.paint.qt_capture import capture_document_scene as _capture
+        _via_trace = False
     try:
         from veusz.paint import _paint_ext  # type: ignore
     except ImportError:
@@ -195,7 +212,7 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
     doc = document.Document()
     doc.load(str(vsz))
 
-    scene_json = capture_document_scene(doc, page=0)
+    scene_json = _capture(doc, page=0)
     page_w, page_h = _page_pixel_size(doc, page=0, dpi=dpi)
 
     png_path = out_dir / f"{vsz.stem}.{result.backend}.png"
