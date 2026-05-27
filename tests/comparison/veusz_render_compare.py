@@ -47,6 +47,7 @@ class RenderResult:
     vsz: Path
     png: Optional[Path] = None
     pdf: Optional[Path] = None
+    svg: Optional[Path] = None
     error: Optional[str] = None
     elapsed_s: float = 0.0
 
@@ -235,6 +236,7 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
 
     png_path = out_dir / f"{vsz.stem}.{result.backend}.png"
     pdf_path = out_dir / f"{vsz.stem}.{result.backend}.pdf"
+    svg_path = out_dir / f"{vsz.stem}.{result.backend}.svg"
 
     # PNG: transparent background, matching Veusz's default Qt-side PNG
     # export (export.py:117). Comparing white-on-white to transparent
@@ -254,6 +256,16 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
         scene_json, page_w_pt, page_h_pt, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
     pdf_path.write_bytes(pdf_bytes)
     result.pdf = pdf_path
+
+    # SVG sibling to PDF. The SVG emitter (veusz-paint-svg) walks the same
+    # abstract Scene IR, so the choice of raster backend doesn't affect it
+    # — but newer extensions may not have it built in. Skip silently if so.
+    if hasattr(_paint_ext, "render_scene_to_svg_bytes"):
+        svg_bytes = _paint_ext.render_scene_to_svg_bytes(
+            scene_json, float(page_w), float(page_h),
+            (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+        svg_path.write_bytes(svg_bytes)
+        result.svg = svg_path
 
     if keep_scene:
         scene_path = out_dir / f"{vsz.stem}.{result.backend}.scene.json"
@@ -341,11 +353,13 @@ def run(inputs: List[Path], backends: List[str], out_dir: Path,
     # Diff math runs when >1 backend produced PNGs in this directory.
     if len(backends) > 1:
         try:
-            from diff import render_compare_pairs, pdf_compare_pairs
+            from diff import (render_compare_pairs, pdf_compare_pairs,
+                              svg_compare_pairs)
         except ImportError:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).parent))
-            from diff import render_compare_pairs, pdf_compare_pairs
+            from diff import (render_compare_pairs, pdf_compare_pairs,
+                              svg_compare_pairs)
         diffs = render_compare_pairs(out_dir, backends,
                                      identical_db=identical_db,
                                      within_db=within_db)
@@ -376,6 +390,25 @@ def run(inputs: List[Path], backends: List[str], out_dir: Path,
                   f"within={pbands.count('within')} "
                   f"material={pbands.count('material')} "
                   f"unknown={pbands.count('unknown')}")
+
+        # SVG diffs are rasterised via rsvg-convert / Inkscape (whichever is
+        # installed) at the same dpi; gracefully no-op if neither is on
+        # PATH.
+        svg_diffs = svg_compare_pairs(out_dir, backends,
+                                       identical_db=identical_db,
+                                       within_db=within_db,
+                                       dpi=dpi)
+        sflat = [d for stem_diffs in svg_diffs.values() for d in stem_diffs]
+        for d in sflat:
+            d["kind"] = "svg"
+        report.diffs += sflat
+        sbands = [d["band"] for d in sflat]
+        if sflat:
+            print(f"SVG diff summary: "
+                  f"identical={sbands.count('identical')} "
+                  f"within={sbands.count('within')} "
+                  f"material={sbands.count('material')} "
+                  f"unknown={sbands.count('unknown')}")
 
     (out_dir / "report.json").write_text(json.dumps(report.to_dict(), indent=2, default=str))
     return report

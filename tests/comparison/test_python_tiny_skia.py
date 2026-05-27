@@ -178,5 +178,55 @@ def test_png_and_pdf_can_coexist_on_one_painter():
     assert pdf.startswith(b"%PDF-")
 
 
+# ---- SVG path -----------------------------------------------------------
+
+def test_to_svg_emits_valid_svg_document():
+    p = create_painter(200, 200, backend="tiny-skia",
+                       background=(1.0, 1.0, 1.0, 1.0))
+    p.set_paint(Paint(
+        fill=Fill(solid=Color.rgba8(0, 128, 255, 255)),
+        stroke=Stroke(color=Color.rgba8(0, 0, 0, 255), width=1.5),
+        anti_alias=True,
+    ))
+    r = Path.rect(Rect(40, 40, 120, 80))
+    p.fill_path(r)
+    p.stroke_path(r)
+
+    svg = p.to_svg()
+    # XML prologue, namespace, closing tag.
+    assert svg.startswith(b"<?xml version=\"1.0\""), svg[:60]
+    assert b'xmlns="http://www.w3.org/2000/svg"' in svg
+    assert svg.endswith(b"</svg>")
+    # We emitted one filled + one stroked path; both should appear as
+    # `<path>` elements with the expected fill colour.
+    assert b"<path" in svg
+    assert b"rgb(0,128,255)" in svg
+
+
+def test_to_svg_respects_explicit_page_size():
+    p = create_painter(200, 200, backend="tiny-skia",
+                       background=(1.0, 1.0, 1.0, 1.0))
+    svg = p.to_svg(width_pt=595.0, height_pt=842.0)  # A4-ish
+    # Root width / height should be the user-supplied values.
+    assert b"width=\"595\"" in svg
+    assert b"height=\"842\"" in svg
+    assert b"viewBox=\"0 0 595 842\"" in svg
+
+
+def test_png_pdf_svg_can_coexist_on_one_painter():
+    p = create_painter(64, 64, backend="tiny-skia",
+                       background=(1.0, 1.0, 1.0, 1.0))
+    p.set_paint(Paint(fill=Fill(solid=Color.rgba8(255, 0, 0, 255)),
+                      anti_alias=False))
+    p.fill_path(Path.rect(Rect(8, 8, 48, 48)))
+
+    png = p.to_png()
+    pdf = p.to_pdf()
+    svg = p.to_svg()
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert pdf.startswith(b"%PDF-")
+    assert svg.startswith(b"<?xml ")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

@@ -4826,8 +4826,19 @@ dependencies = [
  "serde_json",
  "veusz-paint-core",
  "veusz-paint-pdf",
+ "veusz-paint-svg",
  "veusz-paint-tiny-skia",
  "veusz-paint-vello",
+]
+
+[[package]]
+name = "veusz-paint-svg"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "png 0.18.1",
+ "veusz-paint-core",
+ "veusz-paint-text",
 ]
 
 [[package]]

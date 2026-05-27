@@ -5,6 +5,7 @@ members = [
     "crates/veusz-paint-core",
     "crates/veusz-paint-tiny-skia",
     "crates/veusz-paint-pdf",
+    "crates/veusz-paint-svg",
     "crates/veusz-paint-text",
     "crates/veusz-paint-vello",
     "crates/veusz-paint-py",

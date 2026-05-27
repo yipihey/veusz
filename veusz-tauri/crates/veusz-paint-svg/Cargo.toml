@@ -1,0 +1,11 @@
+[package]
+name = "veusz-paint-svg"
+version = "0.0.0"
+edition = "2021"
+description = "Scene -> SVG emitter for Veusz's parallel paint backends. Consumes the abstract Scene IR from veusz-paint-core and writes standalone SVG 1.1 documents. Sibling to veusz-paint-pdf — same shape (state stack, paint tracking, content emission)."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-text = { path = "../veusz-paint-text" }
+png = "0.18"
+base64 = "0.22"
