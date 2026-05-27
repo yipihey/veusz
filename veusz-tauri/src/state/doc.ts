@@ -60,6 +60,7 @@ export interface DocState {
   openFile: (path: string) => Promise<void>;
   saveFile: () => Promise<string | null>;
   saveFileAs: (path: string) => Promise<void>;
+  exportFile: (path: string, pages?: number[]) => Promise<string | null>;
   refreshFileInfo: () => Promise<void>;
 
   // --- rendering ---
@@ -171,6 +172,11 @@ export function createDocStore(rpc: Rpc) {
       saveFileAs: async (path) => {
         const r = await guard(() => rpc.file.saveAs(path));
         if (r) set({ filename: r.path });
+      },
+
+      exportFile: async (path, pages) => {
+        const r = await guard(() => rpc.file.export(path, pages));
+        return r?.path ?? null;
       },
 
       select: async (path) => {

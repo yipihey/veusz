@@ -78,6 +78,11 @@ function makeStore(handlers: Record<string, (p: Record<string, unknown>) => unkn
       fileInfo = { ...fileInfo, path: p };
       return { ok: true, path: p, changeset: fileInfo.changeset };
     },
+    'file.export': (params) => ({
+      ok: true,
+      path: (params as { path: string }).path,
+      pages: ((params as { pages?: number[] }).pages) ?? [0],
+    }),
     ...handlers,
   });
   const rpc = createRpc(t);
@@ -208,6 +213,20 @@ describe('DocStore', () => {
     const imported = await store.getState().importCsv('/tmp/whatever.csv');
     expect(imported).toEqual(['x', 'y']);
     expect(store.getState().datasets.map((d) => d.name).sort()).toEqual(['x', 'y']);
+  });
+
+  it('exportFile returns the daemon-confirmed path', async () => {
+    const exports: Array<{ path: string; pages?: number[] }> = [];
+    const { store } = makeStore({
+      'file.export': (params) => {
+        const p = params as { path: string; pages?: number[] };
+        exports.push(p);
+        return { ok: true, path: p.path, pages: p.pages ?? [0] };
+      },
+    });
+    const out = await store.getState().exportFile('/tmp/plot.pdf', [0, 1]);
+    expect(out).toBe('/tmp/plot.pdf');
+    expect(exports).toEqual([{ path: '/tmp/plot.pdf', pages: [0, 1], options: {} }]);
   });
 
   it('subscribeToDaemon refreshes tree on doc.changed notifications', async () => {

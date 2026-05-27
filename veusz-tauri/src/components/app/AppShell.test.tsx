@@ -72,6 +72,11 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       return { changeset: 0, can_undo: false, can_redo: true };
     },
     'file.info': () => ({ path: null, changeset: 0, modified: false }),
+    'file.export': (params) => ({
+      ok: true,
+      path: (params as { path: string }).path,
+      pages: [0],
+    }),
     ...over,
   };
   const t = mockTransport(handlers);
@@ -212,6 +217,22 @@ describe('AppShell (mock RPC)', () => {
     render(<AppShell store={store} />);
     await waitFor(() => screen.getByTestId('toolbar-filename'));
     expect(screen.getByTestId('toolbar-filename')).toHaveTextContent('(unsaved)');
+  });
+
+  it('Export button calls onPickExportPath then file.export', async () => {
+    const onPickExportPath = vi.fn().mockResolvedValue('/tmp/out.pdf');
+    const exports: Array<Record<string, unknown>> = [];
+    const { store } = rig({
+      'file.export': (params) => {
+        exports.push(params);
+        return { ok: true, path: (params as { path: string }).path, pages: [0] };
+      },
+    });
+    render(<AppShell store={store} onPickExportPath={onPickExportPath} />);
+    await waitFor(() => screen.getByTestId('toolbar-export'));
+    fireEvent.click(screen.getByTestId('toolbar-export'));
+    await waitFor(() => expect(exports.length).toBe(1));
+    expect((exports[0] as { path: string }).path).toBe('/tmp/out.pdf');
   });
 
   it('hooks the Import button to the supplied picker', async () => {

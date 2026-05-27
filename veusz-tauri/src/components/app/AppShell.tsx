@@ -25,6 +25,7 @@ export interface AppShellProps {
   onPickCsv?: () => Promise<string | null>;
   onPickVsz?: () => Promise<string | null>;
   onPickSavePath?: () => Promise<string | null>;
+  onPickExportPath?: () => Promise<string | null>;
 }
 
 export function AppShell({
@@ -34,6 +35,7 @@ export function AppShell({
   onPickCsv,
   onPickVsz,
   onPickSavePath,
+  onPickExportPath,
 }: AppShellProps) {
   const tree = store((s) => s.tree);
   const datasets = store((s) => s.datasets);
@@ -56,6 +58,7 @@ export function AppShell({
   const openFile = store((s) => s.openFile);
   const saveFile = store((s) => s.saveFile);
   const saveFileAs = store((s) => s.saveFileAs);
+  const exportFile = store((s) => s.exportFile);
   const subscribeToDaemon = store((s) => s.subscribeToDaemon);
 
   useEffect(() => {
@@ -104,6 +107,12 @@ export function AppShell({
     if (path) await saveFileAs(path);
   };
 
+  const handleExport = async () => {
+    if (!onPickExportPath) return;
+    const path = await onPickExportPath();
+    if (path) await exportFile(path);
+  };
+
   return (
     <div data-testid="app-shell" style={layout.root}>
       <Toolbar
@@ -116,6 +125,7 @@ export function AppShell({
         onOpen={onPickVsz ? handleOpen : undefined}
         onSave={onPickSavePath || filename ? handleSave : undefined}
         onSaveAs={onPickSavePath ? handleSaveAs : undefined}
+        onExport={onPickExportPath ? handleExport : undefined}
       />
 
       <div style={layout.body}>
@@ -179,6 +189,7 @@ function Toolbar({
   onOpen,
   onSave,
   onSaveAs,
+  onExport,
 }: {
   canUndo: boolean;
   canRedo: boolean;
@@ -189,6 +200,7 @@ function Toolbar({
   onOpen?: () => void;
   onSave?: () => void;
   onSaveAs?: () => void;
+  onExport?: () => void;
 }): ReactNode {
   return (
     <header data-testid="app-toolbar" style={layout.toolbar}>
@@ -205,6 +217,11 @@ function Toolbar({
       {onSaveAs && (
         <button type="button" data-testid="toolbar-save-as" onClick={() => onSaveAs()}>
           Save As…
+        </button>
+      )}
+      {onExport && (
+        <button type="button" data-testid="toolbar-export" onClick={() => onExport()}>
+          Export…
         </button>
       )}
       <span data-testid="toolbar-filename" style={{ flex: 1, color: '#666' }}>

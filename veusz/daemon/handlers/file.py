@@ -64,12 +64,66 @@ def register(ctx):
             'modified': bool(getattr(ctx.document, 'changeset', 0)),
         }
 
+    def export_(path: str, pages: list | None = None, options: dict | None = None, **_):
+        """Export to a real file format (PDF, PNG, SVG, EPS, ...).
+
+        ``pages`` is a list of zero-indexed page numbers; defaults to
+        every page for multi-page formats (PDF/PS) and page 0 for
+        single-page formats. ``options`` is forwarded to the Export
+        constructor — see ``veusz/document/export.py``.
+        """
+        if not isinstance(path, str) or not path:
+            raise RpcError(INVALID_PARAMS, '`path` must be a non-empty string')
+        if ctx.document is None or not ctx.document.basewidget.children:
+            raise RpcError(INVALID_PARAMS, 'document has no pages')
+        npages = len(ctx.document.basewidget.children)
+        if pages is None:
+            ext = os.path.splitext(path)[1].lower()
+            pages = list(range(npages)) if ext in ('.pdf', '.ps') else [0]
+        # Validate
+        for p in pages:
+            if not isinstance(p, int) or p < 0 or p >= npages:
+                raise RpcError(INVALID_PARAMS,
+                    f'page {p} out of range [0, {npages})')
+        try:
+            return _export_to(ctx, path, pages, options or {})
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'export failed: {e}') from e
+
+    def formats(**_):
+        """List supported export formats (extension + description)."""
+        from ...document import export as _export
+        return [
+            {'extensions': list(exts), 'description': descr}
+            for exts, descr in _export.AsyncExport.getFormats()
+        ]
+
     return {
         'file.open': open_,
         'file.save': save,
         'file.save_as': save_as,
         'file.info': info,
+        'file.export': export_,
+        'file.formats': formats,
     }
+
+
+def _export_to(ctx, path: str, pages: list[int], options: dict) -> dict:
+    from ...document import export as _export
+    e = _export.AsyncExport(
+        ctx.document,
+        color=bool(options.get('color', True)),
+        bitmapdpi=int(options.get('bitmapdpi', 100)),
+        antialias=bool(options.get('antialias', True)),
+        quality=int(options.get('quality', 85)),
+        backcolor=options.get('backcolor', '#ffffff00'),
+        pdfdpi=int(options.get('pdfdpi', 72)),
+        svgdpi=int(options.get('svgdpi', 96)),
+        svgtextastext=bool(options.get('svgtextastext', False)),
+    )
+    e.add(path, pages)
+    e.finish()
+    return {'ok': True, 'path': path, 'pages': pages}
 
 
 def _save_to(ctx, path: str) -> dict:

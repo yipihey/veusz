@@ -162,6 +162,14 @@ export function createRpc(transport: Transport) {
           changeset: number;
           modified: boolean;
         }>,
+      export: (path: string, pages?: number[], options: Record<string, unknown> = {}) =>
+        t('file.export', { path, pages, options }) as Promise<{
+          ok: true;
+          path: string;
+          pages: number[];
+        }>,
+      formats: () =>
+        t('file.formats') as Promise<Array<{ extensions: string[]; description: string }>>,
     },
   };
 }
