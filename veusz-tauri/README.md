@@ -75,6 +75,10 @@ bash scripts/test-bundled-daemon.sh           # 9 tests against the bundle
 cd veusz-tauri && pnpm build && cargo tauri dev
 ```
 
+For the **macOS path** specifically (sidecar build → codesign →
+notarize → `cargo tauri dev` against the bundled daemon), see
+[`MACOS.md`](../MACOS.md) at the repo root.
+
 ## Architecture invariants
 
 * **The daemon never owns UI state.** Tree, datasets, selection,

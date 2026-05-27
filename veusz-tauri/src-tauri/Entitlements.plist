@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened Runtime entitlements for the Tauri shell + bundled veuszd.
+       JIT is needed by V8 inside WebKit; allow-unsigned-executable-memory
+       is needed because the bundled Python interpreter loads .so files
+       (PyQt6 + veusz/helpers) at runtime that are signed but not part of
+       the main app binary signature.
+       Disable-library-validation lets us link against the bundled PyQt6
+       dylibs without those needing the same Team ID as the host app. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

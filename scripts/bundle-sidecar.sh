@@ -85,7 +85,16 @@ cat > "$LAUNCHER" <<'EOF'
 # which would otherwise let a sibling `veusz/` directory shadow the
 # bundled one (this bit us in the Risk #1 spike).
 # PYTHONNOUSERSITE=1 stops `~/.local/lib/...` from leaking in.
-HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+#
+# Resolves through symlinks WITHOUT `readlink -f` (GNU-only) so the
+# same launcher works on macOS / BSDs / Linux.
+script="${BASH_SOURCE[0]}"
+while [ -h "$script" ]; do
+    here=$(cd "$(dirname "$script")" >/dev/null 2>&1 && pwd)
+    script=$(readlink "$script")
+    [[ "$script" != /* ]] && script="$here/$script"
+done
+HERE=$(cd "$(dirname "$script")" >/dev/null 2>&1 && pwd)
 export PYTHONSAFEPATH=1
 export PYTHONNOUSERSITE=1
 exec "$HERE/python/bin/python3" -m veusz.daemon.cli "$@"

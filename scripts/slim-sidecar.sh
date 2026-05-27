@@ -21,7 +21,9 @@ PYQT_DIR=$(find "$BUNDLE/python/lib" -maxdepth 4 -type d -name PyQt6 | head -1)
 
 QT6="$PYQT_DIR/Qt6"
 
-before_size=$(du -sb "$BUNDLE" | cut -f1)
+# `du -sb` (bytes) is GNU-only; `du -sk` (KiB) is portable across
+# GNU/BSD/macOS. Multiply by 1024 for byte math.
+before_size=$(du -sk "$BUNDLE" | awk '{print $1 * 1024}')
 echo "→ Before: $(du -sh "$BUNDLE" | cut -f1)"
 
 # ---------------------------------------------------------------------------
@@ -108,9 +110,17 @@ done
 find "$BUNDLE/python" -type d -name __pycache__ -prune -exec rm -rf {} \; 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-after_size=$(du -sb "$BUNDLE" | cut -f1)
+after_size=$(du -sk "$BUNDLE" | awk '{print $1 * 1024}')
 saved=$((before_size - after_size))
-human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "$1"; }
+# `numfmt` is also GNU-only; format bytes with awk for portability.
+human() {
+    awk -v n="$1" 'BEGIN{
+        s="B"; if (n>=1024) {n/=1024; s="KB"}
+        if (n>=1024) {n/=1024; s="MB"}
+        if (n>=1024) {n/=1024; s="GB"}
+        printf "%.1f %s\n", n, s
+    }'
+}
 echo "→ After:  $(du -sh "$BUNDLE" | cut -f1)"
 echo "→ Saved:  $(human $saved)"
 

@@ -61,11 +61,17 @@ plugin trees Veusz never loads.
 
 Bundled binary passes 100% of the same live-daemon tests the
 dev-installed `veuszd` passes — there is **no functional gap** between
-a developer install and a bundle. Risk #1 from the plan is resolved
-for Linux x86_64; the script is designed so swapping the
-`python-build-standalone` triple ports it to macOS arm64/x86_64 and
-Windows x86_64 (Windows needs a .ps1 launcher sibling — TODO before
-Phase 5).
+a developer install and a bundle.
+
+**macOS port (May 2026)**: scripts and Tauri config are ready. Walkthrough
+in [`MACOS.md`](../../MACOS.md). The bundle script is portable
+(launcher resolves symlinks via a bash 3.2-safe loop, `du` calls use
+`-sk` not GNU `-sb`, `numfmt` replaced with awk). Codesign +
+notarization scripts ship as siblings (`codesign-mac-sidecar.sh`,
+`notarize-mac-sidecar.sh`); they need a Developer ID + an app-specific
+password and have not yet been exercised end-to-end.
+
+**Windows** still needs a sibling `.ps1` launcher + EV signing.
 
 ## Why not PyInstaller / cx_Freeze / py2app
 

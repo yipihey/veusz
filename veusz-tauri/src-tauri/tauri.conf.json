@@ -25,6 +25,31 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns"
+    ],
+    "category": "Education",
+    "shortDescription": "Scientific plotting and graphing",
+    "longDescription": "Veusz is a 2D and 3D scientific plotting package, designed to create publication-ready PDF and SVG output.",
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null,
+      "exceptionDomain": null
+    },
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": null
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
   }
 }
