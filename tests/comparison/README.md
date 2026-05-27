@@ -31,12 +31,25 @@ python3 -m pytest tests/comparison/test_diff.py -v
 
 ## Running the tiny-skia end-to-end tests
 
-Requires a one-time build of the Rust PyO3 extension:
+Requires a one-time build of the Rust PyO3 extension. Three equivalent
+options (all produce `veusz/paint/_paint_ext.abi3.so`):
 
 ```sh
-scripts/build_paint_ext.sh              # produces veusz/paint/_paint_ext.abi3.so
+# (a) maturin via pip — preferred; mirrors the eventual wheel install path.
+pip install -e veusz-tauri/crates/veusz-paint-py/
+
+# (b) maturin develop — same effect, no pip wheel-pack step. Needs a virtualenv.
+maturin develop --release --manifest-path veusz-tauri/crates/veusz-paint-py/Cargo.toml
+
+# (c) Legacy wrapper script. Picks (a)/(b) automatically when maturin is
+#     available; falls back to a raw cargo + cp build otherwise.
+scripts/build_paint_ext.sh
+
 python3 -m pytest tests/comparison/test_python_tiny_skia.py -v
 ```
+
+See `veusz-tauri/crates/veusz-paint-py/README.md` for the full build-path
+matrix and wheel layout.
 
 The bridge exposes both raster and vector emission from the same Scene:
 
@@ -69,7 +82,7 @@ backend-agnostic.
 ## Rendering real `.vsz` documents through tiny-skia or Vello
 
 ```sh
-scripts/build_paint_ext.sh                          # one-time
+pip install -e veusz-tauri/crates/veusz-paint-py/      # one-time
 python tests/comparison/veusz_render_compare.py \
     --manifest --smoke \
     --backends qt,tiny-skia,vello \

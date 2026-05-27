@@ -80,8 +80,11 @@ def create_painter(width: int, height: int, dpi: float = 96.0,
         except ImportError as exc:
             raise BackendError(
                 f"{name} backend requires the veusz.paint._paint_ext "
-                "Rust extension. Build with: "
-                "scripts/build_paint_ext.sh"
+                "Rust extension. Build with one of: "
+                "`pip install -e veusz-tauri/crates/veusz-paint-py/`, "
+                "`maturin develop --manifest-path "
+                "veusz-tauri/crates/veusz-paint-py/Cargo.toml`, "
+                "or `scripts/build_paint_ext.sh`."
             ) from exc
         if name not in _paint_ext.available_backends():
             raise BackendError(

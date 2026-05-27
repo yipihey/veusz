@@ -1,0 +1,82 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+# This is the build-tool name for the wheel/sdist. The runtime Python module
+# name is `veusz.paint._paint_ext`, not this — see `[tool.maturin] module-name`
+# below. We keep the project name `veusz-paint-ext` so it doesn't collide
+# with the main `veusz` distribution on PyPI.
+name = "veusz-paint-ext"
+version = "0.0.0"
+description = "PyO3 bridge: Veusz parallel paint backends (tiny-skia, vello, PDF) for Python."
+requires-python = ">=3.10"
+license = { text = "GPL-2.0-or-later" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+    "Topic :: Multimedia :: Graphics",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[tool.maturin]
+# Build the extension and install it at `veusz.paint._paint_ext` — i.e.
+# the wheel layout drops `_paint_ext.abi3.so` into `veusz/paint/` so the
+# existing veusz package picks it up alongside its pure-Python siblings.
+# This means the wheel is a *namespace-merge* with the main veusz package:
+# both ship into `<site-packages>/veusz/paint/` and cooperate at runtime.
+module-name = "veusz.paint._paint_ext"
+
+# Manifest path is relative to this pyproject.toml. The crate lives next
+# to this file; the rest of the Cargo workspace is referenced via the
+# crate's `[dependencies]` `path = "../…"` entries.
+manifest-path = "Cargo.toml"
+
+# abi3 wheel — one .so works across CPython 3.10+. Matches the
+# `abi3-py310` feature in Cargo.toml.
+features = ["pyo3/extension-module"]
+
+# Mixed-mode layout. `python-source` points at the repo root so the
+# extension's runtime location — `<repo>/veusz/paint/_paint_ext.abi3.so`
+# — is the *same* path the manual `scripts/build_paint_ext.sh` writes to.
+# That keeps both build paths interchangeable.
+#
+# For editable installs (`pip install -e .`), maturin writes a `.pth` file
+# pointing at this directory; combined with a fresh build of `_paint_ext.abi3.so`
+# dropped into `veusz/paint/`, that lets the existing veusz checkout pick
+# up the Rust extension without touching its own `setup.py` flow.
+#
+# For wheel builds, `exclude` below restricts the packaged Python files
+# to just the .so — the main `veusz` distribution is responsible for the
+# Python source tree on PyPI.
+python-source = "../../.."
+
+# Wheel hygiene: don't ship any of the veusz Python source. Maturin only
+# needs the `python-source` path to resolve the dotted `module-name`; the
+# wheel itself contains just the compiled `.so` (plus dist-info).
+exclude = [
+    { path = "veusz/**/*.py", format = "wheel" },
+    { path = "veusz/**/*.ui", format = "wheel" },
+    { path = "veusz/**/*.qrc", format = "wheel" },
+    { path = "veusz/**/*.png", format = "wheel" },
+    { path = "veusz/**/*.svg", format = "wheel" },
+    { path = "veusz-tauri/**", format = "wheel" },
+    { path = "tests/**", format = "wheel" },
+    { path = "Documents/**", format = "wheel" },
+    { path = "docs/**", format = "wheel" },
+    { path = "examples/**", format = "wheel" },
+    { path = "icons/**", format = "wheel" },
+    { path = "src/**", format = "wheel" },
+    { path = "support/**", format = "wheel" },
+    { path = "translation/**", format = "wheel" },
+    { path = "ui/**", format = "wheel" },
+    { path = "scripts/**", format = "wheel" },
+]
+
+# Strip debuginfo for release wheels (developer builds via `maturin develop`
+# default to debug, which keeps symbols).
+strip = true
