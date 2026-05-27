@@ -18,6 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use veusz_paint_core::{Color, Scene, SceneSummary};
+use veusz_paint_pdf::render_scene_to_pdf;
 use veusz_paint_tiny_skia::TinySkiaPainter;
 
 /// Backend names recognised by [`render_scene_to_png`].
@@ -98,6 +99,36 @@ fn scene_summary_json(scene_json: &[u8]) -> PyResult<String> {
     serde_json::to_string(&s).map_err(|e| PyRuntimeError::new_err(format!("encode failed: {e}")))
 }
 
+/// Rasterise a serialised [`Scene`] into a single-page PDF (bytes).
+///
+/// Currently only the `tiny-skia` backend's "vector path" is implemented —
+/// PDF is a vector format, so the choice of raster backend is irrelevant to
+/// the output. The `backend` argument exists for future per-backend tuning
+/// (e.g. Vello's gradient-to-PDF-shading mapping).
+#[pyfunction]
+#[pyo3(signature = (scene_json, width_pt, height_pt, background, backend = "tiny-skia"))]
+fn render_scene_to_pdf_bytes<'py>(
+    py: Python<'py>,
+    scene_json: &[u8],
+    width_pt: f64,
+    height_pt: f64,
+    background: (f32, f32, f32, f32),
+    backend: &str,
+) -> PyResult<Bound<'py, PyBytes>> {
+    if backend != BACKEND_TINY_SKIA {
+        return Err(PyValueError::new_err(format!(
+            "PDF emission for backend {:?} is not implemented yet",
+            backend,
+        )));
+    }
+    let scene: Scene = serde_json::from_slice(scene_json)
+        .map_err(|e| PyValueError::new_err(format!("scene JSON decode failed: {e}")))?;
+    let pdf = py.allow_threads(|| {
+        render_scene_to_pdf(&scene, width_pt, height_pt, background)
+    }).map_err(PyRuntimeError::new_err)?;
+    Ok(PyBytes::new_bound(py, &pdf))
+}
+
 /// List the backends available in this build of `veusz_paint_ext`.
 #[pyfunction]
 fn available_backends() -> Vec<&'static str> {
@@ -107,6 +138,7 @@ fn available_backends() -> Vec<&'static str> {
 #[pymodule]
 fn _paint_ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(render_scene_to_png, m)?)?;
+    m.add_function(wrap_pyfunction!(render_scene_to_pdf_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(scene_summary_json, m)?)?;
     m.add_function(wrap_pyfunction!(available_backends, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

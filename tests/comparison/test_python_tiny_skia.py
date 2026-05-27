@@ -134,5 +134,49 @@ def test_unknown_backend_raises(monkeypatch):
         active_backend()
 
 
+# ---- PDF path -----------------------------------------------------------
+
+def test_to_pdf_emits_valid_pdf_header():
+    p = create_painter(200, 200, backend="tiny-skia",
+                       background=(1.0, 1.0, 1.0, 1.0))
+    p.set_paint(Paint(
+        fill=Fill(solid=Color.rgba8(0, 128, 255, 255)),
+        stroke=Stroke(color=Color.rgba8(0, 0, 0, 255), width=1.5),
+        anti_alias=True,
+    ))
+    r = Path.rect(Rect(40, 40, 120, 80))
+    p.fill_path(r)
+    p.stroke_path(r)
+
+    pdf = p.to_pdf()
+    assert pdf.startswith(b"%PDF-")
+    assert b"%%EOF" in pdf
+    # Contains a content stream and at least one filled path.
+    assert b"stream" in pdf
+    assert b"endstream" in pdf
+
+
+def test_to_pdf_respects_explicit_page_size():
+    p = create_painter(200, 200, backend="tiny-skia",
+                       background=(1.0, 1.0, 1.0, 1.0))
+    pdf = p.to_pdf(width_pt=595.0, height_pt=842.0)  # A4
+    # MediaBox values appear as ASCII in the catalog; verify presence.
+    assert b"595" in pdf
+    assert b"842" in pdf
+
+
+def test_png_and_pdf_can_coexist_on_one_painter():
+    p = create_painter(64, 64, backend="tiny-skia",
+                       background=(1.0, 1.0, 1.0, 1.0))
+    p.set_paint(Paint(fill=Fill(solid=Color.rgba8(255, 0, 0, 255)),
+                      anti_alias=False))
+    p.fill_path(Path.rect(Rect(8, 8, 48, 48)))
+
+    png = p.to_png()
+    pdf = p.to_pdf()
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert pdf.startswith(b"%PDF-")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

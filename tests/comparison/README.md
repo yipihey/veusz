@@ -38,14 +38,22 @@ scripts/build_paint_ext.sh              # produces veusz/paint/_paint_ext.abi3.s
 python3 -m pytest tests/comparison/test_python_tiny_skia.py -v
 ```
 
-Once the extension is in place, the harness picks the backend up
-automatically:
+The bridge exposes both raster and vector emission from the same Scene:
 
-```sh
-VEUSZ_PAINT_BACKEND=tiny-skia \
-    python tests/comparison/veusz_render_compare.py --manifest --smoke \
-        --backends qt,tiny-skia --out /tmp/cmp
+```python
+from veusz.paint import create_painter
+p = create_painter(400, 240, backend="tiny-skia")
+# … paint operations …
+p.finish()
+png_bytes = p.to_png()
+pdf_bytes = p.to_pdf(width_pt=400, height_pt=240)  # A4 / letter / etc. via width_pt+height_pt
 ```
+
+`render_compare.py` will pick up the new backend once a Scene-producing
+path exists for real `.vsz` documents — currently the harness only
+produces output for the `qt` backend because widgets still paint through
+`QPainter`. The next chunk wires a QPainter→Scene recorder so the corpus
+can be rendered through tiny-skia and Vello without widget refactoring.
 
 ## How to run the dynamic-pass audit (spike S1)
 

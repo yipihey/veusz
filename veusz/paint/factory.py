@@ -155,6 +155,24 @@ class TinySkiaSceneBackend:
             self.finish()
         return self.png_bytes  # type: ignore
 
+    def to_pdf(self, width_pt: Optional[float] = None,
+               height_pt: Optional[float] = None) -> bytes:
+        """Render the recorded scene as a single-page PDF.
+
+        ``width_pt`` / ``height_pt`` default to the painter's pixel size
+        interpreted as PDF points (1 pt = 1/72 inch). For most documents
+        you want to pass the document's intended size in points directly.
+        """
+        if self._ext is None:
+            raise BackendError("backend extension was not bound at construction time")
+        return self._ext.render_scene_to_pdf_bytes(
+            self._recorder.to_json(),
+            float(width_pt or self.width),
+            float(height_pt or self.height),
+            self.background,
+            "tiny-skia",
+        )
+
     @property
     def op_count(self) -> int:
         return self._recorder.op_count
