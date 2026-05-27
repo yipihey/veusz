@@ -84,26 +84,37 @@ class MainWindow(qt.QMainWindow):
 
     windows = []
     @classmethod
-    def CreateWindow(cls, filename=None, mode='graph'):
+    def CreateWindow(cls, filename=None, mode='graph',
+                     doc=None, globals_dict=None, embed=False):
         """Window factory function.
 
         If filename is given then that file is loaded into the window.
+        If doc is given, the window uses that Document instead of creating
+        a fresh one (used by the in-process embed mode).
+        If globals_dict is given, the in-window Python console shares that
+        namespace with the caller.
+        If embed is True, user-facing nags (tutorial, version check,
+        feedback prompts) are skipped — appropriate when the window is
+        opened programmatically from a host Python session.
         Returns window created
         """
 
         # create the window, and optionally load a saved file
-        win = cls()
+        win = cls(doc=doc, globals_dict=globals_dict)
         win.show()
         if filename:
             # load document
             win.openFileInWindow(filename)
-        else:
+        elif doc is None:
             win.setupDefaultDoc(mode)
 
         # try to select first graph of first page
         win.treeedit.doInitialWidgetSelect()
 
         cls.windows.append(win)
+
+        if embed:
+            return win
 
         # check if tutorial wanted (only for graph mode)
         if not setting.settingdb['ask_tutorial'] and mode=='graph':
@@ -123,15 +134,16 @@ class MainWindow(qt.QMainWindow):
 
         return win
 
-    def __init__(self, *args):
+    def __init__(self, *args, doc=None, globals_dict=None):
         qt.QMainWindow.__init__(self, *args)
         self.setAcceptDrops(True)
 
         # icon and different size variations
         self.setWindowIcon( utils.getIcon('veusz') )
 
-        # master document
-        self.document = document.Document()
+        # master document — use one provided by caller (in-process embed)
+        # or create a fresh one (normal app launch)
+        self.document = doc if doc is not None else document.Document()
 
         # filename for document and update titlebar
         self.filename = ''
@@ -167,7 +179,7 @@ class MainWindow(qt.QMainWindow):
 
         # make the console window a dock
         self.console = consolewindow.ConsoleWindow(
-            self.document, self)
+            self.document, self, globals_dict=globals_dict)
         self.console.hide()
         self.interpreter = self.console.interpreter
         self.addDockWidget(
