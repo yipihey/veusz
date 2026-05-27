@@ -90,34 +90,162 @@ def gather_corpus(manifest: dict, tier: str) -> List[Path]:
     raise ValueError(f"unknown tier {tier!r}")
 
 
-def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96) -> RenderResult:
-    """Render a single ``.vsz`` through ``backend``, write PNG and PDF."""
+def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
+               keep_scene: bool = False) -> RenderResult:
+    """Render a single ``.vsz`` through ``backend``, write PNG and PDF.
+
+    Dispatches by backend:
+
+    * ``qt`` — Veusz's existing ``AsyncExport`` (PDF via QPrinter, PNG via
+      QImage). Bit-identical to current Veusz output.
+    * ``tiny-skia`` — paint widgets into a ``SceneCapturingPainter`` (no
+      widget code changes), then ship the recorded scene to the Rust
+      ``_paint_ext`` extension for PNG + PDF emission.
+    * ``vello`` — not implemented yet; returns an error.
+
+    ``keep_scene`` writes the captured scene JSON next to the PNG / PDF for
+    debugging.
+    """
     import time
 
     os.environ["VEUSZ_PAINT_BACKEND"] = backend
     result = RenderResult(backend=backend, vsz=vsz)
     t0 = time.time()
     try:
-        # Defer the Veusz import: it requires Qt to be importable, and we
-        # want to fail loudly only when actually rendering.
-        from veusz import document
-        from veusz.document import export
+        if backend == "qt":
+            _render_qt(vsz, out_dir, dpi, result)
+        elif backend == "tiny-skia":
+            _render_tiny_skia(vsz, out_dir, dpi, result, keep_scene=keep_scene)
+        elif backend == "vello":
+            result.error = "vello backend not implemented (plan §8, phase 3)"
+        else:
+            result.error = f"unknown backend {backend!r}"
+    except Exception as exc:
+        result.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        result.elapsed_s = time.time() - t0
+    return result
 
-        doc = document.Document()
-        doc.load(str(vsz))
 
-        png_path = out_dir / f"{vsz.stem}.{backend}.png"
-        pdf_path = out_dir / f"{vsz.stem}.{backend}.pdf"
+def _render_qt(vsz: Path, out_dir: Path, dpi: int, result: RenderResult) -> None:
+    """Existing Veusz export path via AsyncExport."""
+    from veusz import document
+    from veusz.document import export
 
-        # Use AsyncExport's synchronous path via ExportBitmapRunnable/
-        # ExportPDFRunnable rather than the threaded queue.
-        runner = export.AsyncExport(doc, bitmapdpi=dpi)
-        runner.add(str(png_path), [0])
-        runner.add(str(pdf_path), [0])
-        runner.finish()
+    doc = document.Document()
+    doc.load(str(vsz))
 
-        result.png = png_path if png_path.exists() else None
-        result.pdf = pdf_path if pdf_path.exists() else None
+    png_path = out_dir / f"{vsz.stem}.{result.backend}.png"
+    pdf_path = out_dir / f"{vsz.stem}.{result.backend}.pdf"
+
+    runner = export.AsyncExport(doc, bitmapdpi=dpi)
+    runner.add(str(png_path), [0])
+    runner.add(str(pdf_path), [0])
+    runner.finish()
+
+    result.png = png_path if png_path.exists() else None
+    result.pdf = pdf_path if pdf_path.exists() else None
+
+
+def _render_tiny_skia(vsz: Path, out_dir: Path, dpi: int, result: RenderResult,
+                      *, keep_scene: bool = False) -> None:
+    """Capture widget paint as a Scene, render via tiny-skia + pdf-writer.
+
+    Uses :func:`veusz.paint.qt_capture.capture_document_scene` so widget
+    paint code is untouched — it still produces QPainter calls; we just
+    point those calls at a recorder instead of a drawable.
+    """
+    from veusz import document
+    from veusz.paint.qt_capture import capture_document_scene
+    try:
+        from veusz.paint import _paint_ext  # type: ignore
+    except ImportError:
+        result.error = ("tiny-skia backend requires veusz.paint._paint_ext; "
+                        "build with scripts/build_paint_ext.sh")
+        return
+
+    doc = document.Document()
+    doc.load(str(vsz))
+
+    # Pull page size from the doc; assume page 0 for now.
+    scene_json = capture_document_scene(doc, page=0)
+
+    # Decode the page size from the scene-bearing helper, or fall back to a
+    # default. capture_document_scene already pulled px size into the helper;
+    # we replicate the heuristic here for the render dims.
+    page_w, page_h = _page_pixel_size(doc, page=0, dpi=dpi)
+
+    png_path = out_dir / f"{vsz.stem}.{result.backend}.png"
+    pdf_path = out_dir / f"{vsz.stem}.{result.backend}.pdf"
+
+    png_bytes = _paint_ext.render_scene_to_png(
+        scene_json, page_w, page_h, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+    png_path.write_bytes(png_bytes)
+    result.png = png_path
+
+    # PDF page size in points: convert from pixels at the doc's dpi.
+    page_w_pt = page_w * 72.0 / dpi
+    page_h_pt = page_h * 72.0 / dpi
+    pdf_bytes = _paint_ext.render_scene_to_pdf_bytes(
+        scene_json, page_w_pt, page_h_pt, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+    pdf_path.write_bytes(pdf_bytes)
+    result.pdf = pdf_path
+
+    if keep_scene:
+        scene_path = out_dir / f"{vsz.stem}.{result.backend}.scene.json"
+        scene_path.write_bytes(scene_json)
+
+
+def _page_pixel_size(doc, page: int, dpi: int) -> "tuple[int, int]":
+    """Best-effort page-pixel-size lookup. Mirrors what Veusz's PaintHelper
+    picks up; we pull from the page widget's settings."""
+    pages = [c for c in doc.basewidget.children if c.typename == "page"]
+    if not pages:
+        return (int(8 * dpi), int(6 * dpi))  # 8x6 inch default
+    pw = pages[page]
+    # Veusz stores page dimensions as Distance objects; convert to pixels.
+    try:
+        w = pw.settings.get("width").convert(pw)
+        h = pw.settings.get("height").convert(pw)
+        return int(w), int(h)
+    except Exception:
+        return (int(8 * dpi), int(6 * dpi))
+
+
+def render_scene_fixture(scene_json: bytes, stem: str, backend: str,
+                         out_dir: Path, width_px: int, height_px: int,
+                         dpi: int = 96) -> RenderResult:
+    """Render a pre-recorded scene fixture through ``backend``.
+
+    Lets CI exercise the rendering pipeline (tiny-skia, pdf-writer, diff
+    math) on captured-once scene JSON without needing PyQt6 or a real
+    Veusz document at test time. Fixtures live in
+    ``tests/comparison/fixtures/`` and are produced by running the harness
+    against a real .vsz with ``--keep-scene``.
+    """
+    import time
+
+    result = RenderResult(backend=backend, vsz=Path(f"<fixture:{stem}>"))
+    t0 = time.time()
+    try:
+        if backend != "tiny-skia":
+            result.error = f"render_scene_fixture only supports tiny-skia, got {backend!r}"
+            return result
+        from veusz.paint import _paint_ext  # type: ignore
+
+        png_bytes = _paint_ext.render_scene_to_png(
+            scene_json, width_px, height_px, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+        png_path = out_dir / f"{stem}.{backend}.png"
+        png_path.write_bytes(png_bytes)
+        result.png = png_path
+
+        page_w_pt = width_px * 72.0 / dpi
+        page_h_pt = height_px * 72.0 / dpi
+        pdf_bytes = _paint_ext.render_scene_to_pdf_bytes(
+            scene_json, page_w_pt, page_h_pt, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+        pdf_path = out_dir / f"{stem}.{backend}.pdf"
+        pdf_path.write_bytes(pdf_bytes)
+        result.pdf = pdf_path
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -127,12 +255,14 @@ def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96) -> RenderR
 
 def run(inputs: List[Path], backends: List[str], out_dir: Path,
         dpi: int = 96, identical_db: float = 50.0,
-        within_db: float = 35.0) -> CompareReport:
+        within_db: float = 35.0,
+        keep_scene: bool = False) -> CompareReport:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = CompareReport(inputs=inputs)
     for vsz in inputs:
         for backend in backends:
-            res = render_one(vsz, backend, out_dir, dpi=dpi)
+            res = render_one(vsz, backend, out_dir, dpi=dpi,
+                             keep_scene=keep_scene)
             report.results.append(res)
             status = "ok" if res.error is None else f"FAIL ({res.error})"
             print(f"  {backend:10s}  {vsz.name:30s}  {res.elapsed_s:6.2f}s  {status}")
@@ -171,6 +301,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="comma-separated subset of qt,tiny-skia,vello")
     p.add_argument("--out", default=None, help="output dir (default: temp dir)")
     p.add_argument("--dpi", type=int, default=96)
+    p.add_argument("--keep-scene", action="store_true",
+                   help="for tiny-skia: also write the captured scene JSON")
     args = p.parse_args(argv)
 
     manifest = load_manifest()
@@ -192,7 +324,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"inputs: {len(inputs)}")
     tol = manifest["tolerance"]
     run(inputs, backends, out_dir, dpi=args.dpi,
-        identical_db=tol["identical"], within_db=tol["within"])
+        identical_db=tol["identical"], within_db=tol["within"],
+        keep_scene=args.keep_scene)
     return 0
 
 

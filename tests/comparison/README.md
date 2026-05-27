@@ -49,11 +49,48 @@ png_bytes = p.to_png()
 pdf_bytes = p.to_pdf(width_pt=400, height_pt=240)  # A4 / letter / etc. via width_pt+height_pt
 ```
 
-`render_compare.py` will pick up the new backend once a Scene-producing
-path exists for real `.vsz` documents — currently the harness only
-produces output for the `qt` backend because widgets still paint through
-`QPainter`. The next chunk wires a QPainter→Scene recorder so the corpus
-can be rendered through tiny-skia and Vello without widget refactoring.
+## Rendering real `.vsz` documents through tiny-skia
+
+```sh
+scripts/build_paint_ext.sh                          # one-time
+VEUSZ_PAINT_BACKEND=tiny-skia \
+    python tests/comparison/veusz_render_compare.py \
+        --manifest --smoke \
+        --backends qt,tiny-skia \
+        --out /tmp/cmp --keep-scene
+```
+
+Pipeline: load `.vsz` → drive Veusz widgets through
+`SceneCapturingPainter` (QPainter subclass that records every paint
+call as an abstract `SceneOp`) → ship recorded scene JSON to
+`veusz.paint._paint_ext` for PNG + PDF emission → diff against the
+QPainter reference output. Requires PyQt6; widgets are not modified.
+`--keep-scene` writes the captured scene JSON next to the PNG / PDF for
+debugging.
+
+C++-originated calls from `qtloops` batches (`plotPathsToPainter`,
+`plotLinesToPainter`, …) currently bypass the Python intercept — those
+ops will show up in the QPainter render but not in the tiny-skia render.
+The diff math flags these as material differences; the audit gives an
+upper bound on the gap.
+
+## Scene fixtures (CI without PyQt6)
+
+`tests/comparison/fixtures/*.scene.json` are pre-recorded scenes that
+exercise the full rendering pipeline (tiny-skia + pdf-writer + diff
+math) **without needing PyQt6 or Veusz installed**. `test_fixtures.py`
+parameterises over every fixture: each one must render to a valid PNG
+and PDF, and produce bit-identical PNGs across runs (snapshot
+determinism). Regenerate with:
+
+```sh
+python3 scripts/regen_scene_fixtures.py
+```
+
+Drop additional `.scene.json` files into the fixtures directory to
+broaden the suite — once a PyQt6 dev env runs the harness with
+`--keep-scene`, the resulting per-document scene JSON can be checked in
+as a fixture for stable cross-platform regression coverage.
 
 ## How to run the dynamic-pass audit (spike S1)
 
