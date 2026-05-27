@@ -216,6 +216,13 @@ describe('live daemon: full Phase-1 loop', () => {
       // The real daemon's marker vallist has 70+ entries
       expect(markerSelect.options.length).toBeGreaterThan(50);
 
+      // Wait for the initial debounced render to land so we have a
+      // baseline PNG to compare against after the edit + undo. Without
+      // this the coalescing window (~33ms) means `render` may still be
+      // null when we capture beforeRender.
+      await waitFor(() => expect(store.getState().render?.png).toBeTruthy(),
+        { timeout: 3000 });
+
       // Edit the marker via the inspector — this should fire doc.set
       // through the real daemon and re-render automatically.
       const beforeRender = store.getState().render?.png;

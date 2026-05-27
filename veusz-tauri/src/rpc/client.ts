@@ -128,6 +128,26 @@ export function createRpc(transport: Transport) {
         >,
     },
 
+    prefs: {
+      get: (key: string) =>
+        t('prefs.get', { key }) as Promise<{ key: string; value: unknown }>,
+      set: (key: string, value: unknown) =>
+        t('prefs.set', { key, value }) as Promise<{
+          ok: true; key: string; value: unknown;
+        }>,
+      delete: (key: string) => t('prefs.delete', { key }) as Promise<{ ok: true }>,
+      list: () =>
+        t('prefs.list') as Promise<Array<{
+          key: string;
+          value: unknown;
+          default: unknown;
+          type: 'integer' | 'number' | 'boolean' | 'string';
+          min?: number;
+          max?: number;
+          choices?: string[];
+        }>>,
+    },
+
     fit: {
       run: (params: {
         xData: string;
