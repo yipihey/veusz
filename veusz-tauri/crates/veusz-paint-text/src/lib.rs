@@ -151,6 +151,89 @@ impl TextEngine {
                                           &layout.text, &layout.style);
         (parley_layout.width() as f64, parley_layout.height() as f64)
     }
+
+    /// Layout-only: return per-run + per-glyph metadata WITHOUT extracting
+    /// glyph outlines. This is what backends embed fonts use (Type 0 PDF
+    /// CIDFont): they want the raw font bytes + GIDs, not paths.
+    ///
+    /// The character mapping is preserved per glyph where parley reports
+    /// it — used for the ToUnicode CMap in PDF output so text is
+    /// searchable / copyable in the resulting PDF.
+    pub fn layout_glyph_runs(
+        &self,
+        layout: &TextLayout,
+        baseline_xy: (f64, f64),
+    ) -> Vec<LaidOutGlyphRun> {
+        let parley_layout = {
+            let mut font_cx = self.font_cx.lock().unwrap();
+            let mut layout_cx = self.layout_cx.lock().unwrap();
+            build_layout(&mut font_cx, &mut layout_cx, &layout.text, &layout.style)
+        };
+        let (origin_x, origin_y) = baseline_xy;
+        let mut out: Vec<LaidOutGlyphRun> = Vec::new();
+        for line in parley_layout.lines() {
+            let metrics = line.metrics();
+            let baseline_y = metrics.baseline as f64;
+            for item in line.items() {
+                let glyph_run = match item {
+                    PositionedLayoutItem::GlyphRun(g) => g,
+                    _ => continue,
+                };
+                let run = glyph_run.run();
+                let font = run.font();
+                let font_size = run.font_size();
+                let family = font_family_for_run(&run, &layout.text);
+
+                // Walk glyphs once to collect positions + GIDs.
+                let mut glyphs: Vec<LaidOutGlyph> = Vec::new();
+                let mut x_cursor = glyph_run.offset() as f64;
+                for g in glyph_run.glyphs() {
+                    glyphs.push(LaidOutGlyph {
+                        // parley uses u32 glyph IDs (TrueType / OpenType GIDs
+                        // are 16-bit; the extra width is for future CFF2 /
+                        // big-font support). PDF Type 0 CIDs are 16-bit too.
+                        id: g.id as u16,
+                        x: origin_x + x_cursor + g.x as f64,
+                        y: origin_y + baseline_y + g.y as f64,
+                        advance: g.advance,
+                        // parley's run iterator doesn't directly expose the
+                        // source codepoint per glyph; we'd need to walk the
+                        // cluster boundaries to recover it. For now, the
+                        // PDF ToUnicode CMap uses the .text chars in
+                        // order — close enough for the common single-glyph-
+                        // per-codepoint case, which is what Latin / digits
+                        // are. Tracked as a follow-up if non-Latin shaping
+                        // becomes a target.
+                        codepoint: None,
+                    });
+                    x_cursor += g.advance as f64;
+                }
+
+                out.push(LaidOutGlyphRun {
+                    font_data: std::sync::Arc::new(font.data.data().to_vec()),
+                    font_index: font.index,
+                    font_id: font.data.id(),
+                    family,
+                    font_size_px: font_size,
+                    baseline: (origin_x, origin_y + baseline_y),
+                    color: layout.style.color,
+                    glyphs,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// Best-effort family name for a parley Run — for diagnostic / PDF font
+/// naming. parley's Run doesn't directly expose the resolved family; we
+/// approximate by reading the OpenType name table off the font data.
+fn font_family_for_run(_run: &parley::Run<Brush>, _text: &str) -> String {
+    // TODO: walk skrifa's name table to get the actual resolved family.
+    // For now, ship a placeholder that's good enough as a debug
+    // identifier — the PDF font naming uses the font_id (unique per
+    // font blob) as the primary key, not the family.
+    "Resolved Font".to_string()
 }
 
 fn build_layout(
@@ -264,6 +347,45 @@ pub struct GlyphInstance {
     pub path: Path,
     pub position: Affine,
     pub color: Color,
+}
+
+/// One contiguous run of glyphs from the same font + size, with the raw
+/// font bytes attached. This is what backends that EMBED fonts (PDF
+/// Type 0 CIDFont) need — they don't want outlines, they want glyph IDs
+/// and the original font file so they can subset + embed it.
+#[derive(Clone, Debug)]
+pub struct LaidOutGlyphRun {
+    /// Original font file bytes (TrueType or OpenType).
+    pub font_data: std::sync::Arc<Vec<u8>>,
+    /// Index of the font within a TTC collection (0 for a single font).
+    pub font_index: u32,
+    /// Stable identifier for this font's data, suitable as a HashMap key.
+    pub font_id: u64,
+    /// Family name resolved by parley (e.g. "Liberation Sans" when "Arial"
+    /// was requested).
+    pub family: String,
+    pub font_size_px: f32,
+    /// Position of the run's baseline in scene-space coordinates.
+    pub baseline: (f64, f64),
+    /// Style colour copied from the [`TextLayout`].
+    pub color: Color,
+    pub glyphs: Vec<LaidOutGlyph>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct LaidOutGlyph {
+    /// Original glyph ID in the source font.
+    pub id: u16,
+    /// Absolute scene-space x of the glyph's origin.
+    pub x: f64,
+    /// Absolute scene-space y of the glyph's origin (baseline).
+    pub y: f64,
+    /// Glyph's advance in scene-space units.
+    pub advance: f32,
+    /// The Unicode codepoint(s) this glyph was shaped from, if known —
+    /// used by the PDF backend to generate a ToUnicode CMap so text
+    /// extraction (copy/paste, screen readers) works on the output.
+    pub codepoint: Option<char>,
 }
 
 /// Convenience helper: draw `layout` at `(x, y)` against any

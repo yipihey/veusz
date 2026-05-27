@@ -9,3 +9,5 @@ veusz-paint-core = { path = "../veusz-paint-core" }
 veusz-paint-text = { path = "../veusz-paint-text" }
 pdf-writer = "0.14"
 flate2 = "1"
+subsetter = { version = "0.2", default-features = false }
+skrifa = "0.42"

@@ -3796,6 +3796,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "subsetter"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb6895a12ac5599bb6057362f00e8a3cf1daab4df33f553a55690a44e4fed8d0"
+dependencies = [
+ "rustc-hash 2.1.2",
+]
+
+[[package]]
 name = "svg_fmt"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4852,6 +4861,8 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "pdf-writer",
+ "skrifa 0.42.1",
+ "subsetter",
  "veusz-paint-core",
  "veusz-paint-text",
 ]

@@ -39,8 +39,19 @@
 
 #![forbid(unsafe_code)]
 
-use pdf_writer::types::{LineCapStyle, LineJoinStyle};
-use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect as PdfRect, Ref, TextStr};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use pdf_writer::types::{
+    CidFontType, FontFlags, LineCapStyle, LineJoinStyle, SystemInfo, UnicodeCmap,
+};
+use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect as PdfRect, Ref, Str, TextStr};
+use skrifa::{
+    instance::{LocationRef, Size as SkSize},
+    metrics::GlyphMetrics,
+    raw::FontRef,
+    MetadataProvider,
+};
 
 use veusz_paint_core::{
     Affine, Color, Fill, FillRule, Paint, Path, PathVerb, Scene, SceneOp, Stroke, TextLayout,
@@ -88,14 +99,35 @@ struct PdfEmitter {
     states: Vec<GraphicsState>,
     images: Vec<EmbeddedImage>, // collected during run, written at finish
     text_engine: Option<veusz_paint_text::TextEngine>,
-    /// Glyph-outline deduplication cache: maps a hash of the outline path
-    /// to a Form XObject slot. The first time we see a glyph we record
-    /// its outline once as a Form XObject; subsequent occurrences emit
-    /// `q transform Do Q` referencing the cached XObject. Drops PDF size
-    /// significantly on text-heavy pages — typical axis labels share
-    /// many glyphs.
+    /// Glyph-outline deduplication cache (kept for future toggling — see
+    /// docs comment on `emit_text`; not used in the CIDFont path).
+    #[allow(dead_code)]
     glyph_xobjects: std::collections::HashMap<u64, usize>,
-    glyph_streams: Vec<Vec<u8>>, // index = slot, content = serialized fill-path stream
+    #[allow(dead_code)]
+    glyph_streams: Vec<Vec<u8>>,
+    /// Per-font tracker: each unique font (keyed by font_id from
+    /// veusz_paint_text) collects the original GIDs used in this PDF + a
+    /// remapper to subset-local CIDs at finish time. The actual PDF
+    /// objects (Type0Font, CidFont, FontDescriptor, FontFile2) are
+    /// emitted in `finish` once we know the full glyph set.
+    fonts: HashMap<u64, EmbeddedFont>,
+    /// Stable ordering for fonts as we discover them — drives the
+    /// `/F0`, `/F1`, ... names in the resources dict + page content stream.
+    font_order: Vec<u64>,
+}
+
+struct EmbeddedFont {
+    font_data: Arc<Vec<u8>>,
+    font_index: u32,
+    remapper: subsetter::GlyphRemapper,
+    /// For each ORIGINAL gid we've seen, the advance width in 1/1000 em
+    /// (PDF's standard CID width unit).
+    widths: HashMap<u16, f32>,
+    /// ORIGINAL gid -> Unicode codepoints seen for that glyph, for the
+    /// ToUnicode CMap.
+    glyph_to_unicode: HashMap<u16, Vec<char>>,
+    /// 0-based index into `font_order`; matches the `/F{i}` resource name.
+    pdf_index: usize,
 }
 
 struct EmbeddedImage {
@@ -151,6 +183,8 @@ impl PdfEmitter {
             text_engine: None,
             glyph_xobjects: std::collections::HashMap::new(),
             glyph_streams: Vec::new(),
+            fonts: HashMap::new(),
+            font_order: Vec::new(),
         }
     }
 
@@ -308,33 +342,144 @@ impl PdfEmitter {
     }
 
     fn emit_text(&mut self, layout: &TextLayout, x: f64, y: f64) {
-        // Real text via Parley + skrifa: glyphs as filled paths in PDF.
+        // Type 0 CIDFont embedding. Two steps:
+        //   1. Lay out the run via parley to get (font, GID, position) tuples.
+        //   2. Record the GIDs in our per-font `EmbeddedFont` tracker;
+        //      emit `BT /Fn size Tf ... Tj ET` ops using the
+        //      subset-local CIDs allocated by the remapper.
+        // Steps 3+ (subset the font; emit FontFile2 + CidFont + Type0Font
+        // + ToUnicode CMap; add to page resources) happen in `finish()`.
         //
-        // The right answer for text-heavy pages is Type 0 CIDFont
-        // embedding: glyphs go in once via a subsetted CIDFontType2,
-        // text becomes `Tj` operators with 2-byte CIDs, and PDFs are
-        // ~5x smaller on long text runs. The `subsetter` crate (Typst's
-        // OpenType subsetter) is the right tool; the wrapping work is
-        // ~200-400 lines of PDF spec compliance (font dict + CIDSystemInfo
-        // + CIDToGIDMap + ToUnicode CMap + FontDescriptor with metrics).
-        // Tracked as a phase-5 follow-up; current implementation is
-        // path-based for portability.
+        // Fonts the `subsetter` crate can't handle (CFF2, oddly-shaped
+        // OpenType variants) fall back to the path-based emission per
+        // run — we check up-front via subsetter::subset on the empty
+        // remapper and demote to paths if that probe fails.
         //
-        // A Form-XObject glyph-dedup attempt is scaffolded in this file
-        // (hash_path, glyph_xobjects, glyph_streams) but DISABLED — the
-        // smoke corpus came in 22% LARGER because per-XObject dict
-        // overhead exceeds the savings on Veusz's short text runs. The
-        // CIDFont path is the right win, not deduplication of inline
-        // path emissions.
+        // PDFs from this path are dramatically smaller than the path-per-
+        // glyph approach for text-heavy documents using standard fonts.
         if self.text_engine.is_none() {
             self.text_engine = Some(veusz_paint_text::TextEngine::new());
         }
-        let glyphs = self.text_engine.as_ref().unwrap()
-            .layout_to_glyph_paths(layout, (x, y));
-        if glyphs.is_empty() {
+        let runs = self.text_engine.as_ref().unwrap()
+            .layout_glyph_runs(layout, (x, y));
+        if runs.is_empty() {
             self.emit_text_placeholder(layout, x, y);
             return;
         }
+        // Pre-populate codepoint mapping for ToUnicode: walk the source
+        // text in parallel with glyphs. This is approximate for non-Latin
+        // (one Unicode codepoint -> N glyphs) but covers Latin / digits
+        // exactly, which is what scientific axis labels need.
+        let mut text_iter = layout.text.chars();
+
+        self.content.save_state();
+        self.content.set_fill_rgb(
+            layout.style.color.r, layout.style.color.g, layout.style.color.b);
+
+        for run in runs {
+            // If we haven't seen this font yet, probe whether subsetter
+            // can handle it at all. Subsetter doesn't support CFF2 or
+            // certain OpenType variants; fall back to path-based for
+            // this run rather than failing the whole PDF on a finish-
+            // time subset error.
+            if !self.fonts.contains_key(&run.font_id)
+               && !subsetter_can_handle(&run.font_data, run.font_index)
+            {
+                self.emit_text_run_as_paths(layout, &run);
+                continue;
+            }
+            let pdf_idx = self.intern_font(&run);
+            let font_size_pt = run.font_size_px as f32; // size at 96 DPI in pt
+            // Begin text object. PDF text-space defaults to identity
+            // matrix; we set it explicitly so positions match the rest
+            // of the scene-space (y-down) coordinate convention. The
+            // y-flip (1, 0, 0, -1) is needed because PDF text grows up
+            // by default — combined with the page's outer `1 0 0 -1 0 H`
+            // CTM flip this leaves glyphs upright.
+            self.content.begin_text();
+            self.content.set_font(
+                Name(format!("F{}", pdf_idx).as_bytes()),
+                font_size_pt,
+            );
+
+            for g in &run.glyphs {
+                let original_gid = g.id;
+                let new_cid = self.fonts
+                    .get_mut(&run.font_id)
+                    .expect("intern_font must have created it")
+                    .remapper.remap(original_gid);
+                // Record advance + ToUnicode codepoint.
+                let cp = g.codepoint.or_else(|| text_iter.next());
+                let font = self.fonts.get_mut(&run.font_id).unwrap();
+                // Advance width in 1/1000 em (PDF's CID width unit).
+                // Convert from scene-space advance (which is in user-space
+                // px-at-font-size) to em: advance_em = advance_px / size_px.
+                if font.widths.get(&original_gid).is_none() {
+                    let em = if g.advance > 0.0 {
+                        g.advance / run.font_size_px
+                    } else {
+                        0.0
+                    };
+                    font.widths.insert(original_gid, em * 1000.0);
+                }
+                if let Some(c) = cp {
+                    font.glyph_to_unicode.entry(original_gid)
+                        .or_insert_with(Vec::new)
+                        .push(c);
+                }
+
+                // Position via text matrix Tm: scene-space (x, y) maps
+                // through the page CTM's y-flip already, so we set Tm
+                // with the standard 1 0 0 -1 ... y-flip in TEXT space
+                // and put origin at (g.x, g.y). Each glyph gets its
+                // own Tm (cheap) so we don't accumulate position errors.
+                self.content.set_text_matrix([
+                    1.0, 0.0, 0.0, -1.0,
+                    g.x as f32, g.y as f32,
+                ]);
+                // Emit a single hex-encoded CID as a string operator.
+                let cid_bytes = [(new_cid >> 8) as u8, (new_cid & 0xff) as u8];
+                self.content.show(Str(&cid_bytes));
+            }
+            self.content.end_text();
+        }
+        self.content.restore_state();
+
+        // Suppress unused-field warnings on the dedup-cache fields kept
+        // for the future enabling path. The hash function is exercised
+        // in tests below.
+        let _ = &self.glyph_xobjects;
+        let _ = &self.glyph_streams;
+    }
+
+    /// Look up or create the tracker entry for a font we've just
+    /// encountered in a glyph run. Returns the 0-based PDF font index
+    /// (`/F{n}` in the resources dict).
+    fn intern_font(&mut self, run: &veusz_paint_text::LaidOutGlyphRun) -> usize {
+        if let Some(f) = self.fonts.get(&run.font_id) {
+            return f.pdf_index;
+        }
+        let pdf_index = self.font_order.len();
+        self.font_order.push(run.font_id);
+        self.fonts.insert(run.font_id, EmbeddedFont {
+            font_data: run.font_data.clone(),
+            font_index: run.font_index,
+            remapper: subsetter::GlyphRemapper::new(),
+            widths: HashMap::new(),
+            glyph_to_unicode: HashMap::new(),
+            pdf_index,
+        });
+        pdf_index
+    }
+
+    /// Path-based fallback for fonts the `subsetter` crate can't handle.
+    /// Same output as the old pre-CIDFont code: per-glyph save / cm /
+    /// fill-path / restore inside an outer save_state.
+    fn emit_text_run_as_paths(&mut self, layout: &TextLayout,
+                              run: &veusz_paint_text::LaidOutGlyphRun) {
+        let glyphs = self.text_engine.as_ref().unwrap()
+            .layout_to_glyph_paths(layout, run.baseline);
+        if glyphs.is_empty() { return; }
         self.content.save_state();
         self.content.set_fill_rgb(
             layout.style.color.r, layout.style.color.g, layout.style.color.b);
@@ -350,12 +495,6 @@ impl PdfEmitter {
             self.content.restore_state();
         }
         self.content.restore_state();
-
-        // Suppress unused-field warnings on the dedup-cache fields kept
-        // for the future enabling path. The hash function is exercised
-        // in tests below.
-        let _ = &self.glyph_xobjects;
-        let _ = &self.glyph_streams;
     }
 
     fn emit_text_placeholder(&mut self, layout: &TextLayout, x: f64, y: f64) {
@@ -394,6 +533,24 @@ impl PdfEmitter {
         let glyph_refs: Vec<Ref> =
             (0..self.glyph_streams.len()).map(|_| alloc()).collect();
 
+        // Pre-allocate font refs: each embedded font needs five object
+        // refs — Type0 font, CidFont descendant, FontDescriptor,
+        // FontFile2, ToUnicode CMap.
+        struct FontRefs {
+            type0: Ref,
+            cid: Ref,
+            descriptor: Ref,
+            file2: Ref,
+            tounicode: Ref,
+        }
+        let font_refs: Vec<FontRefs> = self.font_order.iter().map(|_| FontRefs {
+            type0: alloc(),
+            cid: alloc(),
+            descriptor: alloc(),
+            file2: alloc(),
+            tounicode: alloc(),
+        }).collect();
+
         pdf.catalog(catalog_id).pages(page_tree_id);
         pdf.pages(page_tree_id).count(1).kids([page_id]);
 
@@ -402,17 +559,28 @@ impl PdfEmitter {
             .media_box(PdfRect::new(0.0, 0.0, self.width as f32, self.height as f32))
             .contents(content_id);
 
-        // Page resources: image XObjects + glyph Form XObjects.
-        if !self.images.is_empty() || !glyph_refs.is_empty() {
+        // Page resources: image XObjects, glyph Form XObjects, fonts.
+        let has_xobjs = !self.images.is_empty() || !glyph_refs.is_empty();
+        let has_fonts = !font_refs.is_empty();
+        if has_xobjs || has_fonts {
             let mut resources = page.resources();
-            let mut x_objects = resources.x_objects();
-            for (i, (img_ref, _)) in image_refs.iter().enumerate() {
-                x_objects.pair(Name(format!("Im{}", i).as_bytes()), *img_ref);
+            if has_xobjs {
+                let mut x_objects = resources.x_objects();
+                for (i, (img_ref, _)) in image_refs.iter().enumerate() {
+                    x_objects.pair(Name(format!("Im{}", i).as_bytes()), *img_ref);
+                }
+                for (i, gref) in glyph_refs.iter().enumerate() {
+                    x_objects.pair(Name(format!("G{}", i).as_bytes()), *gref);
+                }
+                x_objects.finish();
             }
-            for (i, gref) in glyph_refs.iter().enumerate() {
-                x_objects.pair(Name(format!("G{}", i).as_bytes()), *gref);
+            if has_fonts {
+                let mut fonts = resources.fonts();
+                for (i, fr) in font_refs.iter().enumerate() {
+                    fonts.pair(Name(format!("F{}", i).as_bytes()), fr.type0);
+                }
+                fonts.finish();
             }
-            x_objects.finish();
             resources.finish();
         }
         page.finish();
@@ -467,6 +635,103 @@ impl PdfEmitter {
             x.bbox(bbox);
             x.filter(Filter::FlateDecode);
             x.finish();
+        }
+
+        // Type 0 CIDFont objects — one per font.
+        for (i, font_id) in self.font_order.iter().enumerate() {
+            let entry = &self.fonts[font_id];
+            let fr = &font_refs[i];
+            let info = SystemInfo {
+                registry: Str(b"Adobe"),
+                ordering: Str(b"Identity"),
+                supplement: 0,
+            };
+
+            // Subset the font down to the glyphs used. subsetter handles
+            // both TrueType and CFF inside the OpenType wrapper.
+            let subset_bytes = subsetter::subset(
+                &entry.font_data, entry.font_index, &entry.remapper,
+            ).map_err(|e| format!("font subset failed: {e}"))?;
+            let subset_compressed = compress(&subset_bytes);
+
+            // Parse the subsetted font to read metrics for the FontDescriptor.
+            // skrifa's MetadataProvider gives us bbox + flags.
+            let font_metrics = read_font_metrics_for_descriptor(&entry.font_data, entry.font_index);
+
+            // FontFile2 stream — embedded TrueType outline data.
+            let mut ff = pdf.stream(fr.file2, &subset_compressed);
+            ff.pair(Name(b"Length1"), subset_bytes.len() as i32);
+            ff.filter(Filter::FlateDecode);
+            ff.finish();
+
+            // FontDescriptor.
+            let mut fd = pdf.font_descriptor(fr.descriptor);
+            fd.name(Name(format!("Subset{}+Embedded", subset_tag_for(i)).as_bytes()));
+            fd.flags(font_metrics.flags);
+            fd.bbox(font_metrics.bbox);
+            fd.italic_angle(font_metrics.italic_angle);
+            fd.ascent(font_metrics.ascent);
+            fd.descent(font_metrics.descent);
+            fd.cap_height(font_metrics.cap_height);
+            fd.stem_v(font_metrics.stem_v);
+            fd.font_file2(fr.file2);
+            fd.finish();
+
+            // CidFont (Type2 = TrueType-based).
+            //
+            // Build the widths array, keyed by NEW (subset-local) CID.
+            // `entry.widths` is keyed by ORIGINAL gid. We walk the
+            // remapper's old-gid iteration order which gives us new CIDs
+            // in monotonic order, then look up the per-old-gid width.
+            let mut cid = pdf.cid_font(fr.cid);
+            cid.subtype(CidFontType::Type2);
+            cid.base_font(Name(format!("Subset{}+Embedded", subset_tag_for(i)).as_bytes()));
+            cid.system_info(info);
+            cid.font_descriptor(fr.descriptor);
+            cid.cid_to_gid_map_predefined(Name(b"Identity"));
+            // Widths: emit a single contiguous run starting at CID 0.
+            let n_gids = entry.remapper.num_gids();
+            let mut widths_iter: Vec<f32> = Vec::with_capacity(n_gids as usize);
+            // Iterate over the remapper's old gids in mapping order — the
+            // first item is .notdef (CID 0 in the subset).
+            let mut all_widths_by_new_cid: Vec<f32> = vec![0.0; n_gids as usize];
+            for old_gid in 0..=u16::MAX {
+                if let Some(new_cid) = entry.remapper.get(old_gid) {
+                    let w = *entry.widths.get(&old_gid).unwrap_or(&0.0);
+                    all_widths_by_new_cid[new_cid as usize] = w;
+                }
+            }
+            widths_iter.extend(all_widths_by_new_cid.iter().copied());
+            {
+                let mut w = cid.widths();
+                w.consecutive(0_u16, widths_iter.iter().copied());
+                w.finish();
+            }
+            cid.finish();
+
+            // Type 0 font.
+            let mut t0 = pdf.type0_font(fr.type0);
+            t0.base_font(Name(format!("Subset{}+Embedded", subset_tag_for(i)).as_bytes()));
+            t0.encoding_predefined(Name(b"Identity-H"));
+            t0.descendant_font(fr.cid);
+            t0.to_unicode(fr.tounicode);
+            t0.finish();
+
+            // ToUnicode CMap.
+            let mut cmap_builder: UnicodeCmap = UnicodeCmap::new(
+                Name(b"Custom"), info,
+            );
+            for old_gid in 0..=u16::MAX {
+                if let Some(new_cid) = entry.remapper.get(old_gid) {
+                    if let Some(chars) = entry.glyph_to_unicode.get(&old_gid) {
+                        if !chars.is_empty() {
+                            cmap_builder.pair_with_multiple(new_cid, chars.iter().copied());
+                        }
+                    }
+                }
+            }
+            let cmap_bytes = cmap_builder.finish();
+            pdf.cmap(fr.tounicode, cmap_bytes.as_slice());
         }
 
         pdf.document_info(alloc())
@@ -549,6 +814,85 @@ fn primary_color(f: &Fill) -> Color {
         Fill::Linear(g) => g.stops.first().map(|s| s.color).unwrap_or(Color::BLACK),
         Fill::Radial(g) => g.stops.first().map(|s| s.color).unwrap_or(Color::BLACK),
     }
+}
+
+struct FontMetricsForDescriptor {
+    flags: FontFlags,
+    bbox: PdfRect,
+    italic_angle: f32,
+    ascent: f32,
+    descent: f32,
+    cap_height: f32,
+    stem_v: f32,
+}
+
+/// Read enough OpenType metrics off the original font bytes for the PDF
+/// FontDescriptor. Skrifa gives us everything we need.
+/// Cheap probe: try subsetting the font with a minimal remapper (just
+/// .notdef). If subsetter rejects the font (CFF2, unknown table layout),
+/// the caller falls back to path-based emission for that run.
+fn subsetter_can_handle(data: &[u8], index: u32) -> bool {
+    let probe = subsetter::GlyphRemapper::new(); // just .notdef
+    subsetter::subset(data, index, &probe).is_ok()
+}
+
+fn read_font_metrics_for_descriptor(data: &[u8], index: u32) -> FontMetricsForDescriptor {
+    // Defaults that won't crash an Acrobat-style reader if we can't parse.
+    let mut out = FontMetricsForDescriptor {
+        flags: FontFlags::NON_SYMBOLIC,
+        bbox: PdfRect::new(-100.0, -200.0, 1100.0, 900.0),
+        italic_angle: 0.0,
+        ascent: 800.0,
+        descent: -200.0,
+        cap_height: 700.0,
+        stem_v: 80.0,
+    };
+    let font = match FontRef::from_index(data, index) {
+        Ok(f) => f,
+        Err(_) => return out,
+    };
+    // PDF font descriptors want units in 1/1000 em. skrifa returns values
+    // already normalised to font units; we rescale to per-mille of em.
+    let m = font.metrics(SkSize::unscaled(), LocationRef::default());
+    let upem = m.units_per_em as f32;
+    if upem <= 0.0 { return out; }
+    let to_1000 = |v: f32| (v / upem) * 1000.0;
+    out.ascent = to_1000(m.ascent);
+    out.descent = to_1000(m.descent);
+    out.cap_height = m.cap_height.map(to_1000).unwrap_or(out.ascent);
+    if let Some(b) = m.bounds {
+        out.bbox = PdfRect::new(to_1000(b.x_min), to_1000(b.y_min),
+                                 to_1000(b.x_max), to_1000(b.y_max));
+    }
+    // Italic angle: skrifa exposes attributes().style as Style enum.
+    use skrifa::attribute::Style;
+    match font.attributes().style {
+        Style::Italic => {
+            out.italic_angle = -12.0;
+            out.flags |= FontFlags::ITALIC;
+        }
+        Style::Oblique(angle) => {
+            out.italic_angle = angle.unwrap_or(-12.0);
+            out.flags |= FontFlags::ITALIC;
+        }
+        Style::Normal => {}
+    }
+    out
+}
+
+/// Subset prefix for the BaseFont name in the PDF Type 0 dict.
+/// PDF convention requires a 6-uppercase-letter prefix followed by "+"
+/// to mark embedded subsets. We derive deterministically from the font
+/// index so the same input always produces the same output.
+fn subset_tag_for(i: usize) -> String {
+    let mut tag = String::with_capacity(6);
+    let mut v = (i as u32).wrapping_mul(2654435761);
+    for _ in 0..6 {
+        let c = (b'A' + (v % 26) as u8) as char;
+        tag.push(c);
+        v /= 26;
+    }
+    tag
 }
 
 fn compress(data: &[u8]) -> Vec<u8> {
