@@ -74,47 +74,52 @@ def create_painter(width: int, height: int, dpi: float = 96.0,
         shim._owned_image = image
         return shim
 
-    if name == "tiny-skia":
+    if name in ("tiny-skia", "vello"):
         try:
             from . import _paint_ext  # type: ignore
         except ImportError as exc:
             raise BackendError(
-                "tiny-skia backend requires the veusz.paint._paint_ext "
+                f"{name} backend requires the veusz.paint._paint_ext "
                 "Rust extension. Build with: "
-                "`cargo build -p veusz-paint-py --release` and copy the "
-                "resulting libveusz_paint_ext.so / lib_paint_ext.so to "
-                "veusz/paint/_paint_ext.abi3.so. See "
-                "docs/parallel-paint-backends-plan.md §7.4 for packaging."
+                "scripts/build_paint_ext.sh"
             ) from exc
+        if name not in _paint_ext.available_backends():
+            raise BackendError(
+                f"{name} backend not available in this build of "
+                f"veusz.paint._paint_ext (probe returned {_paint_ext.available_backends()!r}). "
+                "For vello, an installed wgpu adapter (Vulkan/Metal/DX12) is required."
+            )
         return TinySkiaSceneBackend(int(width), int(height),
                                     background=tuple(background),
+                                    backend_name=name,
                                     _ext=_paint_ext)
-
-    if name == "vello":
-        raise BackendError(
-            "vello backend lands in phase 3; see "
-            "docs/parallel-paint-backends-plan.md §8"
-        )
 
     raise BackendError(f"Unhandled backend {name!r}")  # unreachable
 
 
 class TinySkiaSceneBackend:
-    """Recording Painter that rasterises through tiny-skia on finish.
+    """Recording Painter that rasterises through a Rust backend on finish.
+
+    Despite the class name (kept for backwards compatibility with existing
+    imports), this is now backend-generic — it works for any backend the
+    Rust ``_paint_ext`` extension recognises (currently ``tiny-skia`` and
+    ``vello``). Pass ``backend_name`` at construction.
 
     Implements :class:`Painter` by delegating every op to an internal
     :class:`PythonSceneRecorder`, then on :meth:`finish` ships the recorded
-    scene to the ``_paint_ext`` extension and stores the PNG bytes.
+    scene to the extension and stores the PNG bytes.
     """
 
     def __init__(self, width: int, height: int,
                  background: tuple = (1.0, 1.0, 1.0, 1.0),
+                 backend_name: str = "tiny-skia",
                  _ext=None) -> None:
         from .scene_recorder import PythonSceneRecorder
         self._recorder = PythonSceneRecorder()
         self.width = int(width)
         self.height = int(height)
         self.background = tuple(background)
+        self.backend_name = backend_name
         self._ext = _ext
         self.png_bytes: Optional[bytes] = None
 
@@ -146,7 +151,8 @@ class TinySkiaSceneBackend:
             raise BackendError("backend extension was not bound at construction time")
         scene_json = self._recorder.to_json()
         self.png_bytes = self._ext.render_scene_to_png(
-            scene_json, self.width, self.height, self.background, "tiny-skia",
+            scene_json, self.width, self.height, self.background,
+            self.backend_name,
         )
 
     # convenience
