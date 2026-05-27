@@ -42,18 +42,21 @@ def wrap_qpainter(qpainter):
 
 def create_painter(width: int, height: int, dpi: float = 96.0,
                    backend: Optional[str] = None,
-                   qpainter=None):
+                   qpainter=None,
+                   background=(1.0, 1.0, 1.0, 1.0)):
     """Build a :class:`Painter` for the given output size.
 
     For the ``qt`` backend the caller may pass an existing ``qpainter`` to
     wrap; otherwise a fresh ``QImage`` is created and a :class:`QtPainter`
-    that paints onto it is returned. (Caller can pull the QImage off the
-    shim via :attr:`QtPainter._p.device()`.)
+    that paints onto it is returned.
 
-    The ``tiny-skia`` and ``vello`` backends are not implemented yet; this
-    function raises :class:`BackendError` for them until the Rust crates
-    land. Selecting them is intentionally non-fatal at import time so
-    callers can introspect ``active_backend()`` first.
+    For the ``tiny-skia`` backend a :class:`TinySkiaSceneBackend` is
+    returned. It records ops via :class:`PythonSceneRecorder` and flushes
+    them to the Rust extension on :meth:`Painter.finish` /
+    :meth:`TinySkiaSceneBackend.to_png`. PNG bytes are then available via
+    :attr:`TinySkiaSceneBackend.png_bytes`.
+
+    The ``vello`` backend still raises :class:`BackendError`.
     """
     name = active_backend(backend)
 
@@ -71,10 +74,90 @@ def create_painter(width: int, height: int, dpi: float = 96.0,
         shim._owned_image = image
         return shim
 
-    if name in ("tiny-skia", "vello"):
+    if name == "tiny-skia":
+        try:
+            from . import _paint_ext  # type: ignore
+        except ImportError as exc:
+            raise BackendError(
+                "tiny-skia backend requires the veusz.paint._paint_ext "
+                "Rust extension. Build with: "
+                "`cargo build -p veusz-paint-py --release` and copy the "
+                "resulting libveusz_paint_ext.so / lib_paint_ext.so to "
+                "veusz/paint/_paint_ext.abi3.so. See "
+                "docs/parallel-paint-backends-plan.md §7.4 for packaging."
+            ) from exc
+        return TinySkiaSceneBackend(int(width), int(height),
+                                    background=tuple(background),
+                                    _ext=_paint_ext)
+
+    if name == "vello":
         raise BackendError(
-            f"backend {name!r} is not yet implemented; see "
-            "docs/parallel-paint-backends-plan.md, phases 2 & 3"
+            "vello backend lands in phase 3; see "
+            "docs/parallel-paint-backends-plan.md §8"
         )
 
     raise BackendError(f"Unhandled backend {name!r}")  # unreachable
+
+
+class TinySkiaSceneBackend:
+    """Recording Painter that rasterises through tiny-skia on finish.
+
+    Implements :class:`Painter` by delegating every op to an internal
+    :class:`PythonSceneRecorder`, then on :meth:`finish` ships the recorded
+    scene to the ``_paint_ext`` extension and stores the PNG bytes.
+    """
+
+    def __init__(self, width: int, height: int,
+                 background: tuple = (1.0, 1.0, 1.0, 1.0),
+                 _ext=None) -> None:
+        from .scene_recorder import PythonSceneRecorder
+        self._recorder = PythonSceneRecorder()
+        self.width = int(width)
+        self.height = int(height)
+        self.background = tuple(background)
+        self._ext = _ext
+        self.png_bytes: Optional[bytes] = None
+
+    # Delegate every Painter op to the recorder.
+    def save(self): self._recorder.save()
+    def restore(self): self._recorder.restore()
+    def set_transform(self, m): self._recorder.set_transform(m)
+    def concat_transform(self, m): self._recorder.concat_transform(m)
+    def push_clip_rect(self, r): self._recorder.push_clip_rect(r)
+    def push_clip_path(self, p, rule=None):
+        from .protocol import FillRule
+        self._recorder.push_clip_path(p, rule if rule is not None else FillRule.NON_ZERO)
+    def pop_clip(self): self._recorder.pop_clip()
+    def set_paint(self, p): self._recorder.set_paint(p)
+    def set_blend_mode(self, m): self._recorder.set_blend_mode(m)
+    def set_quality(self, q): self._recorder.set_quality(q)
+    def stroke_path(self, p): self._recorder.stroke_path(p)
+    def fill_path(self, p, rule=None):
+        from .protocol import FillRule
+        self._recorder.fill_path(p, rule if rule is not None else FillRule.NON_ZERO)
+    def draw_image(self, img, dst, src=None): self._recorder.draw_image(img, dst, src)
+    def draw_text(self, layout, x, y): self._recorder.draw_text(layout, x, y)
+
+    def finish(self) -> None:
+        """Flush the recorded scene through Rust, populating
+        :attr:`png_bytes`. Safe to call multiple times — subsequent calls
+        re-render the same scene."""
+        if self._ext is None:
+            raise BackendError("backend extension was not bound at construction time")
+        scene_json = self._recorder.to_json()
+        self.png_bytes = self._ext.render_scene_to_png(
+            scene_json, self.width, self.height, self.background, "tiny-skia",
+        )
+
+    # convenience
+    def to_png(self) -> bytes:
+        if self.png_bytes is None:
+            self.finish()
+        return self.png_bytes  # type: ignore
+
+    @property
+    def op_count(self) -> int:
+        return self._recorder.op_count
+
+    def scene_json(self) -> bytes:
+        return self._recorder.to_json()

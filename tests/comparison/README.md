@@ -29,6 +29,24 @@ otherwise → red. The harness prints a one-line summary at end of run.
 python3 -m pytest tests/comparison/test_diff.py -v
 ```
 
+## Running the tiny-skia end-to-end tests
+
+Requires a one-time build of the Rust PyO3 extension:
+
+```sh
+scripts/build_paint_ext.sh              # produces veusz/paint/_paint_ext.abi3.so
+python3 -m pytest tests/comparison/test_python_tiny_skia.py -v
+```
+
+Once the extension is in place, the harness picks the backend up
+automatically:
+
+```sh
+VEUSZ_PAINT_BACKEND=tiny-skia \
+    python tests/comparison/veusz_render_compare.py --manifest --smoke \
+        --backends qt,tiny-skia --out /tmp/cmp
+```
+
 ## How to run the dynamic-pass audit (spike S1)
 
 Python-side (no rebuild needed):

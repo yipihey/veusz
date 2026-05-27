@@ -1,0 +1,18 @@
+[package]
+name = "veusz-paint-py"
+version = "0.0.0"
+edition = "2021"
+description = "PyO3 bridge: exposes the Veusz paint backends (tiny-skia, eventually Vello) to Python as `veusz_paint_ext`. Small FFI surface: ship a serialized Scene from Python, get back PNG bytes."
+
+[lib]
+# Imported as `veusz.paint._paint_ext`. The dot in a Python sub-package path
+# is implicit from the .so's install location; the lib name itself is the
+# leaf module name.
+name = "_paint_ext"
+crate-type = ["cdylib"]
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-tiny-skia = { path = "../veusz-paint-tiny-skia" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+serde_json = "1"
