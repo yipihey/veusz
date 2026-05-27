@@ -1,9 +1,9 @@
 // Tauri shell library — split out so unit tests can target it without
 // linking the binary entrypoint.
 
-mod ipc;
+pub mod ipc;
 
-use tauri::{Manager, generate_handler};
+use tauri::{generate_handler, Manager, RunEvent};
 
 #[tauri::command]
 async fn rpc(
@@ -27,6 +27,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(generate_handler![rpc])
-        .run(tauri::generate_context!())
-        .expect("Tauri app failed to start");
+        .build(tauri::generate_context!())
+        .expect("Tauri app failed to build")
+        .run(|app, event| {
+            // Graceful daemon shutdown on app exit. Without this the
+            // OS reaps veuszd, which works but leaves the UDS file
+            // and skips the daemon's tidy-up logging.
+            if let RunEvent::Exit = event {
+                let bridge = app.state::<ipc::Bridge>();
+                tauri::async_runtime::block_on(bridge.shutdown());
+            }
+        });
 }

@@ -2,5 +2,5 @@
 resolver = "2"
 members = [
     "crates/veusz-rpc",
-    # "src-tauri",  # Tauri shell — re-enable once webview deps are configured
+    "src-tauri",
 ]

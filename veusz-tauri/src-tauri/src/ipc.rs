@@ -31,13 +31,22 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub fn spawn(handle: &tauri::AppHandle) -> Result<Self, BridgeError> {
-        let socket = pick_socket_path(handle);
-        let veuszd = resolve_veuszd(handle);
-        // Spawning is async; we block on the runtime Tauri set up.
-        let sidecar = tauri::async_runtime::block_on(async move {
-            veusz_rpc::Sidecar::spawn(&veuszd, &socket, true, true).await
-        })?;
+    /// Production spawn — blocks on the underlying async helper from
+    /// the Tauri setup hook (which is sync). The `AppHandle` is
+    /// retained for later (data-dir lookup, etc.) even though we
+    /// don't use it yet.
+    pub fn spawn<R: tauri::Runtime>(_handle: &tauri::AppHandle<R>) -> Result<Self, BridgeError> {
+        tauri::async_runtime::block_on(Self::spawn_with(
+            default_veuszd_path(),
+            default_socket_path(),
+        ))
+    }
+
+    /// Spawn with explicit program + socket path. Async so test code
+    /// running inside its own tokio runtime can `.await` it directly
+    /// (production wraps this in `block_on` from the Tauri setup hook).
+    pub async fn spawn_with(program: PathBuf, socket: PathBuf) -> Result<Self, BridgeError> {
+        let sidecar = veusz_rpc::Sidecar::spawn(&program, &socket, true, true).await?;
         Ok(Self {
             sidecar: Mutex::new(Some(sidecar)),
         })
@@ -61,15 +70,14 @@ impl Bridge {
     }
 }
 
-fn pick_socket_path(_handle: &tauri::AppHandle) -> PathBuf {
-    let tmp = std::env::temp_dir();
-    tmp.join(format!("veuszd-{}.sock", std::process::id()))
+fn default_socket_path() -> PathBuf {
+    std::env::temp_dir().join(format!("veuszd-{}.sock", std::process::id()))
 }
 
-fn resolve_veuszd(_handle: &tauri::AppHandle) -> PathBuf {
+fn default_veuszd_path() -> PathBuf {
     // Bundled sidecar lives next to the app binary on every OS once
-    // `tauri.conf.json::bundle.externalBin` is wired. During `tauri
-    // dev` we fall back to `veuszd` on PATH (the dev-installed Python
-    // venv).
+    // `tauri.conf.json::bundle.externalBin` is wired (Phase 5).
+    // During `tauri dev` we fall back to `veuszd` on PATH (the
+    // dev-installed Python venv).
     PathBuf::from("veuszd")
 }
