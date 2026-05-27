@@ -98,6 +98,7 @@ impl VelloRenderer {
             .await
             .map_err(|e| format!("request_device: {e}"))?;
 
+        // Enable all AA modes we can — render() picks one per call.
         let renderer = Renderer::new(
             &device,
             RendererOptions {
@@ -105,8 +106,8 @@ impl VelloRenderer {
                 use_cpu: false,
                 antialiasing_support: vello::AaSupport {
                     area: true,
-                    msaa8: false,
-                    msaa16: false,
+                    msaa8: true,
+                    msaa16: true,
                 },
                 num_init_threads: None,
             },
@@ -156,7 +157,11 @@ impl VelloRenderer {
                 background.2 as f64, background.3 as f64),
             width,
             height,
-            antialiasing_method: AaConfig::Area,
+            // MSAA16 yields the sharpest edges in vello 0.3 and is the
+            // closest match to tiny-skia's analytic-coverage output. Area
+            // mode (the default) is faster but visibly softer at small
+            // render sizes, which scientific plots routinely produce.
+            antialiasing_method: AaConfig::Msaa16,
         };
 
         self.renderer
