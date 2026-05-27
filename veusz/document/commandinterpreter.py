@@ -55,26 +55,33 @@ from .. import utils
 class CommandInterpreter:
     """Class for executing commands in the Veusz command line language."""
 
-    def __init__(self, document):
-        """ Initialise object with the document it interfaces."""
+    def __init__(self, document, globals_dict=None):
+        """ Initialise object with the document it interfaces.
+
+        If globals_dict is given, the interpreter executes user code
+        against that dict directly (used by the in-process embed mode
+        to share the caller's __main__ namespace). Built-in Veusz
+        commands are inserted with setdefault semantics so caller
+        bindings are not overwritten.
+        """
         self.document = document
 
         # set up interface to document
         self.interface = CommandInterface(document)
 
-        # initialise environment (make a copy from inital globals)
-        self.globals = _globals.copy()
+        # initialise environment
+        shared = globals_dict is not None
+        self.globals = globals_dict if shared else _globals.copy()
 
         # save the stdout & stderr
         self.write_stdout = sys.stdout
         self.write_stderr = sys.stderr
         self.read_stdin = sys.stdin
 
-        # import numpy into the environment
-        exec("from numpy import *", self.globals)
-
-        # define root object
-        self.globals['Root'] = self.interface.Root
+        # import numpy into the environment (only for the private
+        # copy — don't pollute a shared namespace)
+        if not shared:
+            exec("from numpy import *", self.globals)
 
         # shortcut
         ifc = self.interface
@@ -89,7 +96,14 @@ class CommandInterpreter:
         self.cmds['GPL'] = self.GPL
         self.cmds['Load'] = self.Load
 
-        self.globals.update( self.cmds )
+        if shared:
+            # don't clobber names the host session already has
+            for k, v in self.cmds.items():
+                self.globals.setdefault(k, v)
+            self.globals.setdefault('Root', self.interface.Root)
+        else:
+            self.globals['Root'] = self.interface.Root
+            self.globals.update(self.cmds)
 
     def addCommand(self, name, command):
         """Add the given command to the list of available commands."""

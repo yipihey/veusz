@@ -19,3 +19,25 @@
 ##############################################################################
 
 """Main veusz module."""
+
+
+def show(**arrays):
+    """Open a Veusz GUI on the given numpy arrays.
+
+    Convenience entry point for in-process embedding — opens a full
+    Veusz MainWindow inside the calling Python interpreter, with the
+    GUI's Python console sharing the caller's ``__main__`` namespace.
+    See :mod:`veusz.embed_inprocess` for details.
+    """
+    from .embed_inprocess import show as _show
+    return _show(**arrays)
+
+
+def embed_app(globals_dict=None, name='Veusz', hidden=False):
+    """Open a Veusz MainWindow inside this Python process.
+
+    Lower-level companion to :func:`show` — does not load any data or
+    add default plots. See :mod:`veusz.embed_inprocess` for details.
+    """
+    from .embed_inprocess import embed_app as _embed_app
+    return _embed_app(globals_dict=globals_dict, name=name, hidden=hidden)

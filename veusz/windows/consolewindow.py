@@ -156,7 +156,7 @@ This window is a Python command line console and acts as a calculator.<br>
 class ConsoleWindow(qt.QDockWidget):
     """ A python-like qt console."""
 
-    def __init__(self, thedocument, *args):
+    def __init__(self, thedocument, *args, globals_dict=None):
         qt.QDockWidget.__init__(self, *args)
         self.setWindowTitle(_("Console - Veusz"))
         self.setObjectName("veuszconsolewindow")
@@ -169,8 +169,10 @@ class ConsoleWindow(qt.QDockWidget):
         vlayout.setContentsMargins(s,s,s,s)
         vlayout.setSpacing(s)
 
-        # start an interpreter instance to the document
-        self.interpreter = document.CommandInterpreter(thedocument)
+        # start an interpreter instance to the document; if globals_dict
+        # is given the console will share that namespace with the caller
+        self.interpreter = document.CommandInterpreter(
+            thedocument, globals_dict=globals_dict)
         self.document = thedocument
 
         # streams the output/input goes to/from
