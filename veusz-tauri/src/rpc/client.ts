@@ -45,6 +45,12 @@ export const rpc = {
       ),
     get: (paths: string[]) => call<Record<string, unknown>>('doc.get', { paths }),
     remove: (path: string) => call<{ ok: true; changeset: number }>('doc.remove', { path }),
+    undo: () =>
+      call<{ changeset: number; can_undo: boolean; can_redo: boolean }>('doc.undo'),
+    redo: () =>
+      call<{ changeset: number; can_undo: boolean; can_redo: boolean }>('doc.redo'),
+    canUndo: () =>
+      call<{ can_undo: boolean; can_redo: boolean }>('doc.can_undo'),
   },
 
   data: {

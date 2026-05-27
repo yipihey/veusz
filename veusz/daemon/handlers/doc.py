@@ -84,6 +84,26 @@ def register(ctx):
         ci = _ci(ctx)
         return {p: ci.Get(p) for p in paths}
 
+    def undo(**_):
+        if not ctx.document.canUndo():
+            raise RpcError(INVALID_PARAMS, 'nothing to undo')
+        ctx.document.undoOperation()
+        return {'changeset': ctx.document.changeset,
+                'can_undo': ctx.document.canUndo(),
+                'can_redo': ctx.document.canRedo()}
+
+    def redo(**_):
+        if not ctx.document.canRedo():
+            raise RpcError(INVALID_PARAMS, 'nothing to redo')
+        ctx.document.redoOperation()
+        return {'changeset': ctx.document.changeset,
+                'can_undo': ctx.document.canUndo(),
+                'can_redo': ctx.document.canRedo()}
+
+    def can_undo(**_):
+        return {'can_undo': ctx.document.canUndo(),
+                'can_redo': ctx.document.canRedo()}
+
     return {
         'doc.tree': tree,
         'doc.schema': schema,
@@ -93,4 +113,7 @@ def register(ctx):
         'doc.remove': remove,
         'doc.set': set_,
         'doc.get': get,
+        'doc.undo': undo,
+        'doc.redo': redo,
+        'doc.can_undo': can_undo,
     }
