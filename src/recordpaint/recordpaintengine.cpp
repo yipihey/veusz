@@ -128,6 +128,10 @@ namespace {
     if (g_scene_file) {
       g_scene_file->write(json.toUtf8());
       g_scene_file->write("\n");
+      // Explicit flush — the Python-side wrapper uses os.path.getsize()
+      // offsets to slice the per-render scene, so any buffered writes
+      // that aren't on disk yet make a slice appear empty.
+      g_scene_file->flush();
     }
   }
 
@@ -747,6 +751,38 @@ void RecordPaintEngine::drawImage(const QRectF& rectangle,
   if (traceEnabled())
     traceLine(QString("{\"op\":\"drawImage\",\"w\":%1,\"h\":%2}")
               .arg(image.width()).arg(image.height()));
+  if (sceneEnabled()) {
+    // veusz-paint-core::Image is straight-alpha RGBA8 row-major. Convert
+    // whatever QImage format we received to RGBA8888 and base64-encode
+    // the bytes so the JSON line stays single-line.
+    QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+    QByteArray raw(reinterpret_cast<const char*>(rgba.constBits()),
+                   int(rgba.sizeInBytes()));
+    QByteArray b64 = raw.toBase64();
+    int w = rgba.width(), h = rgba.height();
+    // Build pixels as a JSON array of ints — that's what veusz-paint-core's
+    // Image expects ({"width":..., "height":..., "pixels": [u8, u8, ...]}).
+    // Inlining the array as base64 isn't directly serde-compatible without
+    // changing the Rust side; instead we ship the byte stream as a comma-
+    // separated list. This is bulky but works without protocol changes.
+    QStringList px;
+    px.reserve(raw.size());
+    for (int i = 0; i < raw.size(); ++i)
+      px.append(QString::number(quint8(raw[i])));
+    sceneOp(QString(
+      "{\"DrawImage\":{\"image\":{\"width\":%1,\"height\":%2,\"pixels\":[%3]},"
+      "\"dst\":{\"x\":%4,\"y\":%5,\"w\":%6,\"h\":%7},"
+      "\"src\":%8}}")
+      .arg(w).arg(h).arg(px.join(","))
+      .arg(rectangle.x()).arg(rectangle.y())
+      .arg(rectangle.width()).arg(rectangle.height())
+      .arg(sr.width() > 0 && sr.height() > 0
+        ? QString("{\"x\":%1,\"y\":%2,\"w\":%3,\"h\":%4}")
+            .arg(sr.x()).arg(sr.y()).arg(sr.width()).arg(sr.height())
+        : QString("null"))
+    );
+    (void)b64;
+  }
 }
 
 void RecordPaintEngine::drawLines(const QLineF* lines, int lineCount)

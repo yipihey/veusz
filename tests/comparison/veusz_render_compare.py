@@ -122,6 +122,22 @@ def _ensure_veusz_registered() -> None:
     _VEUSZ_REGISTERED = True
 
 
+def _gc_settle() -> None:
+    """Force a full GC cycle. The harness's render order (qt -> tiny-skia
+    -> vello, repeated per .vsz) interacts with the C++ recordpaint trace
+    file via offset semantics: a previous render's QPainter::end() may not
+    have fired its Restore op into the file by the time the next render
+    snapshots the file offset, leading to a slice that's structurally
+    unbalanced. Forcing GC at render boundaries eliminates this race."""
+    import gc
+    # Two passes — first one frees lingering Python wrappers, second one
+    # any cyclic refs they revealed. The QPainter -> RecordPaintDevice
+    # -> RecordPaintEngine graph has occasional cycles via the engine's
+    # device backpointer.
+    gc.collect()
+    gc.collect()
+
+
 def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
                keep_scene: bool = False) -> RenderResult:
     """Render a single ``.vsz`` through ``backend``, write PNG and PDF.
@@ -143,6 +159,7 @@ def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
     os.environ["VEUSZ_PAINT_BACKEND"] = backend
     result = RenderResult(backend=backend, vsz=vsz)
     t0 = time.time()
+    _gc_settle()  # see _gc_settle's docstring
     try:
         if backend == "qt":
             _render_qt(vsz, out_dir, dpi, result)
@@ -153,6 +170,7 @@ def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
+        _gc_settle()
         result.elapsed_s = time.time() - t0
     return result
 
