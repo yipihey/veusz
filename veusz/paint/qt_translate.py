@@ -106,9 +106,15 @@ def qtransform_to_affine(t) -> Affine:
     )
 
 
+def _enum_int(v) -> int:
+    """Coerce a PyQt6 enum member or a raw int to int. PyQt6 returns enum
+    members with `.value`; PyQt5 / mocks return raw ints; we accept both."""
+    return int(v.value) if hasattr(v, "value") else int(v)
+
+
 def qpen_to_stroke(pen) -> Optional[Stroke]:
     """``QPen`` -> :class:`Stroke`, or ``None`` if the pen is NoPen."""
-    style = int(pen.style())
+    style = _enum_int(pen.style())
     if style == QT_PEN_NO_PEN:
         return None
     dash = None
@@ -124,15 +130,15 @@ def qpen_to_stroke(pen) -> Optional[Stroke]:
         color=qcolor_to_color(pen.color()),
         width=float(pen.widthF()),
         dash=dash,
-        cap=_QT_CAP_TO_LINECAP.get(int(pen.capStyle()), LineCap.BUTT),
-        join=_QT_JOIN_TO_LINEJOIN.get(int(pen.joinStyle()), LineJoin.MITER),
+        cap=_QT_CAP_TO_LINECAP.get(_enum_int(pen.capStyle()), LineCap.BUTT),
+        join=_QT_JOIN_TO_LINEJOIN.get(_enum_int(pen.joinStyle()), LineJoin.MITER),
         miter_limit=float(pen.miterLimit()),
     )
 
 
 def qbrush_to_fill(brush) -> Optional[Fill]:
     """``QBrush`` -> :class:`Fill`, or ``None`` for NoBrush."""
-    style = int(brush.style())
+    style = _enum_int(brush.style())
     if style == QT_BRUSH_NO_BRUSH:
         return None
     if style == QT_BRUSH_LINEAR_GRADIENT:
@@ -175,7 +181,7 @@ def qpath_to_path(qpath) -> Path:
     i = 0
     while i < n:
         el = qpath.elementAt(i)
-        t = int(el.type)
+        t = _enum_int(el.type)
         if t == PATH_MOVE:
             p.move_to(float(el.x), float(el.y)); i += 1
         elif t == PATH_LINE:
@@ -212,7 +218,7 @@ def qimage_to_image(qimg) -> Image:
     ARGB32_Premultiplied, or RGBA8888. The function normalises to straight
     alpha RGBA8.
     """
-    fmt = int(qimg.format())
+    fmt = _enum_int(qimg.format())
     w = qimg.width()
     h = qimg.height()
     if fmt not in (QIMG_FMT_ARGB32, QIMG_FMT_ARGB32_PREMULTIPLIED, QIMG_FMT_RGBA8888):
@@ -249,12 +255,12 @@ def qimage_to_image(qimg) -> Image:
     return Image(width=w, height=h, pixels=bytes(out))
 
 
-def composition_mode_to_blend(mode_int: int) -> BlendMode:
+def composition_mode_to_blend(mode_int) -> BlendMode:
     """Qt's CompositionMode enum int -> :class:`BlendMode`.
 
     Falls back to ``SOURCE_OVER`` for modes outside the audited set.
     """
-    return _COMP_MAP.get(int(mode_int), BlendMode.SOURCE_OVER)
+    return _COMP_MAP.get(_enum_int(mode_int), BlendMode.SOURCE_OVER)
 
 
 def render_hints_to_quality(hints_int: int, *,
@@ -300,8 +306,8 @@ QT_FILL_RULE_ODD_EVEN = 0
 QT_FILL_RULE_WINDING = 1
 
 
-def qfill_rule_to_fill_rule(rule_int: int) -> FillRule:
-    return FillRule.EVEN_ODD if int(rule_int) == QT_FILL_RULE_ODD_EVEN else FillRule.NON_ZERO
+def qfill_rule_to_fill_rule(rule_int) -> FillRule:
+    return FillRule.EVEN_ODD if _enum_int(rule_int) == QT_FILL_RULE_ODD_EVEN else FillRule.NON_ZERO
 
 
 # Self-export of the FillRule for callers that don't want to import twice.

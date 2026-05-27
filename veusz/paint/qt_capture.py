@@ -75,6 +75,45 @@ def make_scene_capturing_painter(target_device, qt_module=None):
             # The current transform, tracked manually so concat ops give us
             # an exact :class:`Affine` without re-reading QPainter state.
             self._cur_transform = Affine.identity()
+            # PainterRoot-style fields used by veusz widgets (docColor /
+            # docColorAuto). populated by updateMetaData.
+            self.helper = None
+            self.document = None
+            self.colors = None
+            self.scaling = 1.0
+            self.pixperpt = 1.0
+            self.dpi = 96.0
+            self.pagesize = (0.0, 0.0)
+            self.maxdim = 0.0
+            self.textrects = None
+
+        # PainterRoot-style methods PaintHelper calls on directpaint. We
+        # don't need to record these — they're caller-side state used by
+        # widgets to resolve colours and metrics.
+        def updateMetaData(self, helper):
+            self.helper = helper
+            self.document = helper.document
+            try:
+                self.colors = self.document.evaluate.colors
+            except AttributeError:
+                self.colors = None
+            self.scaling = helper.scaling
+            self.pixperpt = helper.pixperpt
+            self.dpi = helper.dpi[1]
+            self.pagesize = helper.pagesize
+            self.maxdim = max(*self.pagesize) if self.pagesize else 0.0
+            self.textrects = helper.textrects
+
+        def docColor(self, name):
+            return self.colors.get(name) if self.colors else None
+
+        def docColorAuto(self, index):
+            if self.colors is None:
+                return None
+            return self.colors.getIndex(index + 1)
+
+        def __enter__(self): pass
+        def __exit__(self, *_): pass
 
         # ---- intercept the active paint state --------------------------
 
@@ -92,7 +131,11 @@ def make_scene_capturing_painter(target_device, qt_module=None):
         def setRenderHint(self, hint, on=True):
             ret = super().setRenderHint(hint, on)
             # Antialiasing is the one we care about for Paint.anti_alias.
-            if int(hint) == int(qt.QPainter.RenderHint.Antialiasing):
+            # QPainter.RenderHint is a Qt flag enum — convert via .value
+            # because int(<flag>) isn't always valid in PyQt6.
+            aa_bit = int(qt.QPainter.RenderHint.Antialiasing.value)
+            hint_int = int(hint.value) if hasattr(hint, "value") else int(hint)
+            if hint_int & aa_bit:
                 self._cur_aa = bool(on)
             return ret
 
@@ -157,7 +200,7 @@ def make_scene_capturing_painter(target_device, qt_module=None):
         def setClipPath(self, *args):
             qpath = args[0]
             p = qtt.qpath_to_path(qpath)
-            rule = qtt.qfill_rule_to_fill_rule(int(qpath.fillRule()))
+            rule = qtt.qfill_rule_to_fill_rule(qpath.fillRule())
             self.recorder.push_clip_path(p, rule)
             return super().setClipPath(*args)
 
@@ -221,7 +264,7 @@ def make_scene_capturing_painter(target_device, qt_module=None):
         def drawPath(self, qpath):
             self._emit_paint()
             p = qtt.qpath_to_path(qpath)
-            rule = qtt.qfill_rule_to_fill_rule(int(qpath.fillRule()))
+            rule = qtt.qfill_rule_to_fill_rule(qpath.fillRule())
             if qtt.qbrush_to_fill(self.brush()) is not None:
                 self.recorder.fill_path(p, rule)
             if qtt.qpen_to_stroke(self.pen()) is not None:
@@ -239,7 +282,7 @@ def make_scene_capturing_painter(target_device, qt_module=None):
             fill = qtt.qbrush_to_fill(brush)
             self.recorder.set_paint(Paint(fill=fill,
                                           anti_alias=self._cur_aa))
-            rule = qtt.qfill_rule_to_fill_rule(int(qpath.fillRule()))
+            rule = qtt.qfill_rule_to_fill_rule(qpath.fillRule())
             self.recorder.fill_path(qtt.qpath_to_path(qpath), rule)
             return super().fillPath(qpath, brush)
 
@@ -344,21 +387,44 @@ def capture_document_scene(document, page: int, *, pagesize_px=None,
     from ..document.painthelper import PaintHelper
 
     if pagesize_px is None:
-        # Pull page size from the document's root page widget.
-        pages = [c for c in document.basewidget.children if c.typename == "page"]
+        # Pull page size from the document's root page widget. Veusz stores
+        # the dimensions as DistancePhysical settings, which need a
+        # PaintHelper-shaped object to convert to pixels — we build a
+        # throwaway one at the requested dpi just for the conversion.
+        pages = [c for c in document.basewidget.children
+                 if c.typename == "page"]
         if not pages:
             raise ValueError("document has no pages")
         page_w = pages[page]
-        pagesize_px = (int(page_w.settings.width.convert(None) or 800),
-                       int(page_w.settings.height.convert(None) or 600))
+        tmp_helper = PaintHelper(document, (800, 600), dpi=dpi)
+        try:
+            w = int(page_w.settings.get("width").convert(tmp_helper))
+            h = int(page_w.settings.get("height").convert(tmp_helper))
+        except Exception:
+            w, h = 800, 600
+        pagesize_px = (max(w, 1), max(h, 1))
 
-    # Dummy target — its only role is to satisfy QPainter::begin().
-    dummy = qt.QImage(1, 1, qt.QImage.Format.Format_ARGB32_Premultiplied)
-    capturing = make_scene_capturing_painter(dummy)
+    # Veusz's QPainter target is normally page-sized so QPainter's
+    # internal device-pixel-ratio bookkeeping is sane. Use a real-page-size
+    # QImage rather than a 1×1 dummy; we never read pixels off it, but
+    # several Qt code paths (font metric lookups, raster engine clipping)
+    # consult device dimensions during paint.
+    target = qt.QImage(pagesize_px[0], pagesize_px[1],
+                       qt.QImage.Format.Format_ARGB32_Premultiplied)
+    target.fill(0)
+    capturing = make_scene_capturing_painter(target)
     capturing.setRenderHint(qt.QPainter.RenderHint.Antialiasing, True)
+    # PaintHelper.painter() pops/pushes a save frame each call; seed one.
+    capturing.save()
 
-    helper = PaintHelper(document, pagesize_px, dpi=dpi, directpaint=capturing)
-    document.paintTo(helper, page)
-    capturing.end()
+    try:
+        helper = PaintHelper(document, pagesize_px, dpi=dpi, directpaint=capturing)
+        document.paintTo(helper, page)
+    finally:
+        try:
+            capturing.restore()
+        except Exception:
+            pass
+        capturing.end()
 
     return capturing.recorder.to_json()

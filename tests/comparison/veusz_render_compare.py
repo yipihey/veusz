@@ -90,6 +90,30 @@ def gather_corpus(manifest: dict, tier: str) -> List[Path]:
     raise ValueError(f"unknown tier {tier!r}")
 
 
+_VEUSZ_REGISTERED = False
+
+
+def _ensure_veusz_registered() -> None:
+    """Veusz registers its widget classes and importers via import-time
+    side effects. Make sure we've imported the right subpackages before
+    Document.load tries to instantiate anything — otherwise widgetfactory
+    raises KeyError on the first widget type it sees."""
+    global _VEUSZ_REGISTERED
+    if _VEUSZ_REGISTERED:
+        return
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # A QApplication must exist before any QPainter-using code runs.
+    from PyQt6 import QtWidgets  # noqa: F401
+    import sys as _sys
+    if QtWidgets.QApplication.instance() is None:
+        # The reference must be kept alive — store on the module.
+        global _veusz_app  # noqa: PLW0603
+        _veusz_app = QtWidgets.QApplication(_sys.argv)
+    import veusz.widgets        # noqa: F401  registers widget classes
+    import veusz.dataimport     # noqa: F401  registers data importers
+    _VEUSZ_REGISTERED = True
+
+
 def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
                keep_scene: bool = False) -> RenderResult:
     """Render a single ``.vsz`` through ``backend``, write PNG and PDF.
@@ -127,6 +151,7 @@ def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
 
 def _render_qt(vsz: Path, out_dir: Path, dpi: int, result: RenderResult) -> None:
     """Existing Veusz export path via AsyncExport."""
+    _ensure_veusz_registered()
     from veusz import document
     from veusz.document import export
 
@@ -156,6 +181,7 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
 
     PDF emission is currently shared (vector format, raster-backend-agnostic).
     """
+    _ensure_veusz_registered()
     from veusz import document
     from veusz.paint.qt_capture import capture_document_scene
     try:
@@ -195,15 +221,19 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
 
 def _page_pixel_size(doc, page: int, dpi: int) -> "tuple[int, int]":
     """Best-effort page-pixel-size lookup. Mirrors what Veusz's PaintHelper
-    picks up; we pull from the page widget's settings."""
+    picks up: page width/height are DistancePhysical settings, converted
+    to pixels through a PaintHelper at the requested DPI."""
     pages = [c for c in doc.basewidget.children if c.typename == "page"]
     if not pages:
         return (int(8 * dpi), int(6 * dpi))  # 8x6 inch default
     pw = pages[page]
-    # Veusz stores page dimensions as Distance objects; convert to pixels.
     try:
-        w = pw.settings.get("width").convert(pw)
-        h = pw.settings.get("height").convert(pw)
+        from veusz.document.painthelper import PaintHelper
+        # Sacrificial helper just for unit conversion; the actual paint
+        # helper is built inside capture_document_scene.
+        ph = PaintHelper(doc, (int(8 * dpi), int(6 * dpi)), dpi=(dpi, dpi))
+        w = pw.settings.get("width").convert(ph)
+        h = pw.settings.get("height").convert(ph)
         return int(w), int(h)
     except Exception:
         return (int(8 * dpi), int(6 * dpi))
