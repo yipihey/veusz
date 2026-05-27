@@ -341,22 +341,41 @@ def run(inputs: List[Path], backends: List[str], out_dir: Path,
     # Diff math runs when >1 backend produced PNGs in this directory.
     if len(backends) > 1:
         try:
-            from diff import render_compare_pairs
+            from diff import render_compare_pairs, pdf_compare_pairs
         except ImportError:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).parent))
-            from diff import render_compare_pairs
+            from diff import render_compare_pairs, pdf_compare_pairs
         diffs = render_compare_pairs(out_dir, backends,
                                      identical_db=identical_db,
                                      within_db=within_db)
         report.diffs = [d for stem_diffs in diffs.values() for d in stem_diffs]
-        # one-line band summary
         bands = [d["band"] for d in report.diffs]
-        print(f"\ndiff summary: "
+        print(f"\nPNG diff summary: "
               f"identical={bands.count('identical')} "
               f"within={bands.count('within')} "
               f"material={bands.count('material')} "
               f"unknown={bands.count('unknown')}")
+
+        # PDF diffs are rasterised through Ghostscript at the same dpi.
+        # Stored alongside PNG diffs but tagged so they can be filtered.
+        pdf_diffs = pdf_compare_pairs(out_dir, backends,
+                                       identical_db=identical_db,
+                                       within_db=within_db,
+                                       dpi=dpi)
+        flat = [d for stem_diffs in pdf_diffs.values() for d in stem_diffs]
+        for d in flat:
+            d["kind"] = "pdf"
+        for d in report.diffs:
+            d["kind"] = "png"
+        report.diffs += flat
+        pbands = [d["band"] for d in flat]
+        if flat:
+            print(f"PDF diff summary: "
+                  f"identical={pbands.count('identical')} "
+                  f"within={pbands.count('within')} "
+                  f"material={pbands.count('material')} "
+                  f"unknown={pbands.count('unknown')}")
 
     (out_dir / "report.json").write_text(json.dumps(report.to_dict(), indent=2, default=str))
     return report
