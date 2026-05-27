@@ -160,19 +160,25 @@ fn build_layout(
     style: &TextStyle,
 ) -> Layout<Brush> {
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
-    // CSS-style font-family fallback chain: try the requested family first,
-    // fall back to sans-serif if it isn't installed. Veusz captures
-    // family names like "Arial" via Qt's font system; "Arial" isn't on
-    // every machine (e.g. headless Linux containers ship DejaVu Sans).
-    // Without a fallback, parley returns the .notdef glyph for every
-    // character and tick labels render as a single missing-glyph box.
-    let family_chain = if style.family.eq_ignore_ascii_case("sans-serif")
-        || style.family.eq_ignore_ascii_case("serif")
-        || style.family.eq_ignore_ascii_case("monospace") {
-        style.family.clone()
-    } else {
-        format!("{}, sans-serif", style.family)
-    };
+    // CSS-style font-family fallback chain. Veusz captures the family
+    // name Qt resolved on its side — typically a Windows-default like
+    // "Arial" / "Helvetica" / "Times New Roman". On Linux those usually
+    // don't exist, and parley's fontique falls back to a generic
+    // sans-serif (DejaVu Sans here) whose metrics differ from the
+    // requested font. That ends up shifting tick labels and other text
+    // to positions that don't line up with where Qt drew them.
+    //
+    // Workaround: append the same metric-compatible substitutes that
+    // fontconfig hands back on a typical Linux setup. Result chain (for
+    // "Arial") is "Arial, Liberation Sans, sans-serif" — parley picks
+    // the first one installed. Liberation Sans is *designed* to be a
+    // metric-compatible drop-in for Arial; Nimbus Sans does the same
+    // job for Helvetica; the serif and monospace equivalents likewise.
+    //
+    // Long-term, fontique should consult fontconfig substitute tables
+    // for us; until then this static map covers the families the audit
+    // shows Veusz documents request.
+    let family_chain = font_family_chain(&style.family);
     builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
         Cow::Owned(family_chain),
     )));
@@ -189,6 +195,42 @@ fn build_layout(
     layout.break_all_lines(None);
     layout.align(Alignment::Start, parley::AlignmentOptions::default());
     layout
+}
+
+/// Build the CSS-style fallback chain for a requested family.
+///
+/// Order of preference: original family (e.g. `"Arial"`), then a
+/// metric-compatible substitute available on most Linux distros, then a
+/// generic CSS family that fontique resolves on every platform.
+///
+/// The substitutes match what fontconfig's default conf files do — see
+/// `/usr/share/fontconfig/conf.avail/*alias*.conf` on a Debian/Ubuntu
+/// install. Liberation Sans is metric-compatible with Arial by design;
+/// Nimbus Sans plays the same role for Helvetica.
+fn font_family_chain(requested: &str) -> String {
+    // Generic families pass through unchanged — those are what we'd fall
+    // back to anyway.
+    let lower = requested.to_ascii_lowercase();
+    if matches!(lower.as_str(),
+                "sans-serif" | "serif" | "monospace" | "cursive" | "fantasy") {
+        return requested.to_string();
+    }
+    let (substitute, generic) = match lower.as_str() {
+        "arial" | "arial black" => (Some("Liberation Sans"), "sans-serif"),
+        "helvetica" | "helvetica neue" => (Some("Nimbus Sans"), "sans-serif"),
+        "verdana" | "tahoma" => (Some("DejaVu Sans"), "sans-serif"),
+        "times" | "times new roman" => (Some("Liberation Serif"), "serif"),
+        "courier" => (Some("Nimbus Mono PS"), "monospace"),
+        "courier new" => (Some("Liberation Mono"), "monospace"),
+        // Math / scientific fonts Veusz documents sometimes request.
+        "cmu serif" | "computer modern" => (Some("Liberation Serif"), "serif"),
+        _ => (None, "sans-serif"),
+    };
+    if let Some(sub) = substitute {
+        format!("{requested}, {sub}, {generic}")
+    } else {
+        format!("{requested}, {generic}")
+    }
 }
 
 /// One laid-out glyph: the outline as a [`Path`], the position to draw it
@@ -334,5 +376,63 @@ mod tests {
         let engine = TextEngine::new();
         let layout = TextLayout { text: String::new(), style: TextStyle::default() };
         assert_eq!(engine.layout_to_glyph_paths(&layout, (0.0, 0.0)).len(), 0);
+    }
+
+    #[test]
+    fn family_chain_substitutes_arial_to_liberation_sans() {
+        assert_eq!(super::font_family_chain("Arial"),
+                   "Arial, Liberation Sans, sans-serif");
+        assert_eq!(super::font_family_chain("ARIAL"),
+                   "ARIAL, Liberation Sans, sans-serif");
+    }
+
+    #[test]
+    fn family_chain_passes_generic_through() {
+        for g in ["sans-serif", "serif", "monospace", "cursive", "fantasy"] {
+            assert_eq!(super::font_family_chain(g), g);
+        }
+    }
+
+    #[test]
+    fn family_chain_falls_back_to_generic_for_unknown() {
+        assert_eq!(super::font_family_chain("Comic Sans MS"),
+                   "Comic Sans MS, sans-serif");
+    }
+
+    #[test]
+    fn family_chain_picks_monospace_for_courier_family() {
+        let c = super::font_family_chain("Courier");
+        assert!(c.contains("monospace"), "{c}");
+        let cn = super::font_family_chain("Courier New");
+        assert!(cn.contains("Liberation Mono"), "{cn}");
+        assert!(cn.contains("monospace"), "{cn}");
+    }
+
+    #[test]
+    fn arial_renders_proper_glyphs_via_substitute_chain() {
+        if !require_fonts() { return; }
+        let engine = TextEngine::new();
+        // "0.1" at 13pt Arial is the exact case the user reported: tick
+        // labels were rendering as a single .notdef glyph because Arial
+        // isn't installed on most Linux containers. Three characters
+        // should now produce three glyph runs.
+        let layout = TextLayout {
+            text: "0.1".into(),
+            style: TextStyle {
+                family: "Arial".into(),
+                size_pt: 13.0,
+                ..TextStyle::default()
+            },
+        };
+        let glyphs = engine.layout_to_glyph_paths(&layout, (0.0, 0.0));
+        assert!(glyphs.len() >= 3,
+                "Arial -> Liberation Sans fallback should give >=3 glyphs for \"0.1\", \
+                 got {}", glyphs.len());
+        // Each glyph must have a real outline, not the .notdef box.
+        for g in &glyphs {
+            assert!(g.path.verbs.len() > 4,
+                    "glyph outline too small ({} verbs) — fallback may not be working",
+                    g.path.verbs.len());
+        }
     }
 }
