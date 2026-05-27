@@ -76,6 +76,29 @@ async fn csv_to_render_endtoend() {
 }
 
 #[tokio::test]
+async fn receives_doc_changed_notification_on_add() {
+    let Some(veuszd) = veuszd_available() else {
+        eprintln!("skipping: veuszd not on PATH");
+        return;
+    };
+    let tmpdir = tempfile::tempdir().unwrap();
+    let sock = tmpdir.path().join("veuszd.sock");
+    let side = Sidecar::spawn(&veuszd, sock, true, false).await.unwrap();
+    let mut rx = side.client.subscribe();
+    side.client.call_obj("doc.add", json!({"parent": "/", "type": "page"}))
+        .await
+        .unwrap();
+    let notif = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("timeout waiting for notification")
+        .expect("broadcast closed");
+    assert_eq!(notif.method, "doc.changed");
+    assert_eq!(notif.params["kind"], "add");
+    assert_eq!(notif.params["paths"][0], "/page1");
+    side.shutdown().await;
+}
+
+#[tokio::test]
 async fn concurrent_calls_multiplex_correctly() {
     // The multiplexed reader-task design is the whole reason this
     // crate is more than a thin wrapper. Prove it.

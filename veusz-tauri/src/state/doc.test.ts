@@ -40,6 +40,8 @@ const XY_SCHEMA = {
 
 function makeStore(handlers: Record<string, (p: Record<string, unknown>) => unknown> = {}) {
   const setOps: Array<unknown> = [];
+  let fileInfo: { path: string | null; changeset: number; modified: boolean } =
+    { path: null, changeset: 0, modified: false };
   const t = mockTransport({
     'doc.tree': () => TREE,
     'data.list': () => [{ name: 'x', type: 'Dataset', len: 5 }],
@@ -61,6 +63,21 @@ function makeStore(handlers: Record<string, (p: Record<string, unknown>) => unkn
     'doc.undo': () => ({ changeset: 0, can_undo: false, can_redo: true }),
     'doc.add': () => ({ path: '/page2' }),
     'doc.remove': () => ({ ok: true, changeset: 2 }),
+    'file.info': () => fileInfo,
+    'file.open': (params) => {
+      const p = (params as { path: string }).path;
+      fileInfo = { path: p, changeset: 0, modified: false };
+      return { ok: true, path: p, changeset: 0 };
+    },
+    'file.save': () => {
+      if (!fileInfo.path) throw new Error('no filename');
+      return { ok: true, path: fileInfo.path, changeset: fileInfo.changeset };
+    },
+    'file.save_as': (params) => {
+      const p = (params as { path: string }).path;
+      fileInfo = { ...fileInfo, path: p };
+      return { ok: true, path: p, changeset: fileInfo.changeset };
+    },
     ...handlers,
   });
   const rpc = createRpc(t);
@@ -145,6 +162,41 @@ describe('DocStore', () => {
     expect(refreshTreeSpy).toHaveBeenCalled();
   });
 
+  it('refreshFileInfo populates filename', async () => {
+    const { store } = makeStore({
+      'file.info': () => ({ path: '/tmp/foo.vsz', changeset: 3, modified: true }),
+    });
+    await store.getState().refreshFileInfo();
+    expect(store.getState().filename).toBe('/tmp/foo.vsz');
+  });
+
+  it('openFile updates filename and clears selection', async () => {
+    const { store } = makeStore();
+    await store.getState().refreshAll();
+    await store.getState().select('/page1/graph1/xy1');
+    expect(store.getState().selected).toBe('/page1/graph1/xy1');
+    await store.getState().openFile('/tmp/loaded.vsz');
+    expect(store.getState().filename).toBe('/tmp/loaded.vsz');
+    expect(store.getState().selected).toBeNull();
+  });
+
+  it('saveFile without a current filename surfaces an error', async () => {
+    const { store } = makeStore();
+    await store.getState().refreshAll();
+    const result = await store.getState().saveFile();
+    expect(result).toBeNull();
+    expect(store.getState().error).toMatch(/Save As/);
+  });
+
+  it('saveFileAs sets the filename, then saveFile succeeds', async () => {
+    const { store } = makeStore();
+    await store.getState().refreshAll();
+    await store.getState().saveFileAs('/tmp/out.vsz');
+    expect(store.getState().filename).toBe('/tmp/out.vsz');
+    const path = await store.getState().saveFile();
+    expect(path).toBe('/tmp/out.vsz');
+  });
+
   it('importCsv refreshes the dataset list', async () => {
     const { store } = makeStore({
       'data.import': () => ({ imported: ['x', 'y'], errors: [] }),
@@ -156,5 +208,43 @@ describe('DocStore', () => {
     const imported = await store.getState().importCsv('/tmp/whatever.csv');
     expect(imported).toEqual(['x', 'y']);
     expect(store.getState().datasets.map((d) => d.name).sort()).toEqual(['x', 'y']);
+  });
+
+  it('subscribeToDaemon refreshes tree on doc.changed notifications', async () => {
+    let treeCalls = 0;
+    const t = mockTransport({
+      'doc.tree': () => { treeCalls++; return TREE; },
+      'data.list': () => [],
+      'doc.can_undo': () => ({ can_undo: false, can_redo: false }),
+      'file.info': () => ({ path: null, changeset: 0, modified: false }),
+    });
+    const rpc = createRpc(t);
+    const store = createDocStore(rpc);
+    const off = store.getState().subscribeToDaemon();
+    await store.getState().refreshAll();
+    const before = treeCalls;
+    t.emit('doc.changed', { changeset: 1, paths: ['/page1'], kind: 'add' });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(treeCalls).toBeGreaterThan(before);
+    off();
+  });
+
+  it('subscribeToDaemon refreshes datasets on data.changed notifications', async () => {
+    let listCalls = 0;
+    const t = mockTransport({
+      'doc.tree': () => TREE,
+      'data.list': () => { listCalls++; return []; },
+      'doc.can_undo': () => ({ can_undo: false, can_redo: false }),
+      'file.info': () => ({ path: null, changeset: 0, modified: false }),
+    });
+    const rpc = createRpc(t);
+    const store = createDocStore(rpc);
+    const off = store.getState().subscribeToDaemon();
+    await store.getState().refreshAll();
+    const before = listCalls;
+    t.emit('data.changed', { names: ['x'], kind: 'set' });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(listCalls).toBeGreaterThan(before);
+    off();
   });
 });

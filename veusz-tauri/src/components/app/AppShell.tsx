@@ -21,8 +21,10 @@ export interface AppShellProps {
   /** Default render size — caller may pass measured viewport dims later. */
   renderWidth?: number;
   renderHeight?: number;
-  /** Optional escape hatches that the host wires up (Tauri native dialog). */
+  /** Tauri native file pickers (left unset, the buttons are hidden). */
   onPickCsv?: () => Promise<string | null>;
+  onPickVsz?: () => Promise<string | null>;
+  onPickSavePath?: () => Promise<string | null>;
 }
 
 export function AppShell({
@@ -30,6 +32,8 @@ export function AppShell({
   renderWidth = 600,
   renderHeight = 400,
   onPickCsv,
+  onPickVsz,
+  onPickSavePath,
 }: AppShellProps) {
   const tree = store((s) => s.tree);
   const datasets = store((s) => s.datasets);
@@ -40,6 +44,7 @@ export function AppShell({
   const canUndo = store((s) => s.canUndo);
   const canRedo = store((s) => s.canRedo);
   const error = store((s) => s.error);
+  const filename = store((s) => s.filename);
 
   const refreshAll = store((s) => s.refreshAll);
   const renderAt = store((s) => s.renderAt);
@@ -48,10 +53,15 @@ export function AppShell({
   const undo = store((s) => s.undo);
   const redo = store((s) => s.redo);
   const importCsv = store((s) => s.importCsv);
+  const openFile = store((s) => s.openFile);
+  const saveFile = store((s) => s.saveFile);
+  const saveFileAs = store((s) => s.saveFileAs);
+  const subscribeToDaemon = store((s) => s.subscribeToDaemon);
 
   useEffect(() => {
     void refreshAll();
-  }, [refreshAll]);
+    return subscribeToDaemon();
+  }, [refreshAll, subscribeToDaemon]);
 
   // Re-render whenever the doc tree mutates (selection, edits, undo).
   // The render call is itself debounceable in v2; v1 just fires on
@@ -70,6 +80,30 @@ export function AppShell({
     await importCsv(path);
   };
 
+  const handleOpen = async () => {
+    if (!onPickVsz) return;
+    const path = await onPickVsz();
+    if (!path) return;
+    await openFile(path);
+  };
+
+  const handleSave = async () => {
+    if (filename) {
+      await saveFile();
+      return;
+    }
+    if (onPickSavePath) {
+      const path = await onPickSavePath();
+      if (path) await saveFileAs(path);
+    }
+  };
+
+  const handleSaveAs = async () => {
+    if (!onPickSavePath) return;
+    const path = await onPickSavePath();
+    if (path) await saveFileAs(path);
+  };
+
   return (
     <div data-testid="app-shell" style={layout.root}>
       <Toolbar
@@ -78,6 +112,10 @@ export function AppShell({
         onUndo={undo}
         onRedo={redo}
         error={error}
+        filename={filename}
+        onOpen={onPickVsz ? handleOpen : undefined}
+        onSave={onPickSavePath || filename ? handleSave : undefined}
+        onSaveAs={onPickSavePath ? handleSaveAs : undefined}
       />
 
       <div style={layout.body}>
@@ -137,15 +175,41 @@ function Toolbar({
   onUndo,
   onRedo,
   error,
+  filename,
+  onOpen,
+  onSave,
+  onSaveAs,
 }: {
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
   error: string | null;
+  filename: string | null;
+  onOpen?: () => void;
+  onSave?: () => void;
+  onSaveAs?: () => void;
 }): ReactNode {
   return (
     <header data-testid="app-toolbar" style={layout.toolbar}>
+      {onOpen && (
+        <button type="button" data-testid="toolbar-open" onClick={() => onOpen()}>
+          Open…
+        </button>
+      )}
+      {onSave && (
+        <button type="button" data-testid="toolbar-save" onClick={() => onSave()}>
+          Save
+        </button>
+      )}
+      {onSaveAs && (
+        <button type="button" data-testid="toolbar-save-as" onClick={() => onSaveAs()}>
+          Save As…
+        </button>
+      )}
+      <span data-testid="toolbar-filename" style={{ flex: 1, color: '#666' }}>
+        {filename ?? '(unsaved)'}
+      </span>
       <button
         type="button"
         data-testid="toolbar-undo"

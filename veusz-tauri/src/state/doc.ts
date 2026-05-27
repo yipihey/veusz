@@ -55,12 +55,24 @@ export interface DocState {
   // --- data ---
   importCsv: (filename: string) => Promise<string[]>;
 
+  // --- file ---
+  filename: string | null;
+  openFile: (path: string) => Promise<void>;
+  saveFile: () => Promise<string | null>;
+  saveFileAs: (path: string) => Promise<void>;
+  refreshFileInfo: () => Promise<void>;
+
   // --- rendering ---
   renderAt: (page: number, w: number, h: number, dpi?: number) => Promise<void>;
 
   // --- history ---
   undo: () => Promise<void>;
   redo: () => Promise<void>;
+
+  /** Subscribe to daemon push events (doc.changed, data.changed) and
+   *  refresh the affected slices automatically. Returns an
+   *  unsubscribe function so the AppShell can clean up on unmount. */
+  subscribeToDaemon: () => () => void;
 }
 
 /** Walk a schema and return every absolute setting path under `base`. */
@@ -104,6 +116,7 @@ export function createDocStore(rpc: Rpc) {
       canUndo: false,
       canRedo: false,
       error: null,
+      filename: null,
 
       refreshTree: async () => {
         const tree = await guard(() => rpc.doc.tree());
@@ -126,10 +139,39 @@ export function createDocStore(rpc: Rpc) {
           get().refreshTree(),
           get().refreshDatasets(),
           get().refreshUndoState(),
+          get().refreshFileInfo(),
         ]);
       },
 
       clearError: () => set({ error: null }),
+
+      refreshFileInfo: async () => {
+        const info = await guard(() => rpc.file.info());
+        if (info) set({ filename: info.path });
+      },
+
+      openFile: async (path) => {
+        const r = await guard(() => rpc.file.open(path));
+        if (!r) return;
+        set({ filename: r.path, selected: null, schema: null, values: {} });
+        await Promise.all([get().refreshTree(), get().refreshDatasets(), get().refreshUndoState()]);
+      },
+
+      saveFile: async () => {
+        // Falls back to save_as semantics if no filename — callers
+        // should check `get().filename` first to prompt the user.
+        if (!get().filename) {
+          set({ error: 'no filename — use Save As' });
+          return null;
+        }
+        const r = await guard(() => rpc.file.save());
+        return r?.path ?? null;
+      },
+
+      saveFileAs: async (path) => {
+        const r = await guard(() => rpc.file.saveAs(path));
+        if (r) set({ filename: r.path });
+      },
 
       select: async (path) => {
         if (path === null) {
@@ -205,6 +247,22 @@ export function createDocStore(rpc: Rpc) {
         await get().refreshTree();
         const sel = get().selected;
         if (sel) await get().select(sel);
+      },
+
+      subscribeToDaemon: () => {
+        const offDoc = rpc.subscribe('doc.changed', () => {
+          // Tree + undo-state always stale after a daemon-side mutation.
+          // Re-fetch selection values too so a background eval.python
+          // call shows up in the inspector.
+          void get().refreshTree();
+          void get().refreshUndoState();
+          const sel = get().selected;
+          if (sel) void get().select(sel);
+        });
+        const offData = rpc.subscribe('data.changed', () => {
+          void get().refreshDatasets();
+        });
+        return () => { offDoc(); offData(); };
       },
     };
   });

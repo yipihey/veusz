@@ -20,6 +20,7 @@ import sys
 
 from .. import qtall as qt
 from .. import document as vzdoc
+from .notifier import Notifier
 
 
 log = logging.getLogger('veuszd.context')
@@ -34,6 +35,8 @@ class Context:
         self._last_render = None  # tuple (key, painthelper) or None
         # Operation history for snapshot/restore.
         self._snapshots: dict[str, bytes] = {}
+        # Push-channel to the connected client.
+        self.notifier = Notifier()
 
     # -- startup -----------------------------------------------------------
 

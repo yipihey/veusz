@@ -19,11 +19,14 @@ interface Pending {
   reject: (e: Error) => void;
 }
 
+export type NotificationListener = (params: unknown) => void;
+
 export class NodeRpcClient {
   private sock: Socket;
   private buf = Buffer.alloc(0);
   private nextId = 0;
   private pending = new Map<number, Pending>();
+  private listeners = new Map<string, Set<NotificationListener>>();
   private closed = false;
 
   constructor(sock: Socket) {
@@ -44,10 +47,18 @@ export class NodeRpcClient {
       if (!m) throw new Error(`bad framing: ${headers}`);
       const len = Number(m[1]);
       const total = headerEnd + 4 + len;
-      if (this.buf.length < total) return; // need more bytes
+      if (this.buf.length < total) return;
       const body = this.buf.slice(headerEnd + 4, total);
       this.buf = this.buf.slice(total);
       const msg = JSON.parse(body.toString('utf-8'));
+      // Notification: has `method`, no `id`.
+      if (typeof msg.method === 'string' && (msg.id === undefined || msg.id === null)) {
+        const ls = this.listeners.get(msg.method);
+        if (ls) for (const fn of ls) {
+          try { fn(msg.params); } catch { /* swallow */ }
+        }
+        continue;
+      }
       const id = msg.id as number | undefined;
       if (typeof id !== 'number') continue;
       const p = this.pending.get(id);
@@ -56,6 +67,17 @@ export class NodeRpcClient {
       if (msg.error) p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
       else p.resolve(msg.result);
     }
+  }
+
+  /** Subscribe to `method` notifications; returns an unsubscribe function. */
+  on(method: string, fn: NotificationListener): () => void {
+    let ls = this.listeners.get(method);
+    if (!ls) {
+      ls = new Set();
+      this.listeners.set(method, ls);
+    }
+    ls.add(fn);
+    return () => { ls?.delete(fn); };
   }
 
   private onClose() {

@@ -17,9 +17,13 @@ import { tauriTransport } from './transport';
 export type Rpc = ReturnType<typeof createRpc>;
 
 export function createRpc(transport: Transport) {
-  const t = transport;
+  const t = (method: string, params?: Record<string, unknown>) =>
+    transport.call(method, params);
 
   return {
+    /** Push-notification subscribe (doc.changed, data.changed, etc.). */
+    subscribe: transport.subscribe.bind(transport),
+
     ping: () => t('ping') as Promise<{ pong: true }>,
     version: () => t('version') as Promise<{ veusz: string; api: number }>,
 
@@ -113,6 +117,33 @@ export function createRpc(transport: Transport) {
         t('state.restore', { blob }) as Promise<{
           ok: true;
           changeset: number;
+        }>,
+    },
+
+    file: {
+      open: (path: string) =>
+        t('file.open', { path }) as Promise<{
+          ok: true;
+          path: string;
+          changeset: number;
+        }>,
+      save: () =>
+        t('file.save') as Promise<{
+          ok: true;
+          path: string;
+          changeset: number;
+        }>,
+      saveAs: (path: string) =>
+        t('file.save_as', { path }) as Promise<{
+          ok: true;
+          path: string;
+          changeset: number;
+        }>,
+      info: () =>
+        t('file.info') as Promise<{
+          path: string | null;
+          changeset: number;
+          modified: boolean;
         }>,
     },
   };

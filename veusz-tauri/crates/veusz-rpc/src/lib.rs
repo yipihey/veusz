@@ -27,7 +27,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Error)]
@@ -62,6 +62,14 @@ struct Response {
     error: Option<RpcErrorBody>,
 }
 
+/// A notification pushed by the daemon (no `id`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Notification {
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
 #[derive(Debug, Deserialize)]
 struct RpcErrorBody {
     code: i64,
@@ -80,6 +88,7 @@ pub struct Client {
 struct ClientInner {
     writer: Mutex<tokio::io::WriteHalf<unix_transport::Stream>>,
     pending: Pending,
+    notifications: broadcast::Sender<Notification>,
     next_id: AtomicU64,
     // Held so the reader task is cancelled when the last Client clone drops.
     _reader: JoinHandle<()>,
@@ -96,15 +105,29 @@ impl Client {
         // boundaries, so a fresh BufReader per call would discard them.
         let buf_reader = tokio::io::BufReader::new(reader);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let reader_task = tokio::spawn(reader_loop(buf_reader, pending.clone()));
+        // 128 slots — enough that a slow subscriber doesn't drop common
+        // bursts. Subscribers that lag past this see a Lagged error.
+        let (notif_tx, _) = broadcast::channel::<Notification>(128);
+        let reader_task = tokio::spawn(reader_loop(
+            buf_reader,
+            pending.clone(),
+            notif_tx.clone(),
+        ));
         Ok(Self {
             inner: Arc::new(ClientInner {
                 writer: Mutex::new(writer),
                 pending,
+                notifications: notif_tx,
                 next_id: AtomicU64::new(0),
                 _reader: reader_task,
             }),
         })
+    }
+
+    /// Subscribe to push notifications from the daemon. Returns a
+    /// `broadcast::Receiver`; each subscriber sees every notification.
+    pub fn subscribe(&self) -> broadcast::Receiver<Notification> {
+        self.inner.notifications.subscribe()
     }
 
     /// Issue an RPC. Returns the daemon's ``result`` field.
@@ -155,6 +178,7 @@ impl Client {
 async fn reader_loop(
     mut reader: tokio::io::BufReader<tokio::io::ReadHalf<unix_transport::Stream>>,
     pending: Pending,
+    notifications: broadcast::Sender<Notification>,
 ) {
     loop {
         let msg = match framing::read(&mut reader).await {
@@ -165,6 +189,14 @@ async fn reader_loop(
                 break;
             }
         };
+        // First try notification (has `method`, no `id`); fall back to
+        // response. Either may be present per JSON-RPC 2.0.
+        if msg.get("id").is_none() {
+            if let Ok(notif) = serde_json::from_value::<Notification>(msg) {
+                let _ = notifications.send(notif);
+            }
+            continue;
+        }
         let resp: Response = match serde_json::from_value(msg) {
             Ok(r) => r,
             Err(e) => {
@@ -174,10 +206,7 @@ async fn reader_loop(
         };
         let id = match resp.id.as_ref().and_then(|v| v.as_u64()) {
             Some(id) => id,
-            None => {
-                tracing::warn!("response with no id");
-                continue;
-            }
+            None => continue, // notification handled above
         };
         if let Some(tx) = pending.lock().await.remove(&id) {
             let _ = tx.send(resp);

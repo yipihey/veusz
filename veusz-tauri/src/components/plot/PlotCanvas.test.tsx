@@ -51,9 +51,9 @@ describe('PlotCanvas', () => {
     render(<PlotCanvas png={ONE_PX} width={400} height={300} bounds={BOUNDS} />);
     const overlay = screen.getByTestId('plot-overlay');
     // Move into the xy1 bounding box (innermost; should win the hit test)
-    fireEvent.mouseMove(overlay, { clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(overlay, { clientX: 200, clientY: 150 });
     expect(screen.getByTestId('overlay-hover-/page1/graph1/xy1')).toBeInTheDocument();
-    fireEvent.mouseLeave(overlay);
+    fireEvent.mouseLeave(screen.getByTestId('plot-canvas'));
     expect(screen.queryByTestId(/^overlay-hover-/)).not.toBeInTheDocument();
   });
 
@@ -89,9 +89,58 @@ describe('PlotCanvas', () => {
         selected="/page1/graph1/xy1"
       />,
     );
-    fireEvent.mouseMove(screen.getByTestId('plot-overlay'), { clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(screen.getByTestId('plot-overlay'), { clientX: 200, clientY: 150 });
     expect(screen.queryByTestId('overlay-hover-/page1/graph1/xy1')).not.toBeInTheDocument();
     expect(screen.getByTestId('overlay-selected-/page1/graph1/xy1')).toBeInTheDocument();
+  });
+
+  it('zoom-in button increases zoom and updates the readout', () => {
+    render(<PlotCanvas png={ONE_PX} width={400} height={300} bounds={BOUNDS} />);
+    const canvas = screen.getByTestId('plot-canvas');
+    expect(canvas.dataset.zoom).toBe('1.000');
+    fireEvent.click(screen.getByTestId('plot-zoom-in'));
+    expect(parseFloat(canvas.dataset.zoom!)).toBeCloseTo(1.25, 3);
+    expect(screen.getByTestId('plot-zoom-reset')).toHaveTextContent('125%');
+  });
+
+  it('zoom-reset returns to 100% and zero pan', () => {
+    render(<PlotCanvas png={ONE_PX} width={400} height={300} bounds={BOUNDS} />);
+    fireEvent.click(screen.getByTestId('plot-zoom-in'));
+    fireEvent.click(screen.getByTestId('plot-zoom-in'));
+    fireEvent.click(screen.getByTestId('plot-zoom-reset'));
+    expect(screen.getByTestId('plot-canvas').dataset.zoom).toBe('1.000');
+  });
+
+  it('zoom is clamped at the lower bound', () => {
+    render(<PlotCanvas png={ONE_PX} width={400} height={300} bounds={BOUNDS} />);
+    for (let i = 0; i < 50; i++) {
+      fireEvent.click(screen.getByTestId('plot-zoom-out'));
+    }
+    expect(parseFloat(screen.getByTestId('plot-canvas').dataset.zoom!))
+      .toBeGreaterThanOrEqual(0.1);
+  });
+
+  it('hit-test honors the current pan & zoom', () => {
+    // At 2x zoom panned by 0, a click at client (200,150) should land
+    // at PNG-pixel (100,75) — inside graph1 but outside xy1's box.
+    const onSelect = vi.fn();
+    render(
+      <PlotCanvas
+        png={ONE_PX} width={400} height={300} bounds={BOUNDS}
+        onSelect={onSelect}
+      />,
+    );
+    // 1.25 ** 3 ≈ 1.95
+    fireEvent.click(screen.getByTestId('plot-zoom-in'));
+    fireEvent.click(screen.getByTestId('plot-zoom-in'));
+    fireEvent.click(screen.getByTestId('plot-zoom-in'));
+    onSelect.mockClear();
+    fireEvent.click(screen.getByTestId('plot-overlay'), { clientX: 200, clientY: 150 });
+    const callArg = onSelect.mock.calls[0]?.[0];
+    // Whichever widget the inverse-transformed coord lands on, it
+    // should NOT be xy1 (which would only match at the original
+    // unzoomed location).
+    expect(callArg).not.toBe('/page1/graph1/xy1');
   });
 
   it('ignores the document root and outer page in hit-tests', () => {

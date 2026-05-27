@@ -55,18 +55,27 @@ def register(ctx):
     def add(parent: str, type: str, name: str | None = None, **_):
         ci = _ci(ctx)
         path = ci.Add(type, widget=parent, name=name) if name else ci.Add(type, widget=parent)
-        # ci.Add returns the new widget name relative to parent
-        return {'path': parent.rstrip('/') + '/' + path if parent != '/' else '/' + path}
+        full = parent.rstrip('/') + '/' + path if parent != '/' else '/' + path
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset,
+            'paths': [full],
+            'kind': 'add',
+        })
+        return {'path': full}
 
     def remove(path: str, **_):
         ci = _ci(ctx)
         ci.Remove(path)
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset,
+            'paths': [path],
+            'kind': 'remove',
+        })
         return {'ok': True, 'changeset': ctx.document.changeset}
 
     def set_(ops: list = None, path: str = None, value=None, **_):
         """Apply one or many setting writes; return per-op diff."""
         ci = _ci(ctx)
-        # Single-op form
         if ops is None:
             if path is None:
                 raise RpcError(INVALID_PARAMS, 'doc.set needs ops=[...] or path=/value')
@@ -78,6 +87,11 @@ def register(ctx):
             old = ci.Get(p)
             ci.Set(p, v)
             diffs.append({'path': p, 'old': old, 'new': ci.Get(p)})
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset,
+            'paths': [d['path'] for d in diffs],
+            'kind': 'set',
+        })
         return {'changeset': ctx.document.changeset, 'diffs': diffs}
 
     def get(paths: list, **_):
@@ -88,6 +102,9 @@ def register(ctx):
         if not ctx.document.canUndo():
             raise RpcError(INVALID_PARAMS, 'nothing to undo')
         ctx.document.undoOperation()
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset, 'paths': [], 'kind': 'undo',
+        })
         return {'changeset': ctx.document.changeset,
                 'can_undo': ctx.document.canUndo(),
                 'can_redo': ctx.document.canRedo()}
@@ -96,6 +113,9 @@ def register(ctx):
         if not ctx.document.canRedo():
             raise RpcError(INVALID_PARAMS, 'nothing to redo')
         ctx.document.redoOperation()
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset, 'paths': [], 'kind': 'redo',
+        })
         return {'changeset': ctx.document.changeset,
                 'can_undo': ctx.document.canUndo(),
                 'can_redo': ctx.document.canRedo()}

@@ -121,6 +121,7 @@ class Server:
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         peer = writer.get_extra_info('peername')
         log.info('client connected: %s', peer)
+        self.ctx.notifier.attach(writer)
         try:
             while True:
                 try:
@@ -141,6 +142,7 @@ class Server:
                 # but in v1 we await for back-pressure simplicity.
                 await self._handle_request(msg, writer)
         finally:
+            self.ctx.notifier.detach()
             log.info('client disconnected: %s', peer)
             try:
                 writer.close()

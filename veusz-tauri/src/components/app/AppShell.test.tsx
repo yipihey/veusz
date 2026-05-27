@@ -71,6 +71,7 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       canUndo = false; canRedo = true;
       return { changeset: 0, can_undo: false, can_redo: true };
     },
+    'file.info': () => ({ path: null, changeset: 0, modified: false }),
     ...over,
   };
   const t = mockTransport(handlers);
@@ -153,6 +154,64 @@ describe('AppShell (mock RPC)', () => {
     render(<AppShell store={store} />);
     await waitFor(() => screen.getByTestId('app-error'));
     expect(screen.getByTestId('app-error')).toHaveTextContent('daemon ate it');
+  });
+
+  it('Open button calls onPickVsz then file.open', async () => {
+    const onPickVsz = vi.fn().mockResolvedValue('/tmp/loaded.vsz');
+    const opens: string[] = [];
+    const { store } = rig({
+      'file.open': (params) => {
+        opens.push((params as { path: string }).path);
+        return { ok: true, path: (params as { path: string }).path, changeset: 0 };
+      },
+    });
+    render(<AppShell store={store} onPickVsz={onPickVsz} />);
+    await waitFor(() => screen.getByTestId('toolbar-open'));
+    fireEvent.click(screen.getByTestId('toolbar-open'));
+    await waitFor(() => expect(opens).toEqual(['/tmp/loaded.vsz']));
+    await waitFor(() =>
+      expect(screen.getByTestId('toolbar-filename')).toHaveTextContent('/tmp/loaded.vsz'),
+    );
+  });
+
+  it('Save As button calls onPickSavePath then file.save_as', async () => {
+    const onPickSavePath = vi.fn().mockResolvedValue('/tmp/new.vsz');
+    const savedPaths: string[] = [];
+    const { store } = rig({
+      'file.save_as': (params) => {
+        const p = (params as { path: string }).path;
+        savedPaths.push(p);
+        return { ok: true, path: p, changeset: 1 };
+      },
+    });
+    render(<AppShell store={store} onPickSavePath={onPickSavePath} />);
+    await waitFor(() => screen.getByTestId('toolbar-save-as'));
+    fireEvent.click(screen.getByTestId('toolbar-save-as'));
+    await waitFor(() => expect(savedPaths).toEqual(['/tmp/new.vsz']));
+  });
+
+  it('Save (with existing filename) calls file.save directly', async () => {
+    const saves: number[] = [];
+    const { store } = rig({
+      'file.info': () => ({ path: '/tmp/existing.vsz', changeset: 1, modified: true }),
+      'file.save': () => {
+        saves.push(Date.now());
+        return { ok: true, path: '/tmp/existing.vsz', changeset: 1 };
+      },
+    });
+    render(<AppShell store={store} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('toolbar-filename')).toHaveTextContent('/tmp/existing.vsz'),
+    );
+    fireEvent.click(screen.getByTestId('toolbar-save'));
+    await waitFor(() => expect(saves.length).toBe(1));
+  });
+
+  it('toolbar-filename shows (unsaved) for a new document', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('toolbar-filename'));
+    expect(screen.getByTestId('toolbar-filename')).toHaveTextContent('(unsaved)');
   });
 
   it('hooks the Import button to the supplied picker', async () => {

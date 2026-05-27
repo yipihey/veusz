@@ -233,4 +233,30 @@ describe('live daemon: full Phase-1 loop', () => {
         expect(store.getState().render?.png).toBe(beforeRender);
       }, { timeout: 5000 });
     }, 30000);
+
+    it('AppShell receives doc.changed push events from the live daemon', async () => {
+      if (skipReason) { console.warn('SKIP:', skipReason); return; }
+      if (!client) throw new Error('client should be ready');
+
+      const rpc = createRpc(clientTransport(client));
+      const store = createDocStore(rpc);
+
+      // Subscribe BEFORE the mutation we want to observe
+      const off = store.getState().subscribeToDaemon();
+      await store.getState().refreshAll();
+      const treeBefore = store.getState().tree;
+      // Drive a mutation directly through the same client; the daemon's
+      // notifier broadcasts to us as well.
+      await client.call('doc.add', { parent: '/page1', type: 'graph' });
+      // The subscription fires refreshTree asynchronously; wait until
+      // the store reflects the new graph.
+      await waitFor(() => {
+        const tree = store.getState().tree;
+        const page = tree?.children.find((c) => c.name === 'page1');
+        // Original Phase-1 page1 already has a graph1 from earlier tests;
+        // this fresh add lands as graph2.
+        expect(page?.children.length).toBeGreaterThan(treeBefore?.children?.[0]?.children?.length ?? 0);
+      }, { timeout: 3000 });
+      off();
+    }, 15000);
 });

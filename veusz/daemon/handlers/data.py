@@ -50,6 +50,9 @@ def register(ctx):
         arr = np.asarray(values, dtype=dtype)
         from ...document.commandinterface import CommandInterface
         CommandInterface(ctx.document).SetData(name, arr)
+        ctx.notifier.publish('data.changed', {
+            'names': [name], 'kind': 'set',
+        })
         return {'ok': True, 'len': int(len(arr))}
 
     def import_(kind: str, filename: str, options: dict | None = None, **_):
@@ -79,10 +82,11 @@ def register(ctx):
         except Exception as e:
             raise RpcError(INVALID_PARAMS, f'{kind} import failed: {e}') from e
         after = set(ctx.document.data.keys())
-        return {
-            'imported': sorted(after - before),
-            'errors': [],
-        }
+        imported = sorted(after - before)
+        ctx.notifier.publish('data.changed', {
+            'names': imported, 'kind': 'import',
+        })
+        return {'imported': imported, 'errors': []}
 
     return {
         'data.list': list_,
