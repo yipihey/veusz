@@ -230,6 +230,17 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
     doc = document.Document()
     doc.load(str(vsz))
 
+    # Honor an explicit Document/paintBackend setting if the .vsz pins
+    # one — overrides the CLI/manifest backend selection. Lets users
+    # save a backend choice into the document (plan §7.2). "auto" or
+    # missing setting falls through to the harness's chosen backend.
+    try:
+        pinned = doc.basewidget.settings.get('paintBackend').val
+        if pinned and pinned != 'auto' and pinned != result.backend:
+            result.backend = pinned
+    except (AttributeError, KeyError, ValueError):
+        pass
+
     scene_json = _capture(doc, page=0)
     page_w, page_h = _page_pixel_size(doc, page=0, dpi=dpi)
 

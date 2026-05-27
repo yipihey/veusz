@@ -19,14 +19,33 @@ _BACKEND_NAMES = ("qt", "tiny-skia", "vello")
 _DEFAULT_BACKEND = "qt"
 
 
-def active_backend(override: Optional[str] = None) -> str:
+def active_backend(override: Optional[str] = None, document=None) -> str:
     """Return the backend name to use.
 
-    Precedence: explicit override > ``VEUSZ_PAINT_BACKEND`` env var > default.
+    Precedence: explicit override > ``Document/paintBackend`` setting (if a
+    document is supplied and its setting is not "auto") > ``VEUSZ_PAINT_BACKEND``
+    env var > default.
+
+    Passing ``document`` lets a particular `.vsz` file pin the backend
+    (plan §7.2 — runtime flag via env var OR .vsz option). The setting
+    is stored on the root widget; if the root has no ``paintBackend``
+    setting (older saved documents), we fall through to the env var.
     """
-    name = (override
-            or os.environ.get("VEUSZ_PAINT_BACKEND")
-            or _DEFAULT_BACKEND).strip().lower()
+    if override:
+        name = override
+    else:
+        doc_choice = None
+        if document is not None:
+            try:
+                v = document.basewidget.settings.get('paintBackend').val
+                if v and v != 'auto':
+                    doc_choice = v
+            except (AttributeError, KeyError, ValueError):
+                pass
+        name = (doc_choice
+                or os.environ.get("VEUSZ_PAINT_BACKEND")
+                or _DEFAULT_BACKEND)
+    name = name.strip().lower()
     if name not in _BACKEND_NAMES:
         raise BackendError(
             f"Unknown paint backend {name!r}; expected one of {_BACKEND_NAMES}"

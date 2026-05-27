@@ -87,6 +87,44 @@ class Line(Settings):
         else:
             return self.makeQPen(painter)
 
+    # ------------------------------------------------------------------
+    # Abstract-Painter equivalents of makeQPen / makeQPenWHide.
+    #
+    # These produce values from veusz.paint.protocol — the backend-
+    # agnostic stroke description that tiny-skia, Vello, and the PDF /
+    # SVG emitters all consume directly. Widgets refactored to target the
+    # abstract Painter interface (per docs/widget-refactor-spike.md) call
+    # these instead of makeQPen.
+    # ------------------------------------------------------------------
+
+    def to_stroke(self, painter):
+        """Build a :class:`veusz.paint.protocol.Stroke` from these
+        settings (ignoring hide). ``painter`` carries DPI / scaling
+        metadata via the PainterRoot interface — same arg shape
+        makeQPen takes."""
+        from ..paint.protocol import Stroke, Color, LineCap, LineJoin
+        qcolor = self.get('color').color(painter)
+        if self.transparency > 0:
+            qcolor.setAlphaF((100-self.transparency) / 100.)
+        width = self.get('width').convert(painter)
+        _, dashpattern = setting.LineStyle._linecnvt[self.style]
+        dash = tuple(float(x) for x in dashpattern) if dashpattern else None
+        return Stroke(
+            color=Color(qcolor.redF(), qcolor.greenF(), qcolor.blueF(), qcolor.alphaF()),
+            width=float(width),
+            dash=dash,
+            # Qt's default is FlatCap / MiterJoin; mirror via Butt / Miter.
+            cap=LineCap.BUTT,
+            join=LineJoin.MITER,
+            miter_limit=4.0,
+        )
+
+    def to_stroke_or_none(self, painter):
+        """As :meth:`to_stroke` but returns None when ``hide`` is set."""
+        if self.hide or self.transparency == 100:
+            return None
+        return self.to_stroke(painter)
+
 class XYPlotLine(Line):
     '''A plot line for plotting data, allowing histogram-steps
     to be plotted.'''
@@ -194,6 +232,30 @@ class Brush(Settings):
             return qt.QBrush()
         else:
             return self.makeQBrush(painter)
+
+    # ------------------------------------------------------------------
+    # Abstract-Painter equivalents of makeQBrush / makeQBrushWHide. See
+    # the Line.to_stroke docstring for context.
+    # ------------------------------------------------------------------
+
+    def to_fill(self, painter):
+        """Build a :class:`veusz.paint.protocol.Fill` (solid color) from
+        these settings (ignoring hide). Pattern brushes fall through to
+        the brush's plain colour for now — pattern rendering in the new
+        backends lands when pattern-fill widgets become a refactor
+        target."""
+        from ..paint.protocol import Fill, Color
+        qcolor = self.get('color').color(painter)
+        if self.transparency > 0:
+            qcolor.setAlphaF((100-self.transparency) / 100.)
+        return Fill(solid=Color(
+            qcolor.redF(), qcolor.greenF(), qcolor.blueF(), qcolor.alphaF()))
+
+    def to_fill_or_none(self, painter):
+        """As :meth:`to_fill` but returns None when ``hide`` is set."""
+        if self.hide or self.transparency == 100:
+            return None
+        return self.to_fill(painter)
 
 class BrushExtended(Settings):
     '''Extended brush style.'''

@@ -105,6 +105,21 @@ class Root(widget.Widget):
             usertext=_('Notes')
         ) )
 
+        # Selects which paint backend renders this document. Honored by
+        # the parallel-paint-backends harness (tests/comparison/) and any
+        # future GUI path that consults it. Off by default ("auto") which
+        # means: use the env var VEUSZ_PAINT_BACKEND if set, else "qt"
+        # (existing QPainter pipeline — no behaviour change for users
+        # who haven't opted in). See docs/parallel-paint-backends-plan.md
+        # §7.2.
+        s.add( setting.Choice(
+            'paintBackend',
+            ('auto', 'qt', 'tiny-skia', 'vello'),
+            'auto',
+            descr=_('Paint backend used for rendering this document'),
+            usertext=_('Paint backend')
+        ) )
+
     @classmethod
     def allowedParentTypes(klass):
         return (None,)
