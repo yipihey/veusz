@@ -16,6 +16,21 @@ import os
 from ..errors import RpcError, INVALID_PARAMS
 
 
+_RECENT_KEY = 'main_recentfiles'
+_RECENT_MAX = 10
+
+
+def _push_recent(path: str) -> list[str]:
+    """Insert ``path`` at the head of the recent-files list, dedup, cap."""
+    from ... import setting as _setting
+    cur = list(_setting.settingdb.get(_RECENT_KEY, []) or [])
+    cur = [p for p in cur if p != path]
+    cur.insert(0, path)
+    cur = cur[:_RECENT_MAX]
+    _setting.settingdb[_RECENT_KEY] = cur
+    return cur
+
+
 def register(ctx):
     def open_(path: str, **_):
         if not isinstance(path, str) or not path:
@@ -31,6 +46,7 @@ def register(ctx):
             ctx.document.load(path, mode=mode)
         except Exception as e:
             raise RpcError(INVALID_PARAMS, f'load failed: {e}') from e
+        _push_recent(path)
         ctx.notifier.publish('doc.changed', {
             'changeset': ctx.document.changeset, 'paths': [], 'kind': 'load',
         })
@@ -98,6 +114,27 @@ def register(ctx):
             for exts, descr in _export.AsyncExport.getFormats()
         ]
 
+    def recent_list(**_):
+        from ... import setting as _setting
+        items = list(_setting.settingdb.get(_RECENT_KEY, []) or [])
+        return {
+            'paths': [
+                {'path': p, 'exists': os.path.isfile(p)} for p in items
+            ],
+        }
+
+    def recent_clear(**_):
+        from ... import setting as _setting
+        _setting.settingdb[_RECENT_KEY] = []
+        return {'ok': True}
+
+    def recent_remove(path: str, **_):
+        from ... import setting as _setting
+        cur = list(_setting.settingdb.get(_RECENT_KEY, []) or [])
+        cur = [p for p in cur if p != path]
+        _setting.settingdb[_RECENT_KEY] = cur
+        return {'ok': True}
+
     return {
         'file.open': open_,
         'file.save': save,
@@ -105,6 +142,9 @@ def register(ctx):
         'file.info': info,
         'file.export': export_,
         'file.formats': formats,
+        'file.recent_list': recent_list,
+        'file.recent_clear': recent_clear,
+        'file.recent_remove': recent_remove,
     }
 
 
@@ -133,4 +173,5 @@ def _save_to(ctx, path: str) -> dict:
         ctx.document.save(path, mode=mode)
     except Exception as e:
         raise RpcError(INVALID_PARAMS, f'save failed: {e}') from e
+    _push_recent(path)
     return {'ok': True, 'path': path, 'changeset': ctx.document.changeset}

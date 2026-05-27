@@ -190,6 +190,13 @@ export function createRpc(transport: Transport) {
         }>,
       formats: () =>
         t('file.formats') as Promise<Array<{ extensions: string[]; description: string }>>,
+      recentList: () =>
+        t('file.recent_list') as Promise<{
+          paths: Array<{ path: string; exists: boolean }>;
+        }>,
+      recentClear: () => t('file.recent_clear') as Promise<{ ok: true }>,
+      recentRemove: (path: string) =>
+        t('file.recent_remove', { path }) as Promise<{ ok: true }>,
     },
   };
 }

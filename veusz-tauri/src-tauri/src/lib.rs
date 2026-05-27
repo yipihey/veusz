@@ -23,6 +23,16 @@ pub fn run() {
             // Spawn veuszd sidecar with a fresh UDS path. The bridge
             // owns the connection lifecycle and tears down on app exit.
             let bridge = ipc::Bridge::spawn(&app.handle())?;
+            // Pump daemon-side notifications into Tauri events so the
+            // frontend's `tauriTransport().subscribe(...)` listeners
+            // actually fire.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<ipc::Bridge>();
+                if let Err(e) = state.forward_notifications_to(handle.clone()).await {
+                    tracing::error!("notification forwarder failed: {e}");
+                }
+            });
             app.manage(bridge);
             Ok(())
         })

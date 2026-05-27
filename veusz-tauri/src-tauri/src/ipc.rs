@@ -2,12 +2,17 @@
 //!
 //! Delegates the wire-level work to the `veusz-rpc` crate (kept
 //! Tauri-agnostic so its `cargo test` runs without webview deps).
-//! This file is the Tauri-specific glue: spawn the sidecar at app
-//! startup, hold the client handle in Tauri state, and surface
-//! `Bridge::call` to the `#[tauri::command] rpc` handler.
+//! This file is the Tauri-specific glue:
+//!  - spawn the sidecar at app startup
+//!  - hold the client handle in Tauri state
+//!  - surface `Bridge::call` to the `#[tauri::command] rpc` handler
+//!  - forward daemon push notifications to the WebView as
+//!    `veusz://notification` events (which `tauriTransport().subscribe`
+//!    in the frontend already listens for)
 
 use std::path::PathBuf;
 
+use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -52,6 +57,38 @@ impl Bridge {
         })
     }
 
+    /// Subscribe to daemon notifications and forward them to the
+    /// WebView as `veusz://notification` events.
+    pub async fn forward_notifications_to<R: tauri::Runtime>(
+        &self,
+        handle: tauri::AppHandle<R>,
+    ) -> Result<tokio::task::JoinHandle<()>, BridgeError> {
+        let guard = self.sidecar.lock().await;
+        let side = guard.as_ref().ok_or(BridgeError::NotRunning)?;
+        let mut rx = side.client.subscribe();
+        // Spawn a long-lived task that pumps the broadcast channel
+        // into Tauri's event system. The receiver drops with the
+        // Sidecar; when that happens the recv() returns Closed and
+        // we exit cleanly.
+        Ok(tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(notif) => {
+                        let payload = NotificationPayload {
+                            method: notif.method,
+                            params: notif.params,
+                        };
+                        let _ = tauri::Emitter::emit(&handle, "veusz://notification", payload);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("notification receiver lagged by {n} messages");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }))
+    }
+
     pub async fn call(
         &self,
         method: &str,
@@ -68,6 +105,12 @@ impl Bridge {
             s.shutdown().await;
         }
     }
+}
+
+#[derive(Serialize, Clone)]
+struct NotificationPayload {
+    method: String,
+    params: serde_json::Value,
 }
 
 fn default_socket_path() -> PathBuf {
