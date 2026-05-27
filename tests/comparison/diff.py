@@ -287,3 +287,145 @@ def pdf_compare_pairs(report_dir: Path, backends: list,
                 ).__dict__)
         out[stem] = pair_results
     return out
+
+
+# ---------------------------------------------------------------------------
+# SVG diff: rasterise via rsvg-convert (or Inkscape), then run PSNR/SSIM as
+# for PNGs. Mirrors the PDF path, just with a different rasteriser.
+# ---------------------------------------------------------------------------
+
+def _svg_rasteriser():
+    """Detect a working SVG rasteriser and return a function that takes
+    ``(svg_path, png_path, dpi) -> bool``. Tries rsvg-convert first (the
+    typical Linux librsvg2-bin tool), then Inkscape. Returns ``None`` if
+    neither is installed."""
+    import shutil
+    import subprocess
+
+    if shutil.which("rsvg-convert"):
+        def _rasterise_rsvg(svg_path: Path, png_path: Path, dpi: int) -> bool:
+            try:
+                subprocess.run(
+                    ["rsvg-convert", "-d", str(dpi), "-p", str(dpi),
+                     "-o", str(png_path), str(svg_path)],
+                    check=True, capture_output=True, timeout=60,
+                )
+                return png_path.exists()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                return False
+        return _rasterise_rsvg
+
+    if shutil.which("inkscape"):
+        def _rasterise_inkscape(svg_path: Path, png_path: Path, dpi: int) -> bool:
+            try:
+                subprocess.run(
+                    ["inkscape", f"--export-dpi={dpi}",
+                     f"--export-filename={png_path}", str(svg_path)],
+                    check=True, capture_output=True, timeout=60,
+                )
+                return png_path.exists()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                return False
+        return _rasterise_inkscape
+
+    return None
+
+
+# Probe once at module load so callers see a stable answer; the harness
+# can gracefully skip SVG diffs in environments without a rasteriser.
+_SVG_RASTERISER = _svg_rasteriser()
+
+
+def _svg_to_png(svg_path: Path, dpi: int = 96) -> Optional[Path]:
+    """Rasterise ``svg_path`` to a sibling PNG via the detected rasteriser.
+    Returns the PNG path on success, None on failure. Cached: re-rasterises
+    only if the PNG is missing or older than the SVG."""
+    if _SVG_RASTERISER is None:
+        return None
+    out = svg_path.with_suffix(".rsvg.png")
+    try:
+        if (out.exists()
+                and out.stat().st_mtime >= svg_path.stat().st_mtime):
+            return out
+    except OSError:
+        pass
+    if _SVG_RASTERISER(svg_path, out, dpi):
+        return out
+    return None
+
+
+def diff_svgs(a_path: Path, b_path: Path,
+              identical_db: float = 50.0,
+              within_db: float = 35.0,
+              diff_out: Optional[Path] = None,
+              dpi: int = 96) -> DiffResult:
+    """Diff two SVGs by rasterising each at ``dpi`` and running PSNR/SSIM
+    on the resulting bitmaps. Skips with an error tag if no SVG rasteriser
+    is installed."""
+    result = DiffResult(a_path=str(a_path), b_path=str(b_path))
+    if _SVG_RASTERISER is None:
+        result.error = ("no SVG rasteriser available "
+                        "(install librsvg2-bin or inkscape) — SVG diff skipped")
+        return result
+    a_png = _svg_to_png(a_path, dpi=dpi)
+    b_png = _svg_to_png(b_path, dpi=dpi)
+    if a_png is None or b_png is None:
+        result.error = "SVG rasterisation failed"
+        return result
+    # Off-by-one in viewport sizes between rasterisers is common; crop both
+    # to a common size before delegating (same trick as diff_pdfs).
+    try:
+        import numpy as np
+        from PIL import Image as _Image
+        ai = np.asarray(_Image.open(a_png).convert("RGBA"))
+        bi = np.asarray(_Image.open(b_png).convert("RGBA"))
+        if ai.shape != bi.shape and abs(ai.shape[0] - bi.shape[0]) <= 2 \
+                and abs(ai.shape[1] - bi.shape[1]) <= 2:
+            h = min(ai.shape[0], bi.shape[0])
+            w = min(ai.shape[1], bi.shape[1])
+            ai = ai[:h, :w]
+            bi = bi[:h, :w]
+            _Image.fromarray(ai, "RGBA").save(a_png)
+            _Image.fromarray(bi, "RGBA").save(b_png)
+    except Exception:
+        pass
+    svg_result = diff_pngs(a_png, b_png,
+                           identical_db=identical_db,
+                           within_db=within_db,
+                           diff_out=diff_out)
+    svg_result.a_path = str(a_path)
+    svg_result.b_path = str(b_path)
+    return svg_result
+
+
+def svg_compare_pairs(report_dir: Path, backends: list,
+                      identical_db: float = 50.0,
+                      within_db: float = 35.0,
+                      dpi: int = 96) -> dict:
+    """As :func:`pdf_compare_pairs` but for SVG outputs."""
+    from collections import defaultdict
+    by_stem = defaultdict(dict)
+    for svg in report_dir.glob("*.svg"):
+        try:
+            stem, backend = svg.stem.rsplit(".", 1)
+        except ValueError:
+            continue
+        if backend in backends:
+            by_stem[stem][backend] = svg
+
+    out = {}
+    for stem, paths in by_stem.items():
+        pair_results = []
+        names = sorted(paths.keys())
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                diff_out = report_dir / f"{stem}.{a}-vs-{b}.svg.diff.png"
+                pair_results.append(diff_svgs(
+                    paths[a], paths[b],
+                    identical_db=identical_db,
+                    within_db=within_db,
+                    diff_out=diff_out,
+                    dpi=dpi,
+                ).__dict__)
+        out[stem] = pair_results
+    return out

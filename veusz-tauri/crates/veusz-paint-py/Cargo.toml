@@ -15,6 +15,7 @@ crate-type = ["cdylib"]
 veusz-paint-core = { path = "../veusz-paint-core" }
 veusz-paint-tiny-skia = { path = "../veusz-paint-tiny-skia" }
 veusz-paint-pdf = { path = "../veusz-paint-pdf" }
+veusz-paint-svg = { path = "../veusz-paint-svg" }
 veusz-paint-vello = { path = "../veusz-paint-vello" }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 serde_json = "1"

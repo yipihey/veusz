@@ -198,6 +198,26 @@ class TinySkiaSceneBackend:
             "tiny-skia",
         )
 
+    def to_svg(self, width_pt: Optional[float] = None,
+               height_pt: Optional[float] = None) -> bytes:
+        """Render the recorded scene as a standalone SVG 1.1 document.
+
+        ``width_pt`` / ``height_pt`` default to the painter's pixel size
+        interpreted as SVG user-space units (conventionally pixels at the
+        SVG default 96 DPI). Mirrors :meth:`to_pdf`; the SVG emitter is in
+        the ``veusz-paint-svg`` Rust crate and walks the same abstract
+        Scene IR.
+        """
+        if self._ext is None:
+            raise BackendError("backend extension was not bound at construction time")
+        return self._ext.render_scene_to_svg_bytes(
+            self._recorder.to_json(),
+            float(width_pt or self.width),
+            float(height_pt or self.height),
+            self.background,
+            "tiny-skia",
+        )
+
     @property
     def op_count(self) -> int:
         return self._recorder.op_count

@@ -21,6 +21,7 @@ use pyo3::types::PyBytes;
 
 use veusz_paint_core::{Color, Scene, SceneSummary};
 use veusz_paint_pdf::render_scene_to_pdf;
+use veusz_paint_svg::render_scene_to_svg;
 use veusz_paint_tiny_skia::TinySkiaPainter;
 use veusz_paint_vello::VelloRenderer;
 
@@ -150,6 +151,36 @@ fn render_scene_to_pdf_bytes<'py>(
     Ok(PyBytes::new_bound(py, &pdf))
 }
 
+/// Rasterise a serialised [`Scene`] into a standalone SVG document (bytes).
+///
+/// Mirrors [`render_scene_to_pdf_bytes`]: SVG is a vector format, so the
+/// choice of raster backend is irrelevant to the output. The `backend`
+/// argument exists for future per-backend tuning (e.g. Vello's gradient
+/// mapping); only ``"tiny-skia"`` is currently accepted.
+#[pyfunction]
+#[pyo3(signature = (scene_json, width, height, background, backend = "tiny-skia"))]
+fn render_scene_to_svg_bytes<'py>(
+    py: Python<'py>,
+    scene_json: &[u8],
+    width: f64,
+    height: f64,
+    background: (f32, f32, f32, f32),
+    backend: &str,
+) -> PyResult<Bound<'py, PyBytes>> {
+    if backend != BACKEND_TINY_SKIA {
+        return Err(PyValueError::new_err(format!(
+            "SVG emission for backend {:?} is not implemented yet",
+            backend,
+        )));
+    }
+    let scene: Scene = serde_json::from_slice(scene_json)
+        .map_err(|e| PyValueError::new_err(format!("scene JSON decode failed: {e}")))?;
+    let svg = py.allow_threads(|| {
+        render_scene_to_svg(&scene, width, height, background)
+    }).map_err(PyRuntimeError::new_err)?;
+    Ok(PyBytes::new_bound(py, &svg))
+}
+
 /// List the backends available in this build of `veusz_paint_ext`.
 #[pyfunction]
 fn available_backends() -> Vec<&'static str> {
@@ -167,6 +198,7 @@ fn available_backends() -> Vec<&'static str> {
 fn _paint_ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(render_scene_to_png, m)?)?;
     m.add_function(wrap_pyfunction!(render_scene_to_pdf_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(render_scene_to_svg_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(scene_summary_json, m)?)?;
     m.add_function(wrap_pyfunction!(available_backends, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
