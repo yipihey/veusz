@@ -288,11 +288,54 @@ pub struct TextLayout {
 // ---------------------------------------------------------------------------
 
 /// RGBA8, row-major, straight (un-premultiplied) alpha.
+///
+/// `pixels` serialises as a base64-encoded string rather than the default
+/// `[0, 1, 2, ...]` JSON int-array. For a 200x200 image the int-array form
+/// runs ~600 KB; base64 brings the same data to ~213 KB. Backwards-
+/// compatible reads of legacy int-array streams happen via the
+/// `pixels_int_array` deserializer fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
+    #[serde(with = "image_pixels_serde")]
     pub pixels: Vec<u8>,
+}
+
+mod image_pixels_serde {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&B64.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        // Accept either a base64 string OR a JSON array of u8 (the legacy
+        // ASCII-int-array format). Lets us decode old scene fixtures /
+        // captured traces without a migration step.
+        use serde::de::{self, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct PxVisitor;
+        impl<'de> Visitor<'de> for PxVisitor {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("base64 string or array of u8")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<u8>, E> {
+                B64.decode(v).map_err(de::Error::custom)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(b) = seq.next_element::<u8>()? {
+                    out.push(b);
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_any(PxVisitor)
+    }
 }
 
 // ---------------------------------------------------------------------------

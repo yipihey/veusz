@@ -128,14 +128,15 @@ def _text_layout(t: TextLayout) -> dict:
 
 
 def _image(img: Image) -> dict:
-    # Pixels round-trip as a list of u8 for now. For real workloads we'll
-    # add a base64 path; the tiny-skia backend doesn't hit this in phase 2
-    # because Veusz blits images via QImage paths that are converted to
-    # straight-alpha RGBA8 on the Python side.
+    # Base64-encode the RGBA8 byte stream — Rust accepts both a base64
+    # string and the legacy [u8, u8, ...] int-array form. Base64 cuts
+    # bytes per image ~4x and parse time even more.
+    import base64
+    pixels_bytes = bytes(img.pixels) if not isinstance(img.pixels, (bytes, bytearray)) else img.pixels
     return {
         "width": int(img.width),
         "height": int(img.height),
-        "pixels": list(img.pixels),
+        "pixels": base64.b64encode(pixels_bytes).decode("ascii"),
     }
 
 

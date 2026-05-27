@@ -6,6 +6,7 @@ description = "Abstract Painter trait + supporting value types for Veusz's paral
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
 
 [dev-dependencies]
 serde_json = "1"

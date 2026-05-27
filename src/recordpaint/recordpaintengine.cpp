@@ -753,27 +753,21 @@ void RecordPaintEngine::drawImage(const QRectF& rectangle,
               .arg(image.width()).arg(image.height()));
   if (sceneEnabled()) {
     // veusz-paint-core::Image is straight-alpha RGBA8 row-major. Convert
-    // whatever QImage format we received to RGBA8888 and base64-encode
-    // the bytes so the JSON line stays single-line.
+    // whatever QImage format we received to RGBA8888, then base64-encode
+    // the raw bytes — the Rust side accepts both base64 strings and the
+    // legacy JSON int-array. Base64 is ~4x smaller than int-array on the
+    // wire for typical scientific bitmaps (200x200 RGBA: ~213 KB vs ~600
+    // KB) and parses faster on the Rust side too.
     QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
     QByteArray raw(reinterpret_cast<const char*>(rgba.constBits()),
                    int(rgba.sizeInBytes()));
     QByteArray b64 = raw.toBase64();
-    int w = rgba.width(), h = rgba.height();
-    // Build pixels as a JSON array of ints — that's what veusz-paint-core's
-    // Image expects ({"width":..., "height":..., "pixels": [u8, u8, ...]}).
-    // Inlining the array as base64 isn't directly serde-compatible without
-    // changing the Rust side; instead we ship the byte stream as a comma-
-    // separated list. This is bulky but works without protocol changes.
-    QStringList px;
-    px.reserve(raw.size());
-    for (int i = 0; i < raw.size(); ++i)
-      px.append(QString::number(quint8(raw[i])));
     sceneOp(QString(
-      "{\"DrawImage\":{\"image\":{\"width\":%1,\"height\":%2,\"pixels\":[%3]},"
+      "{\"DrawImage\":{\"image\":{\"width\":%1,\"height\":%2,\"pixels\":\"%3\"},"
       "\"dst\":{\"x\":%4,\"y\":%5,\"w\":%6,\"h\":%7},"
       "\"src\":%8}}")
-      .arg(w).arg(h).arg(px.join(","))
+      .arg(rgba.width()).arg(rgba.height())
+      .arg(QString::fromLatin1(b64))
       .arg(rectangle.x()).arg(rectangle.y())
       .arg(rectangle.width()).arg(rectangle.height())
       .arg(sr.width() > 0 && sr.height() > 0
@@ -781,7 +775,6 @@ void RecordPaintEngine::drawImage(const QRectF& rectangle,
             .arg(sr.x()).arg(sr.y()).arg(sr.width()).arg(sr.height())
         : QString("null"))
     );
-    (void)b64;
   }
 }
 
