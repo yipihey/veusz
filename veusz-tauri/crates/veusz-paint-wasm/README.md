@@ -85,20 +85,13 @@ a machine with a GPU + proper Vulkan/Metal driver) is the path that
 exercises the renderer end-to-end. CI just confirms the harness loads
 and the pipeline up to `requestDevice` works.
 
-### Known limitation in this container
+### History: Chromium compatibility
 
-The included Chromium pre-cache (`chromium-1194`) loads the harness fine
-and reports `navigator.gpu` present, but `requestDevice` fails with
-`maxInterStageShaderComponents … not recognized` because the bundled
-wgpu version still passes a limit that newer Chromium removed.
-
-The proper fix is to bump vello from 0.3 to 0.9 (its current latest) —
-the intermediate versions track wgpu's evolution and drop the
-deprecated limit declaration. That cascade affects both this crate and
-`veusz-paint-vello`; the API surface that the SceneBuilder uses changed
-between 0.3 and 0.9 (BlendMode tagging, Brush construction). Tracked as
-a future chunk; the test skips gracefully in the meantime and a fresh
-Chromium ≤ 131 still drives the harness end-to-end.
+Before vello 0.4: wgpu 22's `DeviceDescriptor` declared the deprecated
+`maxInterStageShaderComponents` limit, which Chromium 132+ rejects.
+The headless test would skip at `requestDevice`. Fixed by bumping vello
+to 0.4 (wgpu 23) — that wgpu drop the deprecated limit. The Playwright
+test now reaches `render` cleanly on the bundled Chromium build.
 
 ## Text
 

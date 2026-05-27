@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use peniko::{
     BlendMode as PenikoBlend, Brush, Color as PenikoColor, ColorStop, Compose, Extend,
-    Fill as PenikoFill, Format as PenikoImageFormat, Gradient, Mix,
+    Fill as PenikoFill, Gradient, ImageFormat as PenikoImageFormat, Mix,
 };
 use peniko::kurbo::{Affine as KAffine, BezPath, PathEl, Point, Stroke as KStroke};
 
@@ -152,9 +152,8 @@ impl VelloRenderer {
         let view = texture.create_view(&Default::default());
 
         let render_params = RenderParams {
-            base_color: PenikoColor::rgba(
-                background.0 as f64, background.1 as f64,
-                background.2 as f64, background.3 as f64),
+            base_color: PenikoColor::new(
+                [background.0, background.1, background.2, background.3]),
             width,
             height,
             // AaConfig::Area: analytic-coverage AA — same family Qt's
@@ -441,7 +440,9 @@ fn vblend_to_blend(m: VBlend) -> PenikoBlend {
 }
 
 fn vcolor_to_peniko(c: VColor) -> PenikoColor {
-    PenikoColor::rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
+    // peniko 0.3 changed Color to AlphaColor<Srgb>; construct via the
+    // `new` ctor that takes [r, g, b, a] in 0..1.
+    PenikoColor::new([c.r, c.g, c.b, c.a])
 }
 
 fn vcap_to_kurbo(c: VCap) -> kurbo::Cap {
@@ -514,7 +515,14 @@ fn brush_for_fill(f: &VFill) -> Brush {
         VFill::Solid(c) => Brush::Solid(vcolor_to_peniko(*c)),
         VFill::Linear(g) => {
             let stops: Vec<ColorStop> = g.stops.iter()
-                .map(|s| ColorStop { offset: s.offset, color: vcolor_to_peniko(s.color) })
+                .map(|s| ColorStop {
+                    offset: s.offset,
+                    // peniko 0.3 ColorStop carries a DynamicColor (color
+                    // space-tagged) rather than a raw AlphaColor; convert
+                    // the typed sRGB color we built up to DynamicColor.
+                    color: peniko::color::DynamicColor::from_alpha_color(
+                        vcolor_to_peniko(s.color)),
+                })
                 .collect();
             Brush::Gradient(Gradient::new_linear(
                 Point::new(g.start.0, g.start.1),
@@ -523,7 +531,14 @@ fn brush_for_fill(f: &VFill) -> Brush {
         }
         VFill::Radial(g) => {
             let stops: Vec<ColorStop> = g.stops.iter()
-                .map(|s| ColorStop { offset: s.offset, color: vcolor_to_peniko(s.color) })
+                .map(|s| ColorStop {
+                    offset: s.offset,
+                    // peniko 0.3 ColorStop carries a DynamicColor (color
+                    // space-tagged) rather than a raw AlphaColor; convert
+                    // the typed sRGB color we built up to DynamicColor.
+                    color: peniko::color::DynamicColor::from_alpha_color(
+                        vcolor_to_peniko(s.color)),
+                })
                 .collect();
             Brush::Gradient(Gradient::new_radial(
                 Point::new(g.center.0, g.center.1),

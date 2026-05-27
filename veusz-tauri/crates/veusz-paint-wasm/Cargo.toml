@@ -15,9 +15,9 @@ veusz-paint-core = { path = "../veusz-paint-core" }
 # small subset of the Vello SceneBuilder that browser-side rendering
 # needs, with the text path emitting placeholder rectangles. Real text
 # in WASM lands when fontique gains a wasm-friendly font source.
-vello = "0.3"
-wgpu = "22"
-peniko = "0.2"
+vello = "0.4"
+wgpu = "23"
+peniko = "0.3"
 serde_json = "1"
 skrifa = "0.42"
 
