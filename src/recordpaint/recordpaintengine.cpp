@@ -25,9 +25,59 @@
 #include <QList>
 #include <QPaintEngine>
 
+#include <QFile>
+#include <QMutex>
+#include <QTextStream>
+#include <cstdlib>
+
 #include "paintelement.h"
 #include "recordpaintengine.h"
 #include "recordpaintdevice.h"
+
+// -- Optional dynamic-pass QPainter audit (spike S1, C++ half) -------------
+// When the environment variable VEUSZ_RECORDPAINT_TRACE is set to a writable
+// path, every call into RecordPaintEngine is appended as one JSONL record.
+// Cheap shape data only (no coordinate dumps). Inert when env var is unset:
+// a single getenv() check per call, no allocation, no I/O. See
+// docs/qpainter-audit.md §5 and veusz/paint/tracer.py for the consumer.
+namespace {
+  static QMutex g_trace_mutex;
+  static QFile* g_trace_file = nullptr;
+  static bool g_trace_checked = false;
+  static bool g_trace_enabled = false;
+
+  inline bool traceEnabled()
+  {
+    if (!g_trace_checked) {
+      QMutexLocker lock(&g_trace_mutex);
+      if (!g_trace_checked) {
+        const char* path = std::getenv("VEUSZ_RECORDPAINT_TRACE");
+        if (path && *path) {
+          g_trace_file = new QFile(QString::fromUtf8(path));
+          if (!g_trace_file->open(QIODevice::Append | QIODevice::Text)) {
+            delete g_trace_file;
+            g_trace_file = nullptr;
+          } else {
+            g_trace_enabled = true;
+          }
+        }
+        g_trace_checked = true;
+      }
+    }
+    return g_trace_enabled;
+  }
+
+  inline void traceLine(const QString& json)
+  {
+    if (!traceEnabled()) return;
+    QMutexLocker lock(&g_trace_mutex);
+    if (g_trace_file) {
+      g_trace_file->write(json.toUtf8());
+      g_trace_file->write("\n");
+    }
+  }
+}
+// --------------------------------------------------------------------------
 
 namespace {
 
@@ -473,12 +523,18 @@ void RecordPaintEngine::drawEllipse(const QRectF& rect)
 {
   _pdev->addElement( new EllipseFElement(rect) );
   _drawitemcount++;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawEllipse\",\"w\":%1,\"h\":%2}")
+              .arg(rect.width()).arg(rect.height()));
 }
 
 void RecordPaintEngine::drawEllipse(const QRect& rect)
 {
   _pdev->addElement( new EllipseElement(rect) );
   _drawitemcount++;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawEllipse\",\"w\":%1,\"h\":%2}")
+              .arg(rect.width()).arg(rect.height()));
 }
 
 void RecordPaintEngine::drawImage(const QRectF& rectangle,
@@ -488,24 +544,34 @@ void RecordPaintEngine::drawImage(const QRectF& rectangle,
 {
   _pdev->addElement( new ImageElement(rectangle, image, sr, flags) );
   _drawitemcount++;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawImage\",\"w\":%1,\"h\":%2}")
+              .arg(image.width()).arg(image.height()));
 }
 
 void RecordPaintEngine::drawLines(const QLineF* lines, int lineCount)
 {
   _pdev->addElement( new LineFElement(lines, lineCount) );
   _drawitemcount += lineCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawLines\",\"n\":%1}").arg(lineCount));
 }
 
 void RecordPaintEngine::drawLines(const QLine* lines, int lineCount)
 {
   _pdev->addElement( new LineElement(lines, lineCount) );
   _drawitemcount += lineCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawLines\",\"n\":%1}").arg(lineCount));
 }
 
 void RecordPaintEngine::drawPath(const QPainterPath& path)
 {
   _pdev->addElement( new PathElement(path) );
   _drawitemcount++;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawPath\",\"elements\":%1}")
+              .arg(path.elementCount()));
 }
 
 void RecordPaintEngine::drawPixmap(const QRectF& r,
@@ -513,18 +579,25 @@ void RecordPaintEngine::drawPixmap(const QRectF& r,
 {
   _pdev->addElement( new PixmapElement(r, pm, sr) );
   _drawitemcount++;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawPixmap\",\"w\":%1,\"h\":%2}")
+              .arg(pm.width()).arg(pm.height()));
 }
 
 void RecordPaintEngine::drawPoints(const QPointF* points, int pointCount)
 {
   _pdev->addElement( new PointFElement(points, pointCount) );
   _drawitemcount += pointCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawPoints\",\"n\":%1}").arg(pointCount));
 }
 
 void RecordPaintEngine::drawPoints(const QPoint* points, int pointCount)
 {
   _pdev->addElement( new PointElement(points, pointCount) );
   _drawitemcount += pointCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawPoints\",\"n\":%1}").arg(pointCount));
 }
 
 void RecordPaintEngine::drawPolygon(const QPointF* points, int pointCount,
@@ -532,6 +605,9 @@ void RecordPaintEngine::drawPolygon(const QPointF* points, int pointCount,
 {
   _pdev->addElement( new PolygonFElement(points, pointCount, mode) );
   _drawitemcount += pointCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawPolygon\",\"n\":%1,\"mode\":%2}")
+              .arg(pointCount).arg(int(mode)));
 }
 
 void RecordPaintEngine::drawPolygon(const QPoint* points, int pointCount,
@@ -539,18 +615,25 @@ void RecordPaintEngine::drawPolygon(const QPoint* points, int pointCount,
 {
   _pdev->addElement( new PolygonElement(points, pointCount, mode) );
   _drawitemcount += pointCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawPolygon\",\"n\":%1,\"mode\":%2}")
+              .arg(pointCount).arg(int(mode)));
 }
 
 void RecordPaintEngine::drawRects(const QRectF* rects, int rectCount)
 {
   _pdev->addElement( new RectFElement( rects, rectCount ) );
   _drawitemcount += rectCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawRects\",\"n\":%1}").arg(rectCount));
 }
 
 void RecordPaintEngine::drawRects(const QRect* rects, int rectCount)
 {
   _pdev->addElement( new RectElement( rects, rectCount ) );
   _drawitemcount += rectCount;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawRects\",\"n\":%1}").arg(rectCount));
 }
 
 void RecordPaintEngine::drawTextItem(const QPointF& p,
@@ -558,6 +641,9 @@ void RecordPaintEngine::drawTextItem(const QPointF& p,
 {
   _pdev->addElement( new TextElement(p, textItem) );
   _drawitemcount += textItem.text().length();
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawTextItem\",\"len\":%1}")
+              .arg(textItem.text().length()));
 }
 
 void RecordPaintEngine::drawTiledPixmap(const QRectF& rect,
@@ -566,6 +652,9 @@ void RecordPaintEngine::drawTiledPixmap(const QRectF& rect,
 {
   _pdev->addElement( new TiledPixmapElement(rect, pixmap, p) );
   _drawitemcount += 1;
+  if (traceEnabled())
+    traceLine(QString("{\"op\":\"drawTiledPixmap\",\"w\":%1,\"h\":%2}")
+              .arg(pixmap.width()).arg(pixmap.height()));
 }
 
 bool RecordPaintEngine::end()
@@ -585,30 +674,68 @@ void RecordPaintEngine::updateState(const QPaintEngineState& state)
   // we add a new element for each change of state
   // these are replayed later
   const int flags = state.state();
-  if( flags & QPaintEngine::DirtyPen )
+  if( flags & QPaintEngine::DirtyPen ) {
     _pdev->addElement( new PenElement( state.pen() ) );
-  if( flags & QPaintEngine::DirtyBrush )
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setPen\",\"style\":%1,\"width\":%2}")
+                .arg(int(state.pen().style())).arg(state.pen().widthF()));
+  }
+  if( flags & QPaintEngine::DirtyBrush ) {
     _pdev->addElement( new BrushElement( state.brush() ) );
-  if( flags & QPaintEngine::DirtyBrushOrigin )
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setBrush\",\"style\":%1}")
+                .arg(int(state.brush().style())));
+  }
+  if( flags & QPaintEngine::DirtyBrushOrigin ) {
     _pdev->addElement( new BrushOriginElement( state.brushOrigin() ) );
-  if( flags & QPaintEngine::DirtyFont )
+    if (traceEnabled()) traceLine(QStringLiteral("{\"op\":\"setBrushOrigin\"}"));
+  }
+  if( flags & QPaintEngine::DirtyFont ) {
     _pdev->addElement( new FontElement( state.font(), _pdev->_dpiy ) );
-  if( flags & QPaintEngine::DirtyBackground )
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setFont\",\"family\":\"%1\",\"size\":%2}")
+                .arg(state.font().family()).arg(state.font().pointSizeF()));
+  }
+  if( flags & QPaintEngine::DirtyBackground ) {
     _pdev->addElement( new BackgroundBrushElement( state.backgroundBrush() ) );
-  if( flags & QPaintEngine::DirtyBackgroundMode )
+    if (traceEnabled()) traceLine(QStringLiteral("{\"op\":\"setBackgroundBrush\"}"));
+  }
+  if( flags & QPaintEngine::DirtyBackgroundMode ) {
     _pdev->addElement( new BackgroundModeElement( state.backgroundMode() ) );
-  if( flags & QPaintEngine::DirtyTransform )
+    if (traceEnabled()) traceLine(QStringLiteral("{\"op\":\"setBackgroundMode\"}"));
+  }
+  if( flags & QPaintEngine::DirtyTransform ) {
     _pdev->addElement( new TransformElement( state.transform() ) );
-  if( flags & QPaintEngine::DirtyClipRegion )
+    if (traceEnabled()) traceLine(QStringLiteral("{\"op\":\"setTransform\"}"));
+  }
+  if( flags & QPaintEngine::DirtyClipRegion ) {
     _pdev->addElement( new ClipRegionElement( state.clipOperation(),
 					      state.clipRegion() ) );
-  if( flags & QPaintEngine::DirtyClipPath )
+    if (traceEnabled()) traceLine(QStringLiteral("{\"op\":\"setClipRegion\"}"));
+  }
+  if( flags & QPaintEngine::DirtyClipPath ) {
     _pdev->addElement( new ClipPathElement( state.clipOperation(),
 					    state.clipPath() ) );
-  if( flags & QPaintEngine::DirtyHints )
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setClipPath\",\"elements\":%1}")
+                .arg(state.clipPath().elementCount()));
+  }
+  if( flags & QPaintEngine::DirtyHints ) {
     _pdev->addElement( new HintsElement( state.renderHints() ) );
-  if( flags & QPaintEngine::DirtyCompositionMode )
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setRenderHints\",\"hints\":%1}")
+                .arg(int(state.renderHints())));
+  }
+  if( flags & QPaintEngine::DirtyCompositionMode ) {
     _pdev->addElement( new CompositionElement( state.compositionMode() ) );
-  if( flags & QPaintEngine::DirtyClipEnabled )
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setCompositionMode\",\"mode\":%1}")
+                .arg(int(state.compositionMode())));
+  }
+  if( flags & QPaintEngine::DirtyClipEnabled ) {
     _pdev->addElement( new ClipEnabledElement( state.isClipEnabled() ) );
+    if (traceEnabled())
+      traceLine(QString("{\"op\":\"setClipEnabled\",\"v\":%1}")
+                .arg(int(state.isClipEnabled())));
+  }
 }

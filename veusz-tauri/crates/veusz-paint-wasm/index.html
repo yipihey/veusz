@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>veusz-paint-wasm browser harness</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2em auto; }
+    canvas { display: block; border: 1px solid #ccc; image-rendering: crisp-edges; }
+    pre { background: #f6f6f6; padding: 0.5em; overflow: auto; }
+    .row { display: flex; gap: 1em; align-items: flex-start; margin: 1em 0; }
+    .col { flex: 1 1 0; }
+    label { display: block; margin-top: 0.5em; }
+    button { padding: 0.4em 0.8em; }
+  </style>
+</head>
+<body>
+  <h1>veusz-paint-wasm</h1>
+  <p>Loads <code>veusz_paint_wasm</code> compiled to WebAssembly and renders
+  a Veusz <code>Scene</code> JSON blob onto a <code>&lt;canvas&gt;</code>
+  via WebGPU — no Python or Qt in the render path. This is the
+  phase-4 strategic test from <code>docs/parallel-paint-backends-plan.md</code>.</p>
+
+  <p>Requires a browser with WebGPU enabled (Chromium 113+, Firefox Nightly
+  with the flag, Safari Technology Preview).</p>
+
+  <label>
+    <strong>Scene JSON URL:</strong>
+    <input type="text" id="scene-url" size="80"
+           value="../../../tests/comparison/fixtures/synthetic_plot.scene.json" />
+  </label>
+  <label>
+    <strong>Background (R G B A, 0..1):</strong>
+    <input type="number" id="bg-r" step="0.05" value="1.0" style="width:5em" />
+    <input type="number" id="bg-g" step="0.05" value="1.0" style="width:5em" />
+    <input type="number" id="bg-b" step="0.05" value="1.0" style="width:5em" />
+    <input type="number" id="bg-a" step="0.05" value="1.0" style="width:5em" />
+  </label>
+  <p><button id="render-btn">Render</button></p>
+
+  <div class="row">
+    <div class="col">
+      <strong>WebGPU canvas:</strong>
+      <canvas id="cv" width="400" height="240"></canvas>
+    </div>
+  </div>
+
+  <h2>Log</h2>
+  <pre id="log"></pre>
+
+  <script type="module">
+    import init, { VelloCanvasRenderer } from "./pkg/veusz_paint_wasm.js";
+
+    const log = (msg) => {
+      const el = document.getElementById("log");
+      el.textContent += msg + "\n";
+      el.scrollTop = el.scrollHeight;
+    };
+
+    async function go() {
+      if (!navigator.gpu) {
+        log("ERROR: navigator.gpu is undefined — this browser doesn't expose WebGPU.");
+        return;
+      }
+      log("loading wasm module…");
+      await init();
+      log("wasm loaded; initialising VelloCanvasRenderer…");
+
+      const cv = document.getElementById("cv");
+      const renderer = await new VelloCanvasRenderer(cv);
+      log("renderer ready.");
+
+      document.getElementById("render-btn").addEventListener("click", async () => {
+        const url = document.getElementById("scene-url").value;
+        try {
+          const sceneBytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+          log(`fetched ${sceneBytes.length} bytes of scene JSON from ${url}`);
+          const [r, g, b, a] = ["bg-r","bg-g","bg-b","bg-a"]
+            .map(id => parseFloat(document.getElementById(id).value));
+          const t0 = performance.now();
+          await renderer.render(sceneBytes, r, g, b, a);
+          log(`rendered in ${(performance.now()-t0).toFixed(1)} ms`);
+        } catch (e) {
+          log(`render failed: ${e}`);
+        }
+      });
+    }
+
+    go().catch(e => log(`fatal: ${e}`));
+  </script>
+</body>
+</html>

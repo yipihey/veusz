@@ -1,0 +1,31 @@
+[package]
+name = "veusz-paint-wasm"
+version = "0.0.0"
+edition = "2021"
+description = "wasm-bindgen wrapper around veusz-paint-vello that exposes the Veusz Scene -> PNG path in a browser. The strategic backend (plan §8 phase 4): a .vsz document can be rendered via WebGPU in a JS/TS environment with no Python and no Qt in the render path."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+# We intentionally do not depend on veusz-paint-vello here: it pulls in
+# veusz-paint-text -> fontique, which uses fontconfig at runtime (no system
+# fontconfig in a browser). Instead, this crate re-implements the
+# small subset of the Vello SceneBuilder that browser-side rendering
+# needs, with the text path emitting placeholder rectangles. Real text
+# in WASM lands when fontique gains a wasm-friendly font source.
+vello = "0.3"
+wgpu = "22"
+peniko = "0.2"
+serde_json = "1"
+skrifa = "0.42"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Document", "Element", "HtmlCanvasElement", "Window",
+    "GpuCanvasContext", "GpuTextureFormat",
+] }
+console_error_panic_hook = "0.1"

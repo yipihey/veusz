@@ -1,0 +1,17 @@
+[package]
+name = "veusz-paint-text"
+version = "0.0.0"
+edition = "2021"
+description = "Text layout + glyph-to-path conversion for Veusz paint backends. Uses Parley for layout and skrifa for glyph outline extraction; the resulting Vec<(Path, Affine)> works as input to any backend that implements veusz_paint_core::Painter."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+parley = "0.9"
+fontique = "0.9"
+skrifa = "0.42"
+# fontconfig-dlopen avoids linking libfontconfig at build time; it loads
+# the shared library at runtime if available. Lets the crate build on
+# minimal containers but pick up system fonts when present.
+[features]
+default = ["fontconfig-dlopen"]
+fontconfig-dlopen = ["fontique/fontconfig-dlopen"]

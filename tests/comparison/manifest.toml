@@ -1,0 +1,57 @@
+# Comparison-harness corpus manifest.
+#
+# Lists the .vsz files that veusz-render-compare runs across the three
+# backends. Skipped entries are excluded with a reason; the most important
+# skip is the 3D-widget set, which is out of scope for the parallel-paint
+# backends work (see docs/parallel-paint-backends-plan.md §13).
+#
+# This file is reviewed during plan sign-off; do not silently expand the
+# skip-list.
+
+[smoke]
+# One file per major widget family. Runs on every commit. Identical vs
+# QPainter on the QPainter shim path; within tolerance vs QPainter on
+# tiny-skia / Vello.
+files = [
+    "examples/spectrum.vsz",       # axis, lines
+    "examples/barplots.vsz",       # bar
+    "examples/boxplot.vsz",        # box plot
+    "examples/contour.vsz",        # contour
+    "examples/histo.vsz",          # histogram
+    "examples/mandelbrot.vsz",     # image widget
+    "examples/coloredpoints.vsz",  # color-mapped scatter (xy + colorbar)
+    "examples/polar.vsz",          # polar
+    "examples/ternary.vsz",        # ternary
+    "examples/labels.vsz",         # text labels
+]
+
+[corpus]
+# Full sweep — examples/*.vsz + tests/selftests/*.vsz minus skip-list.
+include_globs = [
+    "examples/*.vsz",
+    "tests/selftests/*.vsz",
+]
+exclude_globs = [
+    # 3D widgets: separate engine, out of scope for parallel paint backends.
+    "examples/3d_*.vsz",
+    "examples/*3d*.vsz",
+    "tests/selftests/3d*.vsz",
+    "tests/selftests/*3d*.vsz",
+]
+
+[stress]
+# Curated pathological inputs. Used in Phase 5 tuning. Empty for now;
+# files will be added when the harness lands.
+files = []
+
+[tolerance]
+# PSNR (dB) bands. See plan §10.4.
+identical = 50.0
+within = 35.0
+# anything below `within` is "material" and blocks merge for the affected pair.
+
+[backends]
+# Backends to compare. tiny-skia and vello require the
+# veusz.paint._paint_ext extension (build with
+# scripts/build_paint_ext.sh).
+enabled = ["qt", "tiny-skia", "vello"]

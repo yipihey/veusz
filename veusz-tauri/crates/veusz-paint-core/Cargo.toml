@@ -1,0 +1,11 @@
+[package]
+name = "veusz-paint-core"
+version = "0.0.0"
+edition = "2021"
+description = "Abstract Painter trait + supporting value types for Veusz's parallel paint backends (Qt, tiny-skia, Vello). No backend deps. Mirror of veusz/paint/protocol.py."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

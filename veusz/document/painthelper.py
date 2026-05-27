@@ -206,6 +206,16 @@ class PaintHelper:
             p.restore()
             p.save()
 
+        # Optional dynamic-pass audit: log every Python-side QPainter call to
+        # the JSONL file named by VEUSZ_PAINT_TRACE. See veusz/paint/tracer.py
+        # and docs/qpainter-audit.md §5.
+        try:
+            from ..paint.tracer import trace_enabled, install_on
+            if trace_enabled():
+                install_on(p, widget_name=type(widget).__name__)
+        except Exception:
+            pass
+
         if clip is not None:
             # have to clip before scaling, avoiding a qt bug where the clipping
             # seems to happen in the wrong place

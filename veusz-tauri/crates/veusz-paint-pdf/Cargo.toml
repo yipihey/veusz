@@ -1,0 +1,11 @@
+[package]
+name = "veusz-paint-pdf"
+version = "0.0.0"
+edition = "2021"
+description = "Scene -> PDF emitter for Veusz's parallel paint backends. Consumes the abstract Scene IR from veusz-paint-core and writes single- or multi-page PDFs via pdf-writer. Shared between tiny-skia and Vello backends."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-text = { path = "../veusz-paint-text" }
+pdf-writer = "0.14"
+flate2 = "1"

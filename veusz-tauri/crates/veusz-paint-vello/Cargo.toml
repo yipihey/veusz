@@ -1,0 +1,17 @@
+[package]
+name = "veusz-paint-vello"
+version = "0.0.0"
+edition = "2021"
+description = "Vello (wgpu) backend for Veusz's abstract Painter trait. GPU compute rasteriser, with native (Vulkan/Metal/DX12) and WebGPU adapters. Same Scene IR input as tiny-skia and pdf-writer."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-text = { path = "../veusz-paint-text" }
+vello = "0.3"
+wgpu = "22"
+# peniko / kurbo are re-exported via vello; keep versions matched.
+peniko = "0.2"
+kurbo = "0.11.0"
+png = "0.18"
+pollster = "0.3"
+bytemuck = "1"
