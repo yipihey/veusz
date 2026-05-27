@@ -309,18 +309,23 @@ impl PdfEmitter {
 
     fn emit_text(&mut self, layout: &TextLayout, x: f64, y: f64) {
         // Real text via Parley + skrifa: glyphs as filled paths in PDF.
-        // Each glyph dedup-keyed on outline hash — first occurrence emits
-        // a Form XObject, subsequent occurrences reference it via /Do.
         //
-        // Dedup is OFF by default. Empirically, on representative Veusz
-        // documents (axis labels, plot titles — runs of < 30 chars, few
-        // repeats) the per-XObject dict overhead (~50 bytes) exceeds the
-        // savings from avoiding a few inline path operators. The smoke
-        // corpus came in 22% LARGER with dedup vs inline. Dedup wins on
-        // text-heavy pages with many repeated glyphs; we'll enable it
-        // selectively once that workload is benchmarked. Full Type 0
-        // CIDFont embedding (via the `subsetter` crate) is the
-        // appropriate follow-up for serious text-heavy documents.
+        // The right answer for text-heavy pages is Type 0 CIDFont
+        // embedding: glyphs go in once via a subsetted CIDFontType2,
+        // text becomes `Tj` operators with 2-byte CIDs, and PDFs are
+        // ~5x smaller on long text runs. The `subsetter` crate (Typst's
+        // OpenType subsetter) is the right tool; the wrapping work is
+        // ~200-400 lines of PDF spec compliance (font dict + CIDSystemInfo
+        // + CIDToGIDMap + ToUnicode CMap + FontDescriptor with metrics).
+        // Tracked as a phase-5 follow-up; current implementation is
+        // path-based for portability.
+        //
+        // A Form-XObject glyph-dedup attempt is scaffolded in this file
+        // (hash_path, glyph_xobjects, glyph_streams) but DISABLED — the
+        // smoke corpus came in 22% LARGER because per-XObject dict
+        // overhead exceeds the savings on Veusz's short text runs. The
+        // CIDFont path is the right win, not deduplication of inline
+        // path emissions.
         if self.text_engine.is_none() {
             self.text_engine = Some(veusz_paint_text::TextEngine::new());
         }

@@ -1,0 +1,6 @@
+# Outputs of tests/comparison/text_reference.py — regenerate locally
+# via `QT_QPA_PLATFORM=offscreen python tests/comparison/text_reference.py`.
+*.png
+*.pdf
+*.scene.json
+index.html

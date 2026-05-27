@@ -90,10 +90,15 @@ and the pipeline up to `requestDevice` works.
 The included Chromium pre-cache (`chromium-1194`) loads the harness fine
 and reports `navigator.gpu` present, but `requestDevice` fails with
 `maxInterStageShaderComponents … not recognized` because the bundled
-wgpu version still passes a limit that newer Chromium removed. The test
-skips with that message visible. Fix is to bump wgpu in
-`crates/veusz-paint-wasm/Cargo.toml` to a version that drops the
-deprecated limit, then rebuild pkg/.
+wgpu version still passes a limit that newer Chromium removed.
+
+The proper fix is to bump vello from 0.3 to 0.9 (its current latest) —
+the intermediate versions track wgpu's evolution and drop the
+deprecated limit declaration. That cascade affects both this crate and
+`veusz-paint-vello`; the API surface that the SceneBuilder uses changed
+between 0.3 and 0.9 (BlendMode tagging, Brush construction). Tracked as
+a future chunk; the test skips gracefully in the meantime and a fresh
+Chromium ≤ 131 still drives the harness end-to-end.
 
 ## Text
 

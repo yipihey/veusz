@@ -199,38 +199,62 @@ fn build_layout(
 
 /// Build the CSS-style fallback chain for a requested family.
 ///
-/// Order of preference: original family (e.g. `"Arial"`), then a
-/// metric-compatible substitute available on most Linux distros, then a
-/// generic CSS family that fontique resolves on every platform.
+/// Order of preference: original family (e.g. `"Arial"`), then a list
+/// of metric-compatible substitutes available across Linux, macOS, and
+/// Windows, then a generic CSS family that fontique resolves on every
+/// platform.
 ///
-/// The substitutes match what fontconfig's default conf files do — see
-/// `/usr/share/fontconfig/conf.avail/*alias*.conf` on a Debian/Ubuntu
-/// install. Liberation Sans is metric-compatible with Arial by design;
-/// Nimbus Sans plays the same role for Helvetica.
+/// The Linux substitutes mirror fontconfig's default conf
+/// (`/usr/share/fontconfig/conf.avail/*alias*.conf`) — Liberation Sans
+/// is metric-compatible with Arial by design; Nimbus Sans plays the
+/// same role for Helvetica. macOS and Windows usually have the
+/// "requested" name installed natively, so the chain is mostly belt-
+/// and-braces for them.
 fn font_family_chain(requested: &str) -> String {
-    // Generic families pass through unchanged — those are what we'd fall
-    // back to anyway.
+    // Generic families pass through unchanged.
     let lower = requested.to_ascii_lowercase();
     if matches!(lower.as_str(),
                 "sans-serif" | "serif" | "monospace" | "cursive" | "fantasy") {
         return requested.to_string();
     }
-    let (substitute, generic) = match lower.as_str() {
-        "arial" | "arial black" => (Some("Liberation Sans"), "sans-serif"),
-        "helvetica" | "helvetica neue" => (Some("Nimbus Sans"), "sans-serif"),
-        "verdana" | "tahoma" => (Some("DejaVu Sans"), "sans-serif"),
-        "times" | "times new roman" => (Some("Liberation Serif"), "serif"),
-        "courier" => (Some("Nimbus Mono PS"), "monospace"),
-        "courier new" => (Some("Liberation Mono"), "monospace"),
+    // Each entry: (Linux substitute, macOS substitute, generic).
+    // Parley tries each comma-separated family in order; the OS-native
+    // name comes first if the user has it. The Linux entry is the one
+    // most likely to fire on headless / containerised hosts. The macOS
+    // entry catches the case where someone runs Veusz on macOS without
+    // the Microsoft-named font installed but has the macOS equivalent.
+    let (linux, mac, generic) = match lower.as_str() {
+        "arial" | "arial black"
+            => (Some("Liberation Sans"), Some("Helvetica"), "sans-serif"),
+        "helvetica" | "helvetica neue"
+            => (Some("Nimbus Sans"), Some("Helvetica Neue"), "sans-serif"),
+        "verdana" | "tahoma"
+            => (Some("DejaVu Sans"), Some("Geneva"), "sans-serif"),
+        "times" | "times new roman"
+            => (Some("Liberation Serif"), Some("Times"), "serif"),
+        "courier"
+            => (Some("Nimbus Mono PS"), Some("Courier"), "monospace"),
+        "courier new"
+            => (Some("Liberation Mono"), Some("Courier New"), "monospace"),
         // Math / scientific fonts Veusz documents sometimes request.
-        "cmu serif" | "computer modern" => (Some("Liberation Serif"), "serif"),
-        _ => (None, "sans-serif"),
+        "cmu serif" | "computer modern"
+            => (Some("Liberation Serif"), Some("STIX Two Text"), "serif"),
+        // Symbol / mathematical glyphs — extremely common in scientific
+        // text and the trickiest cross-platform target. Two known
+        // substitutes per platform.
+        "symbol"
+            => (Some("Standard Symbols PS"), Some("Symbol"), "serif"),
+        _ => (None, None, "sans-serif"),
     };
-    if let Some(sub) = substitute {
-        format!("{requested}, {sub}, {generic}")
-    } else {
-        format!("{requested}, {generic}")
+    let mut chain = vec![requested.to_string()];
+    if let Some(s) = linux { chain.push(s.into()); }
+    if let Some(s) = mac {
+        if Some(s) != linux {  // avoid duplicates
+            chain.push(s.into());
+        }
     }
+    chain.push(generic.into());
+    chain.join(", ")
 }
 
 /// One laid-out glyph: the outline as a [`Path`], the position to draw it
@@ -380,10 +404,13 @@ mod tests {
 
     #[test]
     fn family_chain_substitutes_arial_to_liberation_sans() {
-        assert_eq!(super::font_family_chain("Arial"),
-                   "Arial, Liberation Sans, sans-serif");
-        assert_eq!(super::font_family_chain("ARIAL"),
-                   "ARIAL, Liberation Sans, sans-serif");
+        let c = super::font_family_chain("Arial");
+        assert!(c.starts_with("Arial, "), "{c}");
+        assert!(c.contains("Liberation Sans"), "{c}");  // Linux
+        assert!(c.contains("Helvetica"), "{c}");        // macOS
+        assert!(c.ends_with("sans-serif"), "{c}");
+        let c2 = super::font_family_chain("ARIAL");
+        assert!(c2.contains("Liberation Sans"), "{c2}");
     }
 
     #[test]
@@ -406,6 +433,23 @@ mod tests {
         let cn = super::font_family_chain("Courier New");
         assert!(cn.contains("Liberation Mono"), "{cn}");
         assert!(cn.contains("monospace"), "{cn}");
+    }
+
+    #[test]
+    fn family_chain_includes_mac_substitute_when_distinct() {
+        // Helvetica's mac entry is "Helvetica Neue", different from the
+        // Linux entry "Nimbus Sans" — both should be in the chain.
+        let c = super::font_family_chain("Helvetica");
+        assert!(c.contains("Nimbus Sans"), "{c}");
+        assert!(c.contains("Helvetica Neue"), "{c}");
+    }
+
+    #[test]
+    fn family_chain_dedupes_when_linux_and_mac_match() {
+        // Generic CSS family names never duplicate — sans-serif at end
+        // only.
+        let c = super::font_family_chain("Arial");
+        assert_eq!(c.matches("sans-serif").count(), 1, "{c}");
     }
 
     #[test]

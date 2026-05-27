@@ -69,7 +69,14 @@ def test_fixture_renders_to_png_and_pdf(scene_path, backend, tmp_path):
 @pytest.mark.parametrize("scene_path", _all_fixtures(),
                          ids=lambda p: p.stem.replace(".scene", ""))
 def test_fixture_render_is_deterministic(scene_path, backend, tmp_path):
-    """Same scene + same backend -> same PNG bytes."""
+    """Same scene + same backend -> visually-identical PNG.
+
+    tiny-skia is byte-deterministic. Vello on real GPU (and llvmpipe)
+    can vary at the bit level due to compute-pipeline scheduling but
+    must still produce visually-equivalent output (PSNR >= 50 dB —
+    well into the "identical" tolerance band). Asserts byte-equality
+    for tiny-skia and PSNR-equality for Vello.
+    """
     scene_json = scene_path.read_bytes()
     stem = scene_path.stem.replace(".scene", "")
 
@@ -81,8 +88,20 @@ def test_fixture_render_is_deterministic(scene_path, backend, tmp_path):
     res_b = render_scene_fixture(scene_json, stem, backend,
                                   out_b, width_px=400, height_px=240)
     assert res_a.error is None and res_b.error is None
-    assert res_a.png.read_bytes() == res_b.png.read_bytes(), \
-        f"{backend} output must be bit-identical across runs (snapshot determinism)"
+
+    if backend == "tiny-skia":
+        # Pure CPU rasteriser — should be bit-identical.
+        assert res_a.png.read_bytes() == res_b.png.read_bytes(), \
+            "tiny-skia output must be bit-identical across runs"
+    else:
+        # GPU compute pipelines can reorder tile work; assert visual
+        # equivalence via PSNR instead.
+        import math
+        d = diff_pngs(res_a.png, res_b.png)
+        assert d.error is None, d.error
+        psnr = d.psnr_db
+        assert psnr is not None and (math.isinf(psnr) or psnr >= 50.0), \
+            f"{backend} renders must match each other within 50 dB; got {psnr}"
 
 
 def test_tiny_skia_vs_vello_within_tolerance(tmp_path):
