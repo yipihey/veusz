@@ -1,19 +1,13 @@
-// JSON-RPC bridge between the Tauri shell and the veuszd sidecar.
-//
-// Phase-1 scaffold. The full implementation:
-//
-// * Spawn `veuszd --socket <tempdir>/veuszd-<pid>.sock` as a sidecar.
-// * Health-probe with `ping` (5s deadline; surface a recoverable error
-//   to the WebView on timeout so the user gets a "Reload" prompt).
-// * Multiplex requests on a single UDS connection using
-//   Content-Length framing (mirrors `veusz/daemon/framing.py`).
-// * On shutdown: send `shutdown`, then SIGTERM, then SIGKILL after 2s.
-//
-// On Windows, swap `UnixStream` for `NamedPipe`. Same wire format.
+//! JSON-RPC bridge between the Tauri shell and the veuszd sidecar.
+//!
+//! Delegates the wire-level work to the `veusz-rpc` crate (kept
+//! Tauri-agnostic so its `cargo test` runs without webview deps).
+//! This file is the Tauri-specific glue: spawn the sidecar at app
+//! startup, hold the client handle in Tauri state, and surface
+//! `Bridge::call` to the `#[tauri::command] rpc` handler.
 
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -23,39 +17,59 @@ pub enum BridgeError {
     NotRunning,
     #[error("rpc error: {0}")]
     Rpc(String),
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
 }
 
-#[derive(Serialize)]
-struct _Request<'a> {
-    jsonrpc: &'a str,
-    id: u64,
-    method: &'a str,
-    params: serde_json::Value,
+impl From<veusz_rpc::Error> for BridgeError {
+    fn from(e: veusz_rpc::Error) -> Self {
+        BridgeError::Rpc(e.to_string())
+    }
 }
 
-/// Shared bridge state. Currently a placeholder — connection management
-/// lands when the sidecar lifecycle is implemented.
+/// Shared bridge state. One per Tauri app.
 pub struct Bridge {
-    _inner: Arc<Mutex<()>>,
+    sidecar: Mutex<Option<veusz_rpc::Sidecar>>,
 }
 
 impl Bridge {
-    pub fn spawn(_handle: &tauri::AppHandle) -> Result<Self, BridgeError> {
-        // TODO: spawn the veuszd sidecar via tauri-plugin-shell,
-        // discover its socket path, open a UnixStream/NamedPipe, and
-        // run a multiplexing reader loop.
+    pub fn spawn(handle: &tauri::AppHandle) -> Result<Self, BridgeError> {
+        let socket = pick_socket_path(handle);
+        let veuszd = resolve_veuszd(handle);
+        // Spawning is async; we block on the runtime Tauri set up.
+        let sidecar = tauri::async_runtime::block_on(async move {
+            veusz_rpc::Sidecar::spawn(&veuszd, &socket, true, true).await
+        })?;
         Ok(Self {
-            _inner: Arc::new(Mutex::new(())),
+            sidecar: Mutex::new(Some(sidecar)),
         })
     }
 
     pub async fn call(
         &self,
-        _method: &str,
-        _params: serde_json::Value,
+        method: &str,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, BridgeError> {
-        Err(BridgeError::NotRunning)
+        let guard = self.sidecar.lock().await;
+        let side = guard.as_ref().ok_or(BridgeError::NotRunning)?;
+        Ok(side.client.call_obj(method, params).await?)
     }
+
+    pub async fn shutdown(&self) {
+        let mut guard = self.sidecar.lock().await;
+        if let Some(s) = guard.take() {
+            s.shutdown().await;
+        }
+    }
+}
+
+fn pick_socket_path(_handle: &tauri::AppHandle) -> PathBuf {
+    let tmp = std::env::temp_dir();
+    tmp.join(format!("veuszd-{}.sock", std::process::id()))
+}
+
+fn resolve_veuszd(_handle: &tauri::AppHandle) -> PathBuf {
+    // Bundled sidecar lives next to the app binary on every OS once
+    // `tauri.conf.json::bundle.externalBin` is wired. During `tauri
+    // dev` we fall back to `veuszd` on PATH (the dev-installed Python
+    // venv).
+    PathBuf::from("veuszd")
 }

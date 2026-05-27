@@ -52,9 +52,42 @@ def register(ctx):
         CommandInterface(ctx.document).SetData(name, arr)
         return {'ok': True, 'len': int(len(arr))}
 
+    def import_(kind: str, filename: str, options: dict | None = None, **_):
+        """Import a data file using one of Veusz's registered importers.
+
+        ``kind`` is the bare format name: ``'csv'``, ``'fits'``, ``'hdf5'``,
+        ``'npy'``, ``'npz'``, ``'plaintext'``. Each maps to the
+        corresponding ``ImportFile<KIND>`` command on
+        :class:`CommandInterface`. ``options`` is forwarded as kwargs;
+        see ``veusz/dataimport/defn_*.py`` for the per-importer options.
+        """
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        cmd_name = {
+            'csv': 'ImportFileCSV',
+            'fits': 'ImportFITSFile',
+            'hdf5': 'ImportFileHDF5',
+            'npy': 'ImportFileNPY',
+            'npz': 'ImportFileNPZ',
+            'plaintext': 'ImportFile',
+        }.get(kind.lower())
+        if cmd_name is None or not hasattr(ci, cmd_name):
+            raise RpcError(INVALID_PARAMS, f'unknown or unavailable importer: {kind}')
+        before = set(ctx.document.data.keys())
+        try:
+            getattr(ci, cmd_name)(filename, **(options or {}))
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'{kind} import failed: {e}') from e
+        after = set(ctx.document.data.keys())
+        return {
+            'imported': sorted(after - before),
+            'errors': [],
+        }
+
     return {
         'data.list': list_,
         'data.peek': peek,
         'data.stats': stats,
         'data.set': set_,
+        'data.import': import_,
     }

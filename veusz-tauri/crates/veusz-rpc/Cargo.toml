@@ -1,0 +1,16 @@
+[package]
+name = "veusz-rpc"
+version = "0.0.0"
+edition = "2021"
+description = "JSON-RPC client for the Veusz headless daemon (veuszd). Standalone — Tauri-agnostic — so the wire protocol can be unit-tested without bringing in the webview crate stack."
+
+[dependencies]
+tokio = { version = "1", features = ["net", "io-util", "macros", "rt-multi-thread", "sync", "process", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
