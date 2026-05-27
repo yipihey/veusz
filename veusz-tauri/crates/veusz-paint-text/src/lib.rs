@@ -160,8 +160,21 @@ fn build_layout(
     style: &TextStyle,
 ) -> Layout<Brush> {
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+    // CSS-style font-family fallback chain: try the requested family first,
+    // fall back to sans-serif if it isn't installed. Veusz captures
+    // family names like "Arial" via Qt's font system; "Arial" isn't on
+    // every machine (e.g. headless Linux containers ship DejaVu Sans).
+    // Without a fallback, parley returns the .notdef glyph for every
+    // character and tick labels render as a single missing-glyph box.
+    let family_chain = if style.family.eq_ignore_ascii_case("sans-serif")
+        || style.family.eq_ignore_ascii_case("serif")
+        || style.family.eq_ignore_ascii_case("monospace") {
+        style.family.clone()
+    } else {
+        format!("{}, sans-serif", style.family)
+    };
     builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-        Cow::Owned(style.family.clone()),
+        Cow::Owned(family_chain),
     )));
     builder.push_default(StyleProperty::FontSize(style.size_pt as f32));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
