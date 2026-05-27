@@ -45,15 +45,39 @@ scripts/build_paint_wasm.sh
 node veusz-tauri/crates/veusz-paint-wasm/test_node_smoke.mjs
 ```
 
-## What's deferred
+## Text
 
-* **Real text in wasm.** `fontique` (Parley's font discovery layer) calls
-  fontconfig at runtime, which doesn't exist in browsers. The wasm build
-  falls back to the dashed-bounding-box placeholder for `SceneOp::DrawText`
-  — same shape tiny-skia and PDF use when no fonts are available. A future
-  iteration ships a WASM-friendly font source (one vendored TTF in a Blob
-  would be enough for axis labels).
+Text in the WASM build uses a **vendored TTF** — Liberation Sans Regular
+(SIL OFL 1.1), at `assets/LiberationSans-Regular.ttf`. The wasm bridge
+opens it via `skrifa`, looks each character up in the cmap, draws the
+outline + walks advance widths to lay glyphs left-to-right at the
+requested baseline. No Parley / fontique / harfrust (those pull in
+fontconfig which doesn't exist in browsers).
+
+The font adds ~400 KB to the wasm bundle (final size ~2.9 MB). For
+production a subset / WOFF2-stream is the obvious follow-up. The
+character set is Latin-1 + a fair chunk of Latin Extended; non-Latin
+scripts fall through to the .notdef glyph. Adding a second TTF is
+straightforward — same skrifa-based code path.
+
+## What's still deferred
+
 * **Wide cross-browser support.** Firefox without the WebGPU flag and
   Safari pre-26 fall back to WebGL2 in wgpu, but Vello requires compute
   shaders and won't run on WebGL2. Stable Chromium is the supported path
   for this phase.
+* **Multi-page documents.** The current API renders one page per call;
+  multi-page docs hit the renderer once per page.
+
+## Host-side tests
+
+Four Rust unit tests run on the build host (no wasm32, no browser
+required) and validate the font asset + skrifa integration:
+
+```sh
+cargo test -p veusz-paint-wasm
+```
+
+They confirm the embedded font parses, basic Latin glyphs have outlines
+and advance widths, and the scene builder reaches `DrawText` without
+panicking. Catches regressions before the build hits the browser.

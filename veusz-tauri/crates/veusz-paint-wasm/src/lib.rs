@@ -28,6 +28,19 @@ use peniko::{
     Fill as PenikoFill, Format as PenikoImageFormat, Gradient, Mix,
 };
 use peniko::kurbo::{Affine as KAffine, BezPath, PathEl, Point, Stroke as KStroke};
+use skrifa::{
+    instance::{LocationRef, Size as SkSize},
+    outline::{DrawSettings, OutlinePen},
+    raw::FontRef,
+    GlyphId, MetadataProvider,
+};
+
+/// Vendored TTF used for SceneOp::DrawText in WASM. Liberation Sans
+/// Regular (SIL OFL 1.1). Replaces fontique system-discovery, which is
+/// fontconfig-bound and doesn't work in browsers. ~402 KB; sits next to
+/// the 1.8 MB Vello wasm in pkg/. Acceptable for the phase-4 deliverable;
+/// production should ship a smaller subset.
+static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/LiberationSans-Regular.ttf");
 
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene as VelloScene};
 
@@ -55,6 +68,7 @@ pub fn _start() {
 /// Builds a fresh wgpu Device + Vello Renderer per call. For interactive
 /// embedding (zoom, pan, re-render on document change), use
 /// [`VelloCanvasRenderer`] which caches the device + pipelines.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn render_scene_to_canvas(
     canvas: HtmlCanvasElement,
@@ -67,11 +81,13 @@ pub async fn render_scene_to_canvas(
 
 /// Persistent renderer over a single `<canvas>`. Reuse across frames so we
 /// don't tear down the wgpu device and re-compile Vello's pipelines.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub struct VelloCanvasRenderer {
     inner: RendererInner,
 }
 
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 impl VelloCanvasRenderer {
     #[wasm_bindgen(constructor)]
@@ -102,6 +118,7 @@ impl VelloCanvasRenderer {
 // Renderer plumbing
 // ---------------------------------------------------------------------------
 
+#[cfg(target_arch = "wasm32")]
 struct RendererInner {
     instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
@@ -111,6 +128,7 @@ struct RendererInner {
     renderer: Renderer,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl RendererInner {
     async fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -335,7 +353,7 @@ fn build_scene(scene: &VScene) -> VelloScene {
                 out.draw_image(&img, xf);
             }
             SceneOp::DrawText { layout, x, y } => {
-                emit_text_placeholder(&mut out, states.last().unwrap(), layout, *x, *y);
+                emit_text_glyphs(&mut out, states.last().unwrap(), layout, *x, *y);
             }
         }
     }
@@ -349,25 +367,80 @@ fn push_clip(out: &mut VelloScene, states: &mut Vec<GState>, path: &BezPath) {
     states.last_mut().unwrap().layers_in_frame += 1;
 }
 
-fn emit_text_placeholder(
-    out: &mut VelloScene, cur: &GState, layout: &TextLayout, x: f64, y: f64,
-) {
-    // Same placeholder shape tiny-skia / PDF use when no fonts are
-    // available: a dashed bounding-box stroke at the layout's intrinsic
-    // size. Lets the rest of the scene render correctly while real text
-    // in WASM waits on a fontique-friendly font source.
-    let w = 0.6 * layout.style.size_pt * (layout.text.chars().count() as f64);
-    let h = layout.style.size_pt;
-    let mut p = BezPath::new();
-    p.push(PathEl::MoveTo(Point::new(x, y - h)));
-    p.push(PathEl::LineTo(Point::new(x + w, y - h)));
-    p.push(PathEl::LineTo(Point::new(x + w, y)));
-    p.push(PathEl::LineTo(Point::new(x, y)));
-    p.push(PathEl::ClosePath);
+/// Minimal WASM-friendly text layout: looks each character up in the
+/// embedded font's cmap, fetches the outline + advance via skrifa,
+/// concatenates left-to-right at the requested baseline.
+///
+/// No Parley layer (no line breaking, no bidi, no fallback) — Veusz
+/// widgets pre-break their text, the audit shows we only need single-line
+/// horizontal runs, and pulling Parley into WASM also pulls in
+/// fontique/harfrust which don't compile cleanly here.
+///
+/// If the cmap doesn't have a glyph for some character (font subset gap),
+/// the character is silently dropped — same behaviour skrifa-driven text
+/// has in the native backends.
+fn emit_text_glyphs(out: &mut VelloScene, cur: &GState,
+                     layout: &TextLayout, x: f64, y: f64) {
+    let font = match FontRef::new(EMBEDDED_FONT) {
+        Ok(f) => f,
+        Err(_) => return,  // embedded font corrupt — shouldn't happen
+    };
+    let size = SkSize::new(layout.style.size_pt as f32);
+    let cmap = font.charmap();
+    let glyph_metrics = font.glyph_metrics(size, LocationRef::default());
+    let outlines = font.outline_glyphs();
     let brush = Brush::Solid(vcolor_to_peniko(layout.style.color));
-    let mut stroke = KStroke::new(0.5);
-    stroke.dash_pattern = vec![2.0, 2.0].into_iter().collect();
-    out.stroke(&stroke, cur.transform, &brush, None, &p);
+
+    let mut cursor_x = x;
+    for ch in layout.text.chars() {
+        let gid = cmap.map(ch).unwrap_or(GlyphId::new(0));
+        let outline = match outlines.get(gid) { Some(o) => o, None => continue };
+
+        let mut pen = OutlineToPath::default();
+        let _ = outline.draw(
+            DrawSettings::unhinted(size, LocationRef::default()),
+            &mut pen,
+        );
+        if !pen.path.elements().is_empty() {
+            let glyph_xf = cur.transform * KAffine::translate((cursor_x, y));
+            out.fill(PenikoFill::NonZero, glyph_xf, &brush, None, &pen.path);
+        }
+        cursor_x += glyph_metrics.advance_width(gid).unwrap_or(0.0) as f64;
+    }
+}
+
+/// skrifa OutlinePen sink that builds a kurbo BezPath in y-flipped (screen)
+/// coordinates. Glyph outlines come out y-up (PostScript); we flip on the
+/// fly to match the rest of the pipeline's y-down convention.
+#[derive(Default)]
+struct OutlineToPath {
+    path: BezPath,
+}
+
+impl OutlinePen for OutlineToPath {
+    fn move_to(&mut self, gx: f32, gy: f32) {
+        self.path.move_to(Point::new(gx as f64, -gy as f64));
+    }
+    fn line_to(&mut self, gx: f32, gy: f32) {
+        self.path.line_to(Point::new(gx as f64, -gy as f64));
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, gx: f32, gy: f32) {
+        self.path.quad_to(
+            Point::new(cx as f64, -cy as f64),
+            Point::new(gx as f64, -gy as f64),
+        );
+    }
+    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32,
+                gx: f32, gy: f32) {
+        self.path.curve_to(
+            Point::new(c1x as f64, -c1y as f64),
+            Point::new(c2x as f64, -c2y as f64),
+            Point::new(gx as f64, -gy as f64),
+        );
+    }
+    fn close(&mut self) {
+        self.path.close_path();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +529,94 @@ fn materialise_paint(p: &VPaint) -> MaterializedPaint {
         k
     });
     MaterializedPaint { fill_brush, stroke_brush, stroke }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+// These compile to the host target (e.g. x86_64-linux-gnu) and verify the
+// font-handling code without needing a WebGPU browser. The wasm-bindgen
+// surface compiles only on wasm32; that's exercised by the build script and
+// the Node smoke test.
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use veusz_paint_core::*;
+
+    #[test]
+    fn embedded_font_is_present_and_parses() {
+        assert!(EMBEDDED_FONT.len() > 10_000, "font asset must be present");
+        let font = FontRef::new(EMBEDDED_FONT).expect("font must parse");
+        // Must have a usable cmap and a few well-known glyphs.
+        let cmap = font.charmap();
+        for ch in ['A', 'a', '0', ' '] {
+            let gid = cmap.map(ch).unwrap_or(GlyphId::new(0));
+            assert_ne!(gid.to_u32(), 0,
+                       "embedded font is missing a basic Latin glyph for {ch:?}");
+        }
+    }
+
+    #[test]
+    fn embedded_font_yields_non_empty_outlines() {
+        let font = FontRef::new(EMBEDDED_FONT).expect("font parses");
+        let size = SkSize::new(16.0);
+        let cmap = font.charmap();
+        let outlines = font.outline_glyphs();
+        let gid = cmap.map('A').unwrap();
+        let outline = outlines.get(gid).expect("glyph 'A' has an outline");
+        let mut pen = OutlineToPath::default();
+        outline
+            .draw(DrawSettings::unhinted(size, LocationRef::default()), &mut pen)
+            .expect("draw");
+        let elements: Vec<_> = pen.path.elements().iter().collect();
+        assert!(elements.len() >= 4,
+                "glyph 'A' outline must have several path elements, got {}",
+                elements.len());
+    }
+
+    #[test]
+    fn glyph_advance_widths_are_positive() {
+        let font = FontRef::new(EMBEDDED_FONT).unwrap();
+        let size = SkSize::new(12.0);
+        let cmap = font.charmap();
+        let metrics = font.glyph_metrics(size, LocationRef::default());
+        let mut total = 0.0_f32;
+        for ch in "Hello".chars() {
+            let gid = cmap.map(ch).unwrap();
+            let adv = metrics.advance_width(gid).unwrap_or(0.0);
+            assert!(adv > 0.0, "advance width for {ch:?} should be > 0");
+            total += adv;
+        }
+        // 'Hello' at 12pt should occupy somewhere between 25 and 60 user-space units.
+        assert!(total > 25.0 && total < 60.0,
+                "total width for 'Hello' at 12pt out of range: {total}");
+    }
+
+    #[test]
+    fn build_scene_with_text_does_not_panic() {
+        // A scene with a single DrawText; we don't run the GPU — just
+        // confirm the WASM-side scene builder reaches text emission and
+        // calls into the skrifa outline path successfully.
+        let mut rec = SceneRecorder::new();
+        rec.draw_text(
+            &TextLayout {
+                text: "Veusz".into(),
+                style: TextStyle {
+                    family: "sans-serif".into(),
+                    size_pt: 14.0,
+                    weight: 400,
+                    italic: false,
+                    color: Color::rgba8(0, 0, 0, 255),
+                },
+            },
+            10.0, 30.0,
+        );
+        let scene = rec.into_scene();
+        let _vello_scene = build_scene(&scene);
+        // No assertion on internal vello::Scene state (it's opaque); the
+        // win is that build_scene + emit_text_glyphs completed end-to-end.
+    }
 }
 
 fn brush_for_fill(f: &VFill) -> Brush {
