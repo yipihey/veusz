@@ -63,10 +63,15 @@
       }
       log("loading wasm module…");
       await init();
-      log("wasm loaded; initialising VelloCanvasRenderer…");
+      log("wasm loaded; initialising VelloCanvasRenderer (offscreen)…");
 
+      // Off-surface mode: the canvas is a plain 2D canvas that we paint
+      // ImageData onto. The WebGPU device + Vello pipelines live entirely
+      // off-screen. This is more reliable for headless capture and
+      // sidesteps the WebGPU swap-chain's "advanced frame" gotcha that
+      // makes drawImage(webgpu_canvas, ...) read back as transparent.
       const cv = document.getElementById("cv");
-      const renderer = await new VelloCanvasRenderer(cv);
+      const renderer = await VelloCanvasRenderer.new_offscreen();
       log("renderer ready.");
 
       document.getElementById("render-btn").addEventListener("click", async () => {
@@ -77,7 +82,16 @@
           const [r, g, b, a] = ["bg-r","bg-g","bg-b","bg-a"]
             .map(id => parseFloat(document.getElementById(id).value));
           const t0 = performance.now();
-          await renderer.render(sceneBytes, r, g, b, a);
+          // Off-surface render: returns CPU pixel bytes that we draw onto
+          // a 2D canvas. Bypasses the WebGPU swap-chain (whose presented
+          // frame Chromium-headless's drawImage reads back as transparent).
+          const pixels = await renderer.render_to_pixels(
+            sceneBytes, cv.width, cv.height, r, g, b, a);
+          const ctx = cv.getContext("2d");
+          const img = new ImageData(
+            new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength),
+            cv.width, cv.height);
+          ctx.putImageData(img, 0, 0);
           log(`rendered in ${(performance.now()-t0).toFixed(1)} ms`);
         } catch (e) {
           log(`render failed: ${e}`);

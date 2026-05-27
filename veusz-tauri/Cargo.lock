@@ -4870,6 +4870,7 @@ name = "veusz-paint-wasm"
 version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures-channel",
  "js-sys",
  "peniko 0.3.2",
  "serde_json",

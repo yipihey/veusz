@@ -53,6 +53,7 @@ use veusz_paint_core::{
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::HtmlCanvasElement;
+use js_sys::Uint8Array;
 
 // ---------------------------------------------------------------------------
 // Public JS surface
@@ -81,6 +82,16 @@ pub async fn render_scene_to_canvas(
 
 /// Persistent renderer over a single `<canvas>`. Reuse across frames so we
 /// don't tear down the wgpu device and re-compile Vello's pipelines.
+///
+/// Surface-bound mode: pass a canvas to [`Self::new`]; subsequent
+/// `render(...)` calls draw to the canvas via the WebGPU swap-chain.
+///
+/// Off-surface mode: call [`Self::new_offscreen`] (no canvas). The
+/// `render_to_pixels` method bypasses the swap-chain entirely and
+/// returns CPU-side RGBA8 bytes the caller can paint via 2D-canvas
+/// `putImageData`. This is the path the headless test uses, since
+/// Chromium's `drawImage(webgpu_canvas, ...)` reads back as transparent
+/// once the swap-chain has advanced past the presented frame.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub struct VelloCanvasRenderer {
@@ -92,7 +103,16 @@ pub struct VelloCanvasRenderer {
 impl VelloCanvasRenderer {
     #[wasm_bindgen(constructor)]
     pub async fn new(canvas: HtmlCanvasElement) -> Result<VelloCanvasRenderer, JsValue> {
-        let inner = RendererInner::new(canvas)
+        let inner = RendererInner::new(Some(canvas))
+            .await
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(Self { inner })
+    }
+
+    /// Off-surface renderer (no canvas binding). Pair with
+    /// `render_to_pixels` to get raw RGBA8 bytes back.
+    pub async fn new_offscreen() -> Result<VelloCanvasRenderer, JsValue> {
+        let inner = RendererInner::new(None)
             .await
             .map_err(|e| JsValue::from_str(&e))?;
         Ok(Self { inner })
@@ -109,6 +129,28 @@ impl VelloCanvasRenderer {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    /// Render a scene off-surface into a CPU-side `Uint8Array` of RGBA8
+    /// pixels (row-major, width × height × 4 bytes). The caller can then
+    /// `ImageData`-wrap the buffer and paint it onto a 2D canvas — far
+    /// more reliable than relying on the WebGPU swap-chain's surface
+    /// presentation, which Chromium headless's `drawImage` reads back as
+    /// fully transparent (the swap-chain has already advanced past the
+    /// frame by the time the 2D canvas asks for pixels).
+    pub async fn render_to_pixels(
+        &mut self,
+        scene_json: &[u8],
+        width: u32,
+        height: u32,
+        background_r: f32, background_g: f32, background_b: f32, background_a: f32,
+    ) -> Result<Uint8Array, JsValue> {
+        self.inner
+            .render_to_pixels(scene_json, width, height,
+                              (background_r, background_g, background_b, background_a))
+            .await
+            .map(|bytes| Uint8Array::from(bytes.as_slice()))
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
         self.inner.resize(width, height).map_err(|e| JsValue::from_str(&e))
     }
@@ -121,30 +163,34 @@ impl VelloCanvasRenderer {
 #[cfg(target_arch = "wasm32")]
 struct RendererInner {
     instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
+    surface: Option<wgpu::Surface<'static>>,
+    surface_config: Option<wgpu::SurfaceConfiguration>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface_config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl RendererInner {
-    async fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
+    async fn new(canvas: Option<HtmlCanvasElement>) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
         });
 
-        let surface_target = wgpu::SurfaceTarget::Canvas(canvas.clone());
-        let surface = instance
-            .create_surface(surface_target)
-            .map_err(|e| format!("create_surface: {e}"))?;
+        let surface = if let Some(canvas) = canvas.clone() {
+            let surface_target = wgpu::SurfaceTarget::Canvas(canvas);
+            Some(instance
+                .create_surface(surface_target)
+                .map_err(|e| format!("create_surface: {e}"))?)
+        } else {
+            None
+        };
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: surface.as_ref(),
                 force_fallback_adapter: false,
             })
             .await
@@ -163,33 +209,50 @@ impl RendererInner {
             .await
             .map_err(|e| format!("request_device: {e}"))?;
 
-        let caps = surface.get_capabilities(&adapter);
-        let surface_format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .or_else(|| caps.formats.first().copied())
-            .unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
+        let surface_format = if let Some(surface) = &surface {
+            let caps = surface.get_capabilities(&adapter);
+            let format = caps
+                .formats
+                .iter()
+                .copied()
+                .find(|f| !f.is_srgb())
+                .or_else(|| caps.formats.first().copied())
+                .unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
 
-        let width = canvas.width().max(1);
-        let height = canvas.height().max(1);
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // Composite alpha: explicit Opaque so the canvas surface
+            // ignores its alpha channel and presents fully opaque pixels.
+            let alpha_mode = caps.alpha_modes.iter().copied()
+                .find(|m| matches!(m, wgpu::CompositeAlphaMode::Opaque))
+                .or_else(|| caps.alpha_modes.first().copied())
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto);
+
+            let canvas_for_dims = canvas.as_ref().unwrap();
+            let width = canvas_for_dims.width().max(1);
+            let height = canvas_for_dims.height().max(1);
+            let surface_config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width,
+                height,
+                present_mode: wgpu::PresentMode::Fifo,
+                alpha_mode,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            surface.configure(&device, &surface_config);
+            Some((format, surface_config))
+        } else {
+            None
         };
-        surface.configure(&device, &surface_config);
+        let (renderer_surface_format, stored_surface_config) = match surface_format {
+            Some((f, c)) => (Some(f), Some(c)),
+            None => (None, None),
+        };
 
         let renderer = Renderer::new(
             &device,
             RendererOptions {
-                surface_format: Some(surface_format),
+                surface_format: renderer_surface_format,
                 use_cpu: false,
                 antialiasing_support: vello::AaSupport {
                     area: true, msaa8: false, msaa16: true,
@@ -199,14 +262,20 @@ impl RendererInner {
         )
         .map_err(|e| format!("vello renderer init: {e}"))?;
 
-        Ok(Self { instance, surface, device, queue, surface_config, renderer })
+        Ok(Self {
+            instance, surface, surface_config: stored_surface_config,
+            device, queue, renderer,
+        })
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
         if width == 0 || height == 0 { return Ok(()); }
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        let (Some(surface), Some(cfg)) = (self.surface.as_ref(), self.surface_config.as_mut()) else {
+            return Ok(());  // off-surface mode: nothing to resize
+        };
+        cfg.width = width;
+        cfg.height = height;
+        surface.configure(&self.device, cfg);
         Ok(())
     }
 
@@ -215,20 +284,22 @@ impl RendererInner {
         scene_json: &[u8],
         background: (f32, f32, f32, f32),
     ) -> Result<(), String> {
+        let surface = self.surface.as_ref()
+            .ok_or_else(|| "render() requires a surface-bound renderer; use new() not new_offscreen()".to_string())?;
+        let cfg = self.surface_config.as_ref().unwrap();
         let scene: VScene = serde_json::from_slice(scene_json)
             .map_err(|e| format!("scene JSON decode: {e}"))?;
         let vello_scene = build_scene(&scene);
 
-        let surface_texture = self
-            .surface
+        let surface_texture = surface
             .get_current_texture()
             .map_err(|e| format!("surface get_current_texture: {e:?}"))?;
 
         let params = RenderParams {
             base_color: PenikoColor::new(
                 [background.0, background.1, background.2, background.3]),
-            width: self.surface_config.width,
-            height: self.surface_config.height,
+            width: cfg.width,
+            height: cfg.height,
             antialiasing_method: AaConfig::Msaa16,
         };
 
@@ -238,6 +309,98 @@ impl RendererInner {
             .map_err(|e| format!("vello render: {e}"))?;
         surface_texture.present();
         Ok(())
+    }
+
+    /// Off-surface render: pure render_to_texture + GPU-to-CPU readback.
+    /// Returns straight-alpha RGBA8 bytes. No swap-chain involvement, so
+    /// the result is stable across `requestAnimationFrame` boundaries
+    /// (and Chromium-headless screenshot timing).
+    async fn render_to_pixels(
+        &mut self,
+        scene_json: &[u8],
+        width: u32,
+        height: u32,
+        background: (f32, f32, f32, f32),
+    ) -> Result<Vec<u8>, String> {
+        let scene: VScene = serde_json::from_slice(scene_json)
+            .map_err(|e| format!("scene JSON decode: {e}"))?;
+        let vello_scene = build_scene(&scene);
+
+        let unpadded_bytes_per_row = width * 4;
+        let align: u32 = 256;
+        let padded_bytes_per_row =
+            (unpadded_bytes_per_row + align - 1) / align * align;
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("veusz-paint-wasm render_to_pixels target"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+
+        let params = RenderParams {
+            base_color: PenikoColor::new(
+                [background.0, background.1, background.2, background.3]),
+            width, height,
+            antialiasing_method: AaConfig::Msaa16,
+        };
+
+        self.renderer
+            .render_to_texture(&self.device, &self.queue, &vello_scene, &view, &params)
+            .map_err(|e| format!("vello render: {e}"))?;
+
+        // Copy texture -> buffer.
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("veusz-paint-wasm readback"),
+            size: (padded_bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &readback,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        // Async map, awaited via wasm-bindgen-futures.
+        let (tx, rx) = futures_channel::oneshot::channel();
+        readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.await
+            .map_err(|e| format!("readback channel: {e}"))?
+            .map_err(|e| format!("readback map: {e}"))?;
+
+        let data = readback.slice(..).get_mapped_range();
+        let mut tight = Vec::with_capacity((width * height * 4) as usize);
+        for row in 0..height {
+            let start = (row * padded_bytes_per_row) as usize;
+            tight.extend_from_slice(&data[start..start + (unpadded_bytes_per_row as usize)]);
+        }
+        drop(data);
+        readback.unmap();
+        Ok(tight)
     }
 }
 
