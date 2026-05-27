@@ -8,5 +8,6 @@ members = [
     "crates/veusz-paint-text",
     "crates/veusz-paint-vello",
     "crates/veusz-paint-py",
+    "crates/veusz-paint-wasm",
     "src-tauri",
 ]
