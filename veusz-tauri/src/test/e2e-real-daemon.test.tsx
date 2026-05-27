@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
-import { render, screen, within, cleanup } from '@testing-library/react';
+import { render, screen, within, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,10 @@ import { Inspector } from '../components/inspector/Inspector';
 import { Tree } from '../components/tree/Tree';
 import { DatasetPanel } from '../components/data/DatasetPanel';
 import { PlotCanvas } from '../components/plot/PlotCanvas';
+import { AppShell } from '../components/app/AppShell';
+import { createRpc } from '../rpc/client';
+import { clientTransport } from '../rpc/transport';
+import { createDocStore } from '../state/doc';
 import type {
   DataInfo, WidgetSchema, WidgetTreeNode, RenderResult,
 } from '../rpc/types';
@@ -178,4 +182,55 @@ describe('live daemon: full Phase-1 loop', () => {
       expect(undone.png).toBe(before.png);
       process.stderr.write('[e2e] test 2 done\n');
     }, 20000);
+
+    it('AppShell against the live daemon — full pipeline through one component', async () => {
+      if (skipReason) { console.warn('SKIP:', skipReason); return; }
+      if (!client || !tmp) throw new Error('client should be ready by now');
+
+      // Fresh daemon connection / store for this test so we don't
+      // collide with the doc state from prior tests.
+      const rpc = createRpc(clientTransport(client));
+      const store = createDocStore(rpc);
+
+      // happy-dom needs the rect stubbed so plot click coords map correctly.
+      Element.prototype.getBoundingClientRect = function () {
+        return { left: 0, top: 0, right: 600, bottom: 400, width: 600,
+                 height: 400, x: 0, y: 0, toJSON() { return this; } } as DOMRect;
+      };
+
+      cleanup();
+      render(<AppShell store={store} renderWidth={600} renderHeight={400} />);
+
+      // Tree appears (page1/graph1/xy1 from earlier tests)
+      await waitFor(() =>
+        expect(screen.getByTestId('tree-node-/page1/graph1/xy1')).toBeInTheDocument(),
+      );
+
+      // Click the xy widget; inspector populates with the live xy schema
+      fireEvent.click(screen.getByTestId('tree-node-/page1/graph1/xy1'));
+      await waitFor(() => screen.getByTestId('inspector'));
+      expect(screen.getByTestId('row-marker')).toBeInTheDocument();
+      const markerSelect = within(screen.getByTestId('row-marker')).getByTestId(
+        'setting-marker',
+      ) as HTMLSelectElement;
+      // The real daemon's marker vallist has 70+ entries
+      expect(markerSelect.options.length).toBeGreaterThan(50);
+
+      // Edit the marker via the inspector — this should fire doc.set
+      // through the real daemon and re-render automatically.
+      const beforeRender = store.getState().render?.png;
+      fireEvent.change(markerSelect, { target: { value: 'triangle' } });
+      await waitFor(() => {
+        const after = store.getState().render?.png;
+        expect(after).toBeDefined();
+        expect(after).not.toBe(beforeRender);
+      }, { timeout: 5000 });
+
+      // Toolbar undo enables; clicking it reverts the marker and the PNG
+      await waitFor(() => expect(screen.getByTestId('toolbar-undo')).not.toBeDisabled());
+      fireEvent.click(screen.getByTestId('toolbar-undo'));
+      await waitFor(() => {
+        expect(store.getState().render?.png).toBe(beforeRender);
+      }, { timeout: 5000 });
+    }, 30000);
 });
