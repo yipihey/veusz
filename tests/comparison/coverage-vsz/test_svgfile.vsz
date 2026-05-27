@@ -1,0 +1,7 @@
+# Veusz saved document
+Add('page', name='page1', autoadd=False)
+To('page1')
+Add('graph', name='graph1', autoadd=False)
+To('graph1')
+Add('svgfile', name='svg1', autoadd=False)
+Set('svg1/filename', 'tests/comparison/coverage-vsz/test.svg')
