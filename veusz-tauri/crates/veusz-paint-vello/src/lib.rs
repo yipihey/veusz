@@ -157,11 +157,15 @@ impl VelloRenderer {
                 background.2 as f64, background.3 as f64),
             width,
             height,
-            // MSAA16 yields the sharpest edges in vello 0.3 and is the
-            // closest match to tiny-skia's analytic-coverage output. Area
-            // mode (the default) is faster but visibly softer at small
-            // render sizes, which scientific plots routinely produce.
-            antialiasing_method: AaConfig::Msaa16,
+            // AaConfig::Area: analytic-coverage AA — same family Qt's
+            // raster paint engine uses. On the smoke corpus this gives
+            // qt-vs-vello PSNR ~10-15 dB at scientific-plot sizes
+            // (~900x600), comfortably ahead of MSAA modes which add
+            // edge dilation that doesn't match Qt's coverage maths.
+            // (At small render sizes — 400x240 demo fixtures — MSAA16
+            // looks sharper to the eye; switch back if those become the
+            // primary target.)
+            antialiasing_method: AaConfig::Area,
         };
 
         self.renderer

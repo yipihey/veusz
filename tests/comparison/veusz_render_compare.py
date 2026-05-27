@@ -218,12 +218,18 @@ def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResu
     png_path = out_dir / f"{vsz.stem}.{result.backend}.png"
     pdf_path = out_dir / f"{vsz.stem}.{result.backend}.pdf"
 
+    # PNG: transparent background, matching Veusz's default Qt-side PNG
+    # export (export.py:117). Comparing white-on-white to transparent
+    # background otherwise dominates the diff with structural-difference
+    # noise.
     png_bytes = _paint_ext.render_scene_to_png(
-        scene_json, page_w, page_h, (1.0, 1.0, 1.0, 1.0), result.backend)
+        scene_json, page_w, page_h, (0.0, 0.0, 0.0, 0.0), result.backend)
     png_path.write_bytes(png_bytes)
     result.png = png_path
 
     # PDF is vector — always emitted via pdf-writer, backend-agnostic.
+    # PDFs are opaque white (matching Qt's QPrinter default), so background
+    # stays (1, 1, 1, 1) here.
     page_w_pt = page_w * 72.0 / dpi
     page_h_pt = page_h * 72.0 / dpi
     pdf_bytes = _paint_ext.render_scene_to_pdf_bytes(
