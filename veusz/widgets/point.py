@@ -270,6 +270,202 @@ class ErrorBarDraw:
         if ptsbelow:
             qtloops.plotClippedPolyline(painter, clip, ptsbelow)
 
+    # --- abstract-Painter paths (parallel to the QPainter ones above) ----
+    #
+    # These take a veusz.paint.protocol.Painter rather than a QPainter, and
+    # a separate ``helper`` (PainterRoot) for setting conversion. They
+    # drive the new backends (tiny-skia, Vello) without going through the
+    # C++ recordpaint trace. The QPainter path above is unchanged — the two
+    # render pipelines coexist.
+
+    def plot_abstract(self, painter, helper, xmin, xmax, ymin, ymax,
+                      xplt, yplt, clip):
+        from ..paint.protocol import Paint
+        stroke = self.linestyle.to_stroke_or_none(helper)
+        if stroke is None:
+            return
+        # Force flat caps to match the QPainter path.
+        from ..paint.protocol import LineCap
+        from dataclasses import replace as _replace
+        stroke = _replace(stroke, cap=LineCap.BUTT)
+        painter.save()
+        painter.set_paint(Paint(stroke=stroke, anti_alias=True))
+        for func in self._abstract_error_functions[self.style]:
+            func(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip)
+        painter.restore()
+
+    def _abs_bar(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_lines
+        if ymin is not None and ymax is not None and not self.linestyle.hideVert:
+            plot_lines(painter, xplt, ymin, xplt, ymax, clip)
+        if xmin is not None and xmax is not None and not self.linestyle.hideHorz:
+            plot_lines(painter, xmin, yplt, xmax, yplt, clip)
+
+    def _abs_bar_hi(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_lines
+        if ymin is not None and ymax is not None and not self.linestyle.hideVert:
+            plot_lines(painter, xplt, yplt, xplt, ymax, clip)
+        if xmin is not None and xmax is not None and not self.linestyle.hideHorz:
+            plot_lines(painter, xplt, yplt, xmax, yplt, clip)
+
+    def _abs_bar_lo(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_lines
+        if ymin is not None and ymax is not None and not self.linestyle.hideVert:
+            plot_lines(painter, xplt, yplt, xplt, ymin, clip)
+        if xmin is not None and xmax is not None and not self.linestyle.hideHorz:
+            plot_lines(painter, xplt, yplt, xmin, yplt, clip)
+
+    def _abs_ends(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_lines
+        size = self.markersize * self.linestyle.endsize
+        if ymin is not None and ymax is not None and not self.linestyle.hideVert:
+            plot_lines(painter, xplt - size, ymin, xplt + size, ymin, clip)
+            plot_lines(painter, xplt - size, ymax, xplt + size, ymax, clip)
+        if xmin is not None and xmax is not None and not self.linestyle.hideHorz:
+            plot_lines(painter, xmin, yplt - size, xmin, yplt + size, clip)
+            plot_lines(painter, xmax, yplt - size, xmax, yplt + size, clip)
+
+    def _abs_ends_hi(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_lines
+        size = self.markersize * self.linestyle.endsize
+        if ymin is not None and ymax is not None and not self.linestyle.hideVert:
+            plot_lines(painter, xplt - size, ymax, xplt + size, ymax, clip)
+        if xmin is not None and xmax is not None and not self.linestyle.hideHorz:
+            plot_lines(painter, xmax, yplt - size, xmax, yplt + size, clip)
+
+    def _abs_ends_lo(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_lines
+        size = self.markersize * self.linestyle.endsize
+        if ymin is not None and ymax is not None and not self.linestyle.hideVert:
+            plot_lines(painter, xplt - size, ymin, xplt + size, ymin, clip)
+        if xmin is not None and xmax is not None and not self.linestyle.hideHorz:
+            plot_lines(painter, xmin, yplt - size, xmin, yplt + size, clip)
+
+    def _abs_box(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import plot_boxes
+        if utils.allNotNone(xmin, xmax, ymin, ymax):
+            plot_boxes(painter, xmin, ymin, xmax, ymax, clip, fill=False, stroke=True)
+
+    def _abs_box_filled(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import polygon_path
+        from ..paint.protocol import Paint
+        if utils.anyNone(xmin, xmax, ymin, ymax):
+            return
+        if not self.fillbelow.hideerror:
+            fill = self.fillbelow.to_fill_or_none(helper)
+            if fill is not None:
+                p = polygon_path([xmin, ymin, xmin, yplt, xmax, yplt, xmax, ymin], clip)
+                painter.save()
+                if clip is not None:
+                    painter.push_clip_rect(clip)
+                painter.set_paint(Paint(fill=fill, anti_alias=True))
+                painter.fill_path(p)
+                if clip is not None:
+                    painter.pop_clip()
+                painter.restore()
+        if not self.fillabove.hideerror:
+            fill = self.fillabove.to_fill_or_none(helper)
+            if fill is not None:
+                p = polygon_path([xmin, yplt, xmax, yplt, xmax, ymax, xmin, ymax], clip)
+                painter.save()
+                if clip is not None:
+                    painter.push_clip_rect(clip)
+                painter.set_paint(Paint(fill=fill, anti_alias=True))
+                painter.fill_path(p)
+                if clip is not None:
+                    painter.pop_clip()
+                painter.restore()
+
+    def _abs_diamond(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        from ..paint.utils_abstract import polygon_path
+        if utils.anyNone(xmin, xmax, ymin, ymax):
+            return
+        p = polygon_path([xmin, yplt, xplt, ymax, xmax, yplt, xplt, ymin], clip)
+        if clip is not None:
+            painter.push_clip_rect(clip)
+        painter.stroke_path(p)
+        if clip is not None:
+            painter.pop_clip()
+
+    def _abs_filled(self, painter, helper, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+        """Filled-region error style ('fillvert' / 'fillhorz' / 'linevert' /
+        'linehorz' / variants). Mirrors errorsFilled()."""
+        from ..paint.utils_abstract import polyline_path
+        from ..paint.protocol import Paint, Path
+        import numpy as _N
+
+        pts_above = pts_below = None
+        hidevert = True
+        hidehorz = True
+
+        if ('vert' in self.style and ymin is not None and ymax is not None
+                and not self.linestyle.hideVert):
+            hidevert = False
+            if self.style[-2:] != 'hi':
+                pts_below = list(zip(_N.asarray(xplt), _N.asarray(ymin)))
+            if self.style[-2:] != 'lo':
+                pts_above = list(zip(_N.asarray(xplt), _N.asarray(ymax)))
+        elif ('horz' in self.style and xmin is not None and xmax is not None
+              and not self.linestyle.hideHorz):
+            hidehorz = False
+            if self.style[-2:] != 'hi':
+                pts_below = list(zip(_N.asarray(xmin), _N.asarray(yplt)))
+            if self.style[-2:] != 'lo':
+                pts_above = list(zip(_N.asarray(xmax), _N.asarray(yplt)))
+
+        if 'fill' in self.style and not (hidehorz and hidevert):
+            retn = list(zip(_N.asarray(xplt)[::-1], _N.asarray(yplt)[::-1]))
+            if pts_below and not self.fillbelow.hideerror:
+                fill = self.fillbelow.to_fill_or_none(helper)
+                if fill is not None:
+                    poly = Path()
+                    seq = pts_below + retn
+                    poly.move_to(seq[0][0], seq[0][1])
+                    for x, y in seq[1:]:
+                        poly.line_to(x, y)
+                    poly.close()
+                    if clip is not None:
+                        painter.push_clip_rect(clip)
+                    painter.set_paint(Paint(fill=fill, anti_alias=True))
+                    painter.fill_path(poly)
+                    if clip is not None:
+                        painter.pop_clip()
+            if pts_above and not self.fillabove.hideerror:
+                fill = self.fillabove.to_fill_or_none(helper)
+                if fill is not None:
+                    poly = Path()
+                    seq = pts_above + retn
+                    poly.move_to(seq[0][0], seq[0][1])
+                    for x, y in seq[1:]:
+                        poly.line_to(x, y)
+                    poly.close()
+                    if clip is not None:
+                        painter.push_clip_rect(clip)
+                    painter.set_paint(Paint(fill=fill, anti_alias=True))
+                    painter.fill_path(poly)
+                    if clip is not None:
+                        painter.pop_clip()
+
+        # bounding polyline (on top of fill)
+        if pts_above:
+            if clip is not None:
+                painter.push_clip_rect(clip)
+            painter.stroke_path(polyline_path([p[0] for p in pts_above],
+                                              [p[1] for p in pts_above]))
+            if clip is not None:
+                painter.pop_clip()
+        if pts_below:
+            if clip is not None:
+                painter.push_clip_rect(clip)
+            painter.stroke_path(polyline_path([p[0] for p in pts_below],
+                                              [p[1] for p in pts_below]))
+            if clip is not None:
+                painter.pop_clip()
+
+    # name -> ordered list of abstract draw functions, mirroring
+    # ``error_functions`` above.
+    _abstract_error_functions = None  # filled in after class body
+
     # map error bar names to lists of functions (above)
     error_functions = {
         'none': (),
@@ -299,6 +495,41 @@ class ErrorBarDraw:
         'linevertlo': (errorsFilled,),
         'lineverthi': (errorsFilled,),
     }
+
+# Abstract-Painter error-function dispatch — same names + same ordering as
+# ``error_functions`` above, but each entry calls a `_abs_*` method that
+# emits abstract Painter ops rather than QPainter ops. Curve / diamondfill
+# variants reuse the diamond geometry (the arc-segment renderers haven't
+# been ported yet; they degrade to a diamond outline rather than failing).
+ErrorBarDraw._abstract_error_functions = {
+    'none': (),
+    'bar': (ErrorBarDraw._abs_bar,),
+    'bardiamond': (ErrorBarDraw._abs_bar, ErrorBarDraw._abs_diamond),
+    'barcurve': (ErrorBarDraw._abs_bar, ErrorBarDraw._abs_diamond),
+    'barbox': (ErrorBarDraw._abs_bar, ErrorBarDraw._abs_box),
+    'barends': (ErrorBarDraw._abs_bar, ErrorBarDraw._abs_ends),
+    'box': (ErrorBarDraw._abs_box,),
+    'boxfill': (ErrorBarDraw._abs_box_filled, ErrorBarDraw._abs_box),
+    'diamond': (ErrorBarDraw._abs_diamond,),
+    'diamondfill': (ErrorBarDraw._abs_diamond,),
+    'curve': (ErrorBarDraw._abs_diamond,),
+    'curvefill': (ErrorBarDraw._abs_diamond,),
+    'fillhorz': (ErrorBarDraw._abs_filled,),
+    'fillvert': (ErrorBarDraw._abs_filled,),
+    'linehorz': (ErrorBarDraw._abs_filled,),
+    'linevert': (ErrorBarDraw._abs_filled,),
+    'linehorzbar': (ErrorBarDraw._abs_bar, ErrorBarDraw._abs_filled),
+    'linevertbar': (ErrorBarDraw._abs_bar, ErrorBarDraw._abs_filled),
+    'barhi': (ErrorBarDraw._abs_bar_hi,),
+    'barlo': (ErrorBarDraw._abs_bar_lo,),
+    'barendshi': (ErrorBarDraw._abs_bar_hi, ErrorBarDraw._abs_ends_hi),
+    'barendslo': (ErrorBarDraw._abs_bar_lo, ErrorBarDraw._abs_ends_lo),
+    'linehorzlo': (ErrorBarDraw._abs_filled,),
+    'linehorzhi': (ErrorBarDraw._abs_filled,),
+    'linevertlo': (ErrorBarDraw._abs_filled,),
+    'lineverthi': (ErrorBarDraw._abs_filled,),
+}
+
 
 def fillPtsToEdge(painter, pts, posn, cliprect, fillstyle):
     """Fill points depending on fill mode."""
@@ -1020,6 +1251,189 @@ class PointPlotter(GenericPlotter):
                 self.drawLabels(
                     painter, xpltpoint, ypltpoint,
                     tvals, markersize)
+
+    # ==================================================================
+    # Abstract-Painter render path. Parallel to dataDraw(); same widget
+    # logic, but emits abstract Painter ops rather than calling QPainter.
+    # Covers: plot line (linear), fills above/below, all 88 markers, and
+    # error styles bar/box/diamond/ends/filled/box-filled and their
+    # hi/lo/with-bar variants. Skips bezier-interpolated lines (still
+    # routed through qtloops) and text labels (text is its own subsystem).
+    # ==================================================================
+
+    def _abs_plot_line(self, painter, helper, xvals, yvals, posn,
+                       xdata, ydata, cliprect):
+        from ..paint.utils_abstract import (
+            plot_clipped_polyline,
+            fill_pts_to_edge,
+        )
+        from ..paint.protocol import Paint
+
+        # Build the (possibly stepped) sequence of points exactly the
+        # same way the Qt path does — we share _getLinePoints by reading
+        # x/y arrays back out of the QPolygonF.
+        qpoly = self._getLinePoints(xvals, yvals, posn, xdata, ydata)
+        if len(qpoly) < 2:
+            return
+        pts = [(qpoly[i].x(), qpoly[i].y()) for i in range(len(qpoly))]
+        s = self.settings
+
+        # fills first (below the line, in z order)
+        for fillstyle in (s.FillBelow, s.FillAbove):
+            if fillstyle.hide:
+                continue
+            fill = fillstyle.to_fill_or_none(helper)
+            if fill is None:
+                continue
+            fill_pts_to_edge(
+                painter, pts, posn, fill, fillstyle.fillto, cliprect)
+
+        # then the line itself
+        if not s.PlotLine.hide:
+            stroke = s.PlotLine.to_stroke_or_none(helper)
+            if stroke is not None:
+                painter.save()
+                painter.set_paint(Paint(stroke=stroke, anti_alias=True))
+                plot_clipped_polyline(painter, cliprect, pts)
+                painter.restore()
+
+    def _abs_plot_errors(self, posn, painter, helper, xplotter, yplotter,
+                         axes, xdata, ydata, cliprect):
+        s = self.settings
+        style = s.errorStyle
+        if style == 'none':
+            return
+        thin = s.errorthin
+        xmin = xmax = ymin = ymax = None
+        if xdata.hasErrors():
+            xmin, xmax = xdata.getPointRanges()
+            if thin > 1:
+                xmin, xmax = xmin[::thin], xmax[::thin]
+            xmin = axes[0].dataToPlotterCoords(posn, xmin)
+            xmax = axes[0].dataToPlotterCoords(posn, xmax)
+        if ydata.hasErrors():
+            ymin, ymax = ydata.getPointRanges()
+            if thin > 1:
+                ymin, ymax = ymin[::thin], ymax[::thin]
+            ymin = axes[1].dataToPlotterCoords(posn, ymin)
+            ymax = axes[1].dataToPlotterCoords(posn, ymax)
+        if ymin is None and ymax is None and xmin is None and xmax is None:
+            return
+        if thin > 1:
+            xplotter, yplotter = xplotter[::thin], yplotter[::thin]
+        markersize = s.get('markerSize').convert(helper)
+        ebp = ErrorBarDraw(
+            s.errorStyle, s.ErrorBarLine, s.FillAbove, s.FillBelow, markersize)
+        ebp.plot_abstract(
+            painter, helper, xmin, xmax, ymin, ymax, xplotter, yplotter, cliprect)
+
+    def _abs_plot_markers(self, painter, helper, xplt, yplt, cliprect):
+        from ..paint.utils_abstract import plot_markers
+        s = self.settings
+        if s.MarkerLine.hide and s.MarkerFill.hide:
+            return
+        markersize = s.get('markerSize').convert(helper)
+        fill = None if s.MarkerFill.hide else s.MarkerFill.to_fill_or_none(helper)
+        stroke = None if s.MarkerLine.hide else s.MarkerLine.to_stroke_or_none(helper)
+        plot_markers(
+            painter, xplt, yplt, s.marker, markersize,
+            fill=fill, stroke=stroke, clip=cliprect,
+            equal_area=s.MarkerFill.newMarkerSizes)
+
+    def dataDrawAbstract(self, painter, helper, axes, posn, cliprect):
+        """Abstract-Painter equivalent of :meth:`dataDraw`.
+
+        ``painter`` is a :class:`veusz.paint.protocol.Painter` (anything
+        from the new backends — :class:`PythonSceneRecorder`,
+        :class:`TinySkiaSceneBackend`, or the QPainter shim).
+        ``helper`` is the existing PainterRoot used for setting
+        conversion (DPI, color palette, font metrics).
+
+        Skipped paths (still drawn through QPainter): bezier-interpolated
+        plot lines (``PlotLine.interpType != 'linear'``), text labels,
+        and pattern-fill brushes (use solid colour). Hits in production
+        use the existing dataDraw; this method is what the new backends
+        target once a widget is fully ported.
+        """
+        # Normalise cliprect once: the framework hands us a QRectF; the
+        # abstract Painter API speaks veusz.paint.protocol.Rect.
+        from ..paint.protocol import Rect as _AbstractRect
+        if cliprect is not None and not isinstance(cliprect, _AbstractRect):
+            cliprect = _AbstractRect(
+                cliprect.x(), cliprect.y(),
+                cliprect.width(), cliprect.height())
+
+        s = self.settings
+        doc = self.document
+        xv = s.get('xData').getData(doc)
+        yv = s.get('yData').getData(doc)
+        text = s.get('labels').getData(doc, checknull=True)
+        scalepoints = s.get('scalePoints').getData(doc)
+        colorpoints = s.Color.get('points').getData(doc)
+
+        if xv and not yv and s.get('yData').isEmpty():
+            length = xv.data.shape[0]
+            yv = datasets.DatasetRange(length, (1, length))
+        elif yv and not xv and s.get('xData').isEmpty():
+            length = yv.data.shape[0]
+            xv = datasets.DatasetRange(length, (1, length))
+        if not xv or not yv:
+            return
+
+        if text:
+            length = min(len(xv.data), len(yv.data))
+            text = text * (length // len(text)) + text[:length % len(text)]
+
+        nanbreak = s.nanHandling == 'break-on'
+
+        for xvals, yvals, tvals, ptvals, cvals in (
+            datasets.generateValidDatasetParts(
+                [xv, yv, text, scalepoints, colorpoints], breakds=nanbreak)):
+
+            xplotter = axes[0].dataToPlotterCoords(posn, xvals.data)
+            yplotter = axes[1].dataToPlotterCoords(posn, yvals.data)
+
+            if s.PlotLine.steps != 'off':
+                xpltpoint = N.array(xplotter)
+                if s.PlotLine.steps == 'right-shift-points':
+                    xpltpoint[1:] = 0.5 * (xplotter[:-1] + xplotter[1:])
+                elif s.PlotLine.steps == 'left-shift-points':
+                    xpltpoint[:-1] = 0.5 * (xplotter[:-1] + xplotter[1:])
+            else:
+                xpltpoint = xplotter
+            ypltpoint = yplotter
+
+            # filled-region error bars are painted before the line
+            if s.errorStyle in ('fillvert', 'fillhorz'):
+                self._abs_plot_errors(
+                    posn, painter, helper, xpltpoint, ypltpoint,
+                    axes, xvals, yvals, cliprect)
+
+            # plot line + fills (linear interpolation only in the
+            # abstract path — bezier still goes through QPainter)
+            if not s.PlotLine.hide or not s.FillAbove.hide or not s.FillBelow.hide:
+                if s.PlotLine.interpType == 'linear':
+                    self._abs_plot_line(
+                        painter, helper, xplotter, yplotter,
+                        posn, xvals, yvals, cliprect)
+
+            # regular error bars after the line
+            if s.errorStyle not in ('fillvert', 'fillhorz'):
+                self._abs_plot_errors(
+                    posn, painter, helper, xpltpoint, ypltpoint,
+                    axes, xvals, yvals, cliprect)
+
+            # markers last (on top)
+            if s.thinfactor <= 1:
+                xplt, yplt = xpltpoint, ypltpoint
+            else:
+                xplt, yplt = (
+                    xpltpoint[::s.thinfactor], ypltpoint[::s.thinfactor])
+            self._abs_plot_markers(painter, helper, xplt, yplt, cliprect)
+
+            # labels: routed through the QPainter text path; the abstract
+            # text subsystem (Parley/skrifa) is a separate layer.
+
 
 # allow the factory to instantiate an x,y plotter
 document.thefactory.register(PointPlotter)
