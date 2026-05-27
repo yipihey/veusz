@@ -14,6 +14,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod scene;
+pub use scene::{Scene, SceneOp, SceneRecorder, SceneSummary};
+
 // ---------------------------------------------------------------------------
 // Value types
 // ---------------------------------------------------------------------------

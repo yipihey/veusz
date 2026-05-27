@@ -3,5 +3,6 @@ resolver = "2"
 members = [
     "crates/veusz-rpc",
     "crates/veusz-paint-core",
+    "crates/veusz-paint-tiny-skia",
     "src-tauri",
 ]

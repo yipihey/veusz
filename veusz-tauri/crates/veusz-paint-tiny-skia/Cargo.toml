@@ -1,0 +1,13 @@
+[package]
+name = "veusz-paint-tiny-skia"
+version = "0.0.0"
+edition = "2021"
+description = "tiny-skia backend for Veusz's abstract Painter trait. Pure-Rust software rasterizer; deterministic; CI-friendly. Emits PNG."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+tiny-skia = "0.12"
+png = "0.18"
+
+[dev-dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }

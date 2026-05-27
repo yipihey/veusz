@@ -126,7 +126,8 @@ def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96) -> RenderR
 
 
 def run(inputs: List[Path], backends: List[str], out_dir: Path,
-        dpi: int = 96) -> CompareReport:
+        dpi: int = 96, identical_db: float = 50.0,
+        within_db: float = 35.0) -> CompareReport:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = CompareReport(inputs=inputs)
     for vsz in inputs:
@@ -135,8 +136,27 @@ def run(inputs: List[Path], backends: List[str], out_dir: Path,
             report.results.append(res)
             status = "ok" if res.error is None else f"FAIL ({res.error})"
             print(f"  {backend:10s}  {vsz.name:30s}  {res.elapsed_s:6.2f}s  {status}")
-    # TODO Phase 2: populate report.diffs with PSNR/SSIM once we have >1
-    # backend producing output.
+
+    # Diff math runs when >1 backend produced PNGs in this directory.
+    if len(backends) > 1:
+        try:
+            from diff import render_compare_pairs
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).parent))
+            from diff import render_compare_pairs
+        diffs = render_compare_pairs(out_dir, backends,
+                                     identical_db=identical_db,
+                                     within_db=within_db)
+        report.diffs = [d for stem_diffs in diffs.values() for d in stem_diffs]
+        # one-line band summary
+        bands = [d["band"] for d in report.diffs]
+        print(f"\ndiff summary: "
+              f"identical={bands.count('identical')} "
+              f"within={bands.count('within')} "
+              f"material={bands.count('material')} "
+              f"unknown={bands.count('unknown')}")
+
     (out_dir / "report.json").write_text(json.dumps(report.to_dict(), indent=2, default=str))
     return report
 
@@ -170,7 +190,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"writing to {out_dir}")
     print(f"backends: {backends}")
     print(f"inputs: {len(inputs)}")
-    run(inputs, backends, out_dir, dpi=args.dpi)
+    tol = manifest["tolerance"]
+    run(inputs, backends, out_dir, dpi=args.dpi,
+        identical_db=tol["identical"], within_db=tol["within"])
     return 0
 
 
