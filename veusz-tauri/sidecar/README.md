@@ -43,16 +43,21 @@ release-ready *for that triple*.
 
 ## Spike results (Linux x86_64, May 2026)
 
-| Metric | Value |
-|---|---|
-| Bundle size | 715 MB unpacked |
-| PyQt6 in bundle | 260 MB |
-| numpy in bundle | 42 MB |
-| veusz in bundle | 17 MB |
-| Python runtime | 396 MB (full stdlib + libs) |
-| Shared objects | 211 .so files |
-| Cold launch (`--help`) | ~200 ms |
-| Full live-daemon test suite (8 tests) | ~7 s wall |
+| Metric | Raw bundle | + `slim-sidecar.sh` |
+|---|---|---|
+| Bundle size | 715 MB | **523 MB** |
+| PyQt6 in bundle | 260 MB | ~60 MB |
+| numpy in bundle | 42 MB | 42 MB |
+| veusz in bundle | 17 MB | 17 MB |
+| Python runtime | 396 MB | ~340 MB (stdlib `test/`, idle, turtledemo, ensurepip dropped) |
+| Cold launch (`--help`) | ~200 ms | ~200 ms |
+| Full live-daemon test suite | 8/8 pass | 9/9 pass |
+
+`slim-sidecar.sh` keeps only the PyQt6 modules Veusz actually imports
+(`QtCore` / `QtGui` / `QtWidgets` / `QtPrintSupport` / `QtSvg` /
+`QtSvgWidgets` plus `sip`); strips Qt6 QML / Quick / Designer / Pdf /
+Multimedia / 3D / Bluetooth runtimes; drops Qt translations and
+plugin trees Veusz never loads.
 
 Bundled binary passes 100% of the same live-daemon tests the
 dev-installed `veuszd` passes — there is **no functional gap** between

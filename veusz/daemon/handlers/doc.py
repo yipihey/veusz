@@ -46,6 +46,14 @@ def register(ctx):
         except KeyError as e:
             raise RpcError(INVALID_PARAMS, f'no such widget type: {widget_type}') from e
 
+    def schema_at(path: str, **_):
+        """Schema for whatever lives at ``path`` (widget, settings group, or
+        leaf setting). Powers the stylesheet editor."""
+        try:
+            return _schema.extract_path_schema(ctx.document, path)
+        except (KeyError, ValueError) as e:
+            raise RpcError(INVALID_PARAMS, str(e)) from e
+
     def schema_all(mode: str = 'class', **_):
         return _schema.extract_all_schemas(mode)
 
@@ -127,6 +135,7 @@ def register(ctx):
     return {
         'doc.tree': tree,
         'doc.schema': schema,
+        'doc.schema_at': schema_at,
         'doc.schema_all': schema_all,
         'doc.widget_types': widget_types,
         'doc.add': add,

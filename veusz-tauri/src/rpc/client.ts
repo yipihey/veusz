@@ -31,6 +31,8 @@ export function createRpc(transport: Transport) {
       tree: () => t('doc.tree') as Promise<WidgetTreeNode>,
       schema: (widget_type: string, mode: 'class' | 'instance' = 'class') =>
         t('doc.schema', { widget_type, mode }) as Promise<WidgetSchema>,
+      schemaAt: (path: string) =>
+        t('doc.schema_at', { path }) as Promise<WidgetSchema>,
       widgetTypes: () => t('doc.widget_types') as Promise<string[]>,
       add: (parent: string, type: string, name?: string) =>
         t('doc.add', { parent, type, name }) as Promise<{ path: string }>,
@@ -85,6 +87,21 @@ export function createRpc(transport: Transport) {
         t('data.import', { kind, filename, options }) as Promise<{
           imported: string[];
           errors: string[];
+        }>,
+      previewCsv: (params: {
+        filename: string;
+        delimiter?: string;
+        text_delimiter?: string;
+        encoding?: string;
+        rows_ignore?: number;
+        header_ignore?: number;
+        max_rows?: number;
+      }) =>
+        t('data.preview_csv', params as Record<string, unknown>) as Promise<{
+          header: string[];
+          rows: string[][];
+          total_lines_estimated: number;
+          truncated: boolean;
         }>,
     },
 

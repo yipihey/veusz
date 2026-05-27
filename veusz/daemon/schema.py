@@ -180,6 +180,63 @@ def extract_instance_schema(widget_type: str) -> dict:
     return schema
 
 
+def extract_path_schema(document, path: str) -> dict:
+    """Return a schema for whatever lives at ``path`` on ``document``.
+
+    Works for non-widget paths like ``/StyleSheet`` whose contents are
+    a Settings group, not a widget class. Reuses the same serializer
+    the widget-class extractor uses so the frontend Inspector renders
+    these via the same recursion.
+    """
+    if not isinstance(path, str) or not path.startswith('/'):
+        raise ValueError(f'bad path: {path!r}')
+    parts = [p for p in path.split('/') if p]
+    node: object = document.basewidget
+    for part in parts:
+        # Try as a child widget first, then as a settings group.
+        nxt = None
+        if hasattr(node, 'getChild'):
+            child = node.getChild(part)
+            if child is not None:
+                nxt = child
+        if nxt is None and hasattr(node, 'settings'):
+            try:
+                nxt = node.settings.get(part)
+            except (AttributeError, KeyError):
+                pass
+        if nxt is None and isinstance(node, Settings):
+            try:
+                nxt = node.get(part)
+            except (AttributeError, KeyError):
+                pass
+        if nxt is None:
+            raise KeyError(f'no node at {path!r} (failed at {part!r})')
+        node = nxt
+    # `node` is either a Widget, a Settings group, or a leaf Setting.
+    if hasattr(node, 'iswidget') and node.iswidget:
+        schema = _serialize_group(node.settings)
+        schema['typename'] = node.typename
+        schema['mode'] = 'path'
+        return schema
+    if isinstance(node, Settings):
+        schema = _serialize_group(node)
+        schema['typename'] = node.name
+        schema['mode'] = 'path'
+        return schema
+    # Leaf setting — wrap as a one-element group so the Inspector can
+    # render it uniformly.
+    return {
+        'typename': getattr(node, 'typename', 'setting'),
+        'mode': 'path',
+        'name': getattr(node, 'name', ''),
+        'usertext': getattr(node, 'usertext', ''),
+        'descr': getattr(node, 'descr', ''),
+        'setnsmode': 'leaf',
+        'settings': [_serialize_setting(node)],
+        'subgroups': [],
+    }
+
+
 def extract_all_schemas(mode: str = 'class') -> dict[str, dict]:
     """Return ``{widget_type: schema}`` for every registered widget.
 
