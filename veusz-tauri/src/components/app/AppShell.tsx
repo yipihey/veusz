@@ -49,7 +49,7 @@ export function AppShell({
   const filename = store((s) => s.filename);
 
   const refreshAll = store((s) => s.refreshAll);
-  const renderAt = store((s) => s.renderAt);
+  const requestRender = store((s) => s.requestRender);
   const select = store((s) => s.select);
   const setValue = store((s) => s.setValue);
   const undo = store((s) => s.undo);
@@ -67,14 +67,14 @@ export function AppShell({
   }, [refreshAll, subscribeToDaemon]);
 
   // Re-render whenever the doc tree mutates (selection, edits, undo).
-  // The render call is itself debounceable in v2; v1 just fires on
-  // every relevant change.
+  // Goes through `requestRender` which coalesces inside a ~33 ms
+  // window so slider drags don't fire 60 renders per second.
   const treeChangeKey = JSON.stringify(tree);
   useEffect(() => {
     if (tree && tree.children.length > 0) {
-      void renderAt(0, renderWidth, renderHeight);
+      requestRender(0, renderWidth, renderHeight);
     }
-  }, [treeChangeKey, renderWidth, renderHeight, renderAt, values, tree]);
+  }, [treeChangeKey, renderWidth, renderHeight, requestRender, values, tree]);
 
   const handleImport = async () => {
     if (!onPickCsv) return;

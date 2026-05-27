@@ -229,6 +229,39 @@ describe('DocStore', () => {
     expect(exports).toEqual([{ path: '/tmp/plot.pdf', pages: [0, 1], options: {} }]);
   });
 
+  it('requestRender coalesces a burst of calls into one render', async () => {
+    let renderCalls = 0;
+    const { store } = makeStore({
+      'render.png': () => {
+        renderCalls++;
+        return { png: '', width: 100, height: 100, bounds: {} };
+      },
+    });
+    // 10 rapid calls in immediate succession
+    for (let i = 0; i < 10; i++) {
+      store.getState().requestRender(0, 100, 100);
+    }
+    // Wait past the coalesce window
+    await new Promise((r) => setTimeout(r, 80));
+    expect(renderCalls).toBe(1);
+  });
+
+  it('requestRender uses the latest viewport args after coalescing', async () => {
+    const sizes: Array<[number, number]> = [];
+    const { store } = makeStore({
+      'render.png': (params) => {
+        const p = params as { w: number; h: number };
+        sizes.push([p.w, p.h]);
+        return { png: '', width: p.w, height: p.h, bounds: {} };
+      },
+    });
+    store.getState().requestRender(0, 100, 100);
+    store.getState().requestRender(0, 200, 200);
+    store.getState().requestRender(0, 400, 300);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(sizes).toEqual([[400, 300]]);
+  });
+
   it('subscribeToDaemon refreshes tree on doc.changed notifications', async () => {
     let treeCalls = 0;
     const t = mockTransport({

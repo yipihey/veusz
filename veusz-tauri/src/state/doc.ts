@@ -65,6 +65,10 @@ export interface DocState {
 
   // --- rendering ---
   renderAt: (page: number, w: number, h: number, dpi?: number) => Promise<void>;
+  /** Debounced render — multiple calls inside the coalesce window
+   *  collapse to one. Used by AppShell to absorb rapid edit storms
+   *  (slider drags, undo runs). */
+  requestRender: (page: number, w: number, h: number, dpi?: number) => void;
 
   // --- history ---
   undo: () => Promise<void>;
@@ -91,7 +95,17 @@ function joinPath(parent: string, name: string): string {
   return parent === '/' ? '/' + name : parent + '/' + name;
 }
 
+/** Debounce window for `requestRender`. Tuned to ~30 Hz which feels
+ *  smooth for slider drags and well under the daemon's measured
+ *  p95 render time (~11 ms in the perf spike). */
+const RENDER_COALESCE_MS = 33;
+
 export function createDocStore(rpc: Rpc) {
+  // Live at store-creation scope (not state) so they're not subject
+  // to React's render lifecycle.
+  let renderTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingRender: { page: number; w: number; h: number; dpi?: number } | null = null;
+
   return create<DocState>((set, get) => {
     // Does not auto-clear `error` on success — concurrent calls
     // would otherwise wipe each other's failures from a Promise.all.
@@ -236,6 +250,20 @@ export function createDocStore(rpc: Rpc) {
       renderAt: async (page, w, h, dpi = 96) => {
         const r = await guard(() => rpc.render.png(page, w, h, dpi, false));
         if (r) set({ render: r });
+      },
+
+      requestRender: (page, w, h, dpi = 96) => {
+        // Coalesce: keep the LATEST viewport args and reset the timer
+        // on every call so a stream of edits collapses to one render
+        // after RENDER_COALESCE_MS of quiet.
+        pendingRender = { page, w, h, dpi };
+        if (renderTimer) clearTimeout(renderTimer);
+        renderTimer = setTimeout(() => {
+          renderTimer = null;
+          const args = pendingRender;
+          pendingRender = null;
+          if (args) void get().renderAt(args.page, args.w, args.h, args.dpi);
+        }, RENDER_COALESCE_MS);
       },
 
       undo: async () => {
