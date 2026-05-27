@@ -17,3 +17,6 @@ Documents/manual/
 
 .idea/
 veusz.egg-info/
+
+# transient subagent worktrees
+.claude/
