@@ -49,15 +49,31 @@ png_bytes = p.to_png()
 pdf_bytes = p.to_pdf(width_pt=400, height_pt=240)  # A4 / letter / etc. via width_pt+height_pt
 ```
 
-## Rendering real `.vsz` documents through tiny-skia
+## Backends
+
+Three backends are wired through the harness:
+
+* **`qt`** — Veusz's existing `AsyncExport` (QPainter → QImage / QPrinter).
+  Bit-identical to current Veusz output.
+* **`tiny-skia`** — pure-Rust CPU rasteriser. Deterministic across machines;
+  this is what runs in CI for snapshot regression tests.
+* **`vello`** — wgpu compute backend. Native uses Vulkan / Metal / DX12;
+  WASM/WebGPU target lands in plan §8 phase 4. Probed at module load and
+  silently omitted on systems with no working wgpu adapter (e.g. CI without
+  Vulkan).
+
+Both `tiny-skia` and `vello` consume the **same** abstract `Scene` IR and
+emit PDF via the **same** `pdf-writer`-based emitter, so the PDF column is
+backend-agnostic.
+
+## Rendering real `.vsz` documents through tiny-skia or Vello
 
 ```sh
 scripts/build_paint_ext.sh                          # one-time
-VEUSZ_PAINT_BACKEND=tiny-skia \
-    python tests/comparison/veusz_render_compare.py \
-        --manifest --smoke \
-        --backends qt,tiny-skia \
-        --out /tmp/cmp --keep-scene
+python tests/comparison/veusz_render_compare.py \
+    --manifest --smoke \
+    --backends qt,tiny-skia,vello \
+    --out /tmp/cmp --keep-scene
 ```
 
 Pipeline: load `.vsz` → drive Veusz widgets through

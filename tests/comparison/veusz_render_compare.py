@@ -114,10 +114,8 @@ def render_one(vsz: Path, backend: str, out_dir: Path, dpi: int = 96,
     try:
         if backend == "qt":
             _render_qt(vsz, out_dir, dpi, result)
-        elif backend == "tiny-skia":
-            _render_tiny_skia(vsz, out_dir, dpi, result, keep_scene=keep_scene)
-        elif backend == "vello":
-            result.error = "vello backend not implemented (plan §8, phase 3)"
+        elif backend in ("tiny-skia", "vello"):
+            _render_scene_backend(vsz, out_dir, dpi, result, keep_scene=keep_scene)
         else:
             result.error = f"unknown backend {backend!r}"
     except Exception as exc:
@@ -147,43 +145,42 @@ def _render_qt(vsz: Path, out_dir: Path, dpi: int, result: RenderResult) -> None
     result.pdf = pdf_path if pdf_path.exists() else None
 
 
-def _render_tiny_skia(vsz: Path, out_dir: Path, dpi: int, result: RenderResult,
-                      *, keep_scene: bool = False) -> None:
-    """Capture widget paint as a Scene, render via tiny-skia + pdf-writer.
+def _render_scene_backend(vsz: Path, out_dir: Path, dpi: int, result: RenderResult,
+                           *, keep_scene: bool = False) -> None:
+    """Capture widget paint as a Scene, render via the named Scene backend.
 
-    Uses :func:`veusz.paint.qt_capture.capture_document_scene` so widget
-    paint code is untouched — it still produces QPainter calls; we just
-    point those calls at a recorder instead of a drawable.
+    Both ``tiny-skia`` and ``vello`` go through the same pipeline:
+    :func:`veusz.paint.qt_capture.capture_document_scene` drives Veusz's
+    PaintHelper through a SceneCapturingPainter (no widget code changes),
+    then ships the recorded Scene to the Rust ``_paint_ext`` extension.
+
+    PDF emission is currently shared (vector format, raster-backend-agnostic).
     """
     from veusz import document
     from veusz.paint.qt_capture import capture_document_scene
     try:
         from veusz.paint import _paint_ext  # type: ignore
     except ImportError:
-        result.error = ("tiny-skia backend requires veusz.paint._paint_ext; "
-                        "build with scripts/build_paint_ext.sh")
+        result.error = (f"{result.backend} backend requires "
+                        "veusz.paint._paint_ext; build with "
+                        "scripts/build_paint_ext.sh")
         return
 
     doc = document.Document()
     doc.load(str(vsz))
 
-    # Pull page size from the doc; assume page 0 for now.
     scene_json = capture_document_scene(doc, page=0)
-
-    # Decode the page size from the scene-bearing helper, or fall back to a
-    # default. capture_document_scene already pulled px size into the helper;
-    # we replicate the heuristic here for the render dims.
     page_w, page_h = _page_pixel_size(doc, page=0, dpi=dpi)
 
     png_path = out_dir / f"{vsz.stem}.{result.backend}.png"
     pdf_path = out_dir / f"{vsz.stem}.{result.backend}.pdf"
 
     png_bytes = _paint_ext.render_scene_to_png(
-        scene_json, page_w, page_h, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+        scene_json, page_w, page_h, (1.0, 1.0, 1.0, 1.0), result.backend)
     png_path.write_bytes(png_bytes)
     result.png = png_path
 
-    # PDF page size in points: convert from pixels at the doc's dpi.
+    # PDF is vector — always emitted via pdf-writer, backend-agnostic.
     page_w_pt = page_w * 72.0 / dpi
     page_h_pt = page_h * 72.0 / dpi
     pdf_bytes = _paint_ext.render_scene_to_pdf_bytes(
@@ -217,28 +214,31 @@ def render_scene_fixture(scene_json: bytes, stem: str, backend: str,
                          dpi: int = 96) -> RenderResult:
     """Render a pre-recorded scene fixture through ``backend``.
 
-    Lets CI exercise the rendering pipeline (tiny-skia, pdf-writer, diff
-    math) on captured-once scene JSON without needing PyQt6 or a real
-    Veusz document at test time. Fixtures live in
-    ``tests/comparison/fixtures/`` and are produced by running the harness
-    against a real .vsz with ``--keep-scene``.
+    Accepts ``tiny-skia`` or ``vello``. Lets CI exercise the rendering
+    pipeline on captured-once scene JSON without needing PyQt6 or a real
+    Veusz document. Fixtures live in ``tests/comparison/fixtures/`` and
+    are produced by running the harness against a real .vsz with
+    ``--keep-scene``.
     """
     import time
 
     result = RenderResult(backend=backend, vsz=Path(f"<fixture:{stem}>"))
     t0 = time.time()
     try:
-        if backend != "tiny-skia":
-            result.error = f"render_scene_fixture only supports tiny-skia, got {backend!r}"
+        if backend not in ("tiny-skia", "vello"):
+            result.error = (f"render_scene_fixture supports tiny-skia and "
+                            f"vello, got {backend!r}")
             return result
         from veusz.paint import _paint_ext  # type: ignore
 
         png_bytes = _paint_ext.render_scene_to_png(
-            scene_json, width_px, height_px, (1.0, 1.0, 1.0, 1.0), "tiny-skia")
+            scene_json, width_px, height_px, (1.0, 1.0, 1.0, 1.0), backend)
         png_path = out_dir / f"{stem}.{backend}.png"
         png_path.write_bytes(png_bytes)
         result.png = png_path
 
+        # PDF is always emitted via pdf-writer (vector); backend choice
+        # is irrelevant to the PDF column.
         page_w_pt = width_px * 72.0 / dpi
         page_h_pt = height_px * 72.0 / dpi
         pdf_bytes = _paint_ext.render_scene_to_pdf_bytes(

@@ -13,6 +13,8 @@
 //! Module name: `veusz_paint_ext`. Veusz's `veusz/paint/factory.py` imports
 //! it; absence flips the tiny-skia backend off cleanly.
 
+use std::sync::Mutex;
+
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -20,9 +22,23 @@ use pyo3::types::PyBytes;
 use veusz_paint_core::{Color, Scene, SceneSummary};
 use veusz_paint_pdf::render_scene_to_pdf;
 use veusz_paint_tiny_skia::TinySkiaPainter;
+use veusz_paint_vello::VelloRenderer;
 
 /// Backend names recognised by [`render_scene_to_png`].
 const BACKEND_TINY_SKIA: &str = "tiny-skia";
+const BACKEND_VELLO: &str = "vello";
+
+// Vello carries non-trivial state (wgpu device, compiled compute pipelines).
+// We cache one renderer per process; later phases will pool by adapter.
+fn vello_renderer() -> Result<std::sync::MutexGuard<'static, VelloRenderer>, String> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Result<Mutex<VelloRenderer>, String>> = OnceLock::new();
+    let cell = CELL.get_or_init(|| VelloRenderer::new().map(Mutex::new));
+    match cell {
+        Ok(m) => Ok(m.lock().expect("vello renderer mutex poisoned")),
+        Err(e) => Err(e.clone()),
+    }
+}
 
 /// Rasterise a serialised [`Scene`] through the named backend and return
 /// PNG bytes.
@@ -51,23 +67,28 @@ fn render_scene_to_png<'py>(
     background: (f32, f32, f32, f32),
     backend: &str,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if backend != BACKEND_TINY_SKIA {
-        return Err(PyValueError::new_err(format!(
-            "backend {:?} not implemented in veusz_paint_ext; only \
-             {:?} is available in this build",
-            backend, BACKEND_TINY_SKIA,
-        )));
-    }
     let scene: Scene = serde_json::from_slice(scene_json)
         .map_err(|e| PyValueError::new_err(format!("scene JSON decode failed: {e}")))?;
 
     // Release the GIL while we rasterise; nothing here touches Python state.
-    let png_bytes = py.allow_threads(|| rasterise(scene, width, height, background))
-        .map_err(PyRuntimeError::new_err)?;
+    let png_bytes = match backend {
+        BACKEND_TINY_SKIA => py.allow_threads(|| rasterise_tiny_skia(scene, width, height, background))
+            .map_err(PyRuntimeError::new_err)?,
+        BACKEND_VELLO => {
+            let mut renderer = vello_renderer()
+                .map_err(|e| PyRuntimeError::new_err(format!("vello unavailable: {e}")))?;
+            renderer.render_scene_to_png(&scene, width, height, background)
+                .map_err(PyRuntimeError::new_err)?
+        }
+        other => return Err(PyValueError::new_err(format!(
+            "backend {:?} not implemented; expected one of {:?}, {:?}",
+            other, BACKEND_TINY_SKIA, BACKEND_VELLO,
+        ))),
+    };
     Ok(PyBytes::new_bound(py, &png_bytes))
 }
 
-fn rasterise(
+fn rasterise_tiny_skia(
     scene: Scene,
     width: u32,
     height: u32,
@@ -132,7 +153,14 @@ fn render_scene_to_pdf_bytes<'py>(
 /// List the backends available in this build of `veusz_paint_ext`.
 #[pyfunction]
 fn available_backends() -> Vec<&'static str> {
-    vec![BACKEND_TINY_SKIA]
+    let mut out = vec![BACKEND_TINY_SKIA];
+    // Probe Vello: actually try to build a renderer. On llvmpipe / SwiftShader
+    // it'll succeed; on environments with no Vulkan/Metal/DX12 at all it
+    // won't be listed.
+    if vello_renderer().is_ok() {
+        out.push(BACKEND_VELLO);
+    }
+    out
 }
 
 #[pymodule]

@@ -51,5 +51,7 @@ within = 35.0
 # anything below `within` is "material" and blocks merge for the affected pair.
 
 [backends]
-# Backends to compare. Append "tiny-skia" and "vello" as those land.
-enabled = ["qt"]
+# Backends to compare. tiny-skia and vello require the
+# veusz.paint._paint_ext extension (build with
+# scripts/build_paint_ext.sh).
+enabled = ["qt", "tiny-skia", "vello"]
