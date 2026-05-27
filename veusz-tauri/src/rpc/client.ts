@@ -128,6 +128,26 @@ export function createRpc(transport: Transport) {
         >,
     },
 
+    fit: {
+      run: (params: {
+        xData: string;
+        yData: string;
+        function: string;
+        params: Record<string, number>;
+        variable?: string;
+        fit_range?: [number, number];
+      }) =>
+        t('fit.run', params as Record<string, unknown>) as Promise<{
+          success: boolean;
+          message: string;
+          params: Record<string, { value: number; stderr: number | null }>;
+          chi2: number | null;
+          dof: number | null;
+          reduced_chi2: number | null;
+          x_range?: [number, number];
+        }>,
+    },
+
     state: {
       snapshot: () => t('state.snapshot') as Promise<{ blob: string }>,
       restore: (blob: string) =>

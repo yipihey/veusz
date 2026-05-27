@@ -15,10 +15,16 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import core, data, doc, render, hittest, state, eval as eval_handler, file as file_handler
+from . import (
+    core, data, doc, render, hittest, state,
+    eval as eval_handler, file as file_handler, fit as fit_handler,
+)
 
 
-_MODULES = (core, data, doc, render, hittest, state, eval_handler, file_handler)
+_MODULES = (
+    core, data, doc, render, hittest, state,
+    eval_handler, file_handler, fit_handler,
+)
 
 
 def all_handlers(ctx) -> dict[str, Callable]:
