@@ -1,2 +1,6 @@
 # Built artifacts: regenerate via scripts/build_paint_wasm.sh.
 pkg/
+
+# Headless Playwright test scaffolding (see README).
+node_modules/
+package-lock.json

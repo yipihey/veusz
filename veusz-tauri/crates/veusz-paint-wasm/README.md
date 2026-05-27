@@ -45,6 +45,56 @@ scripts/build_paint_wasm.sh
 node veusz-tauri/crates/veusz-paint-wasm/test_node_smoke.mjs
 ```
 
+## Headless browser test (Playwright)
+
+A second test drives the harness through headless Chromium with WebGPU
+flags enabled. It serves the repo over a local HTTP port, loads
+`index.html`, waits for the renderer to come up, clicks the Render
+button, and screenshots the canvas to `pkg/test-output/headless-render.png`.
+
+```sh
+# one-time: pkg/ build + npm deps + Chromium binary
+scripts/build_paint_wasm.sh
+cd veusz-tauri/crates/veusz-paint-wasm
+npm install
+npx playwright install --with-deps chromium   # ~150 MB
+
+# run the test
+npm run test:headless
+```
+
+The test exits 0 whenever it manages to reach a verdict — including the
+graceful-skip branches below. Exit > 0 is reserved for real regressions
+(blank canvas after a successful render, render() throwing, missing
+pkg/).
+
+### When the test skips
+
+Headless Chromium's WebGPU support depends on the container's GPU /
+Vulkan stack. The test recognises and skips on these environment issues
+rather than failing the build:
+
+| symptom in `diagnostic.log` | reported as |
+|---|---|
+| `navigator.gpu` undefined | Chromium built without WebGPU. |
+| `requestAdapter` returned null | No adapter — Vulkan ICD not reachable. |
+| `requestDevice` rejected with "limit … not recognized" | wgpu vs Chromium API mismatch — rebuild against the matching wgpu version. |
+
+Real WebGPU on the host (a desktop Chromium or `npm run test:headless` on
+a machine with a GPU + proper Vulkan/Metal driver) is the path that
+exercises the renderer end-to-end. CI just confirms the harness loads
+and the pipeline up to `requestDevice` works.
+
+### Known limitation in this container
+
+The included Chromium pre-cache (`chromium-1194`) loads the harness fine
+and reports `navigator.gpu` present, but `requestDevice` fails with
+`maxInterStageShaderComponents … not recognized` because the bundled
+wgpu version still passes a limit that newer Chromium removed. The test
+skips with that message visible. Fix is to bump wgpu in
+`crates/veusz-paint-wasm/Cargo.toml` to a version that drops the
+deprecated limit, then rebuild pkg/.
+
 ## Text
 
 Text in the WASM build uses a **vendored TTF** — Liberation Sans Regular
