@@ -6,6 +6,7 @@ description = "tiny-skia backend for Veusz's abstract Painter trait. Pure-Rust s
 
 [dependencies]
 veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-text = { path = "../veusz-paint-text" }
 tiny-skia = "0.12"
 png = "0.18"
 

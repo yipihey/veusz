@@ -157,6 +157,8 @@ pub struct TinySkiaPainter {
     /// Stack of masks. Each `push_clip_*` allocates a new mask that combines
     /// (intersects) with the previous top. `pop_clip` drops it.
     clip_stack: Vec<Mask>,
+    /// Shared text layout engine, lazily constructed on first `draw_text`.
+    text_engine: Option<veusz_paint_text::TextEngine>,
 }
 
 impl TinySkiaPainter {
@@ -168,6 +170,7 @@ impl TinySkiaPainter {
             pixmap,
             states: vec![State::default()],
             clip_stack: Vec::new(),
+            text_engine: None,
         })
     }
 
@@ -399,25 +402,34 @@ impl Painter for TinySkiaPainter {
     }
 
     fn draw_text(&mut self, layout: &TextLayout, x: f64, y: f64) {
-        // PLACEHOLDER until Parley+Swash integration lands (plan §5). Emit a
-        // bounding-box outline at (x, y) sized by a coarse character-width
-        // estimate. This lets the rest of the pipeline be exercised
-        // end-to-end and produces visibly *something* in the output, while
-        // making it obvious that text rendering is not yet real.
-        let w = 0.6 * layout.style.size_pt * layout.text.chars().count() as f64;
-        let h = layout.style.size_pt;
-        let rect = Path::rect(Rect { x, y: y - h, w, h });
+        // Real text via Parley + skrifa: extract glyph outlines from the
+        // font and fill them as paths in the current transform. If no fonts
+        // are available (e.g. minimal Docker), fall back to the
+        // dashed-bounding-box placeholder so the pipeline still produces
+        // visible output rather than failing silently.
+        if self.text_engine.is_none() {
+            self.text_engine = Some(veusz_paint_text::TextEngine::new());
+        }
+        let engine = self.text_engine.as_ref().expect("just constructed");
+        let glyphs = engine.layout_to_glyph_paths(layout, (x, y));
+        if glyphs.is_empty() {
+            self.draw_text_placeholder(layout, x, y);
+            return;
+        }
+        // All glyphs in a single TextLayout share the colour set on the
+        // layout's style.
         let prev = self.cur().paint.clone();
-        let placeholder = Paint {
-            fill: None,
-            stroke: Some(Stroke {
-                color: layout.style.color, width: 0.5, dash: Some(vec![2.0, 2.0]),
-                cap: LineCap::Butt, join: LineJoin::Miter, miter_limit: 4.0,
-            }),
+        self.set_paint(&Paint {
+            fill: Some(Fill::Solid(layout.style.color)),
+            stroke: None,
             anti_alias: true,
-        };
-        self.set_paint(&placeholder);
-        self.stroke_path(&rect);
+        });
+        for g in glyphs {
+            self.save();
+            self.concat_transform(g.position);
+            self.fill_path(&g.path, FillRule::NonZero);
+            self.restore();
+        }
         self.set_paint(&prev);
     }
 
@@ -427,6 +439,23 @@ impl Painter for TinySkiaPainter {
 // ---- private helpers --------------------------------------------------------
 
 impl TinySkiaPainter {
+    fn draw_text_placeholder(&mut self, layout: &TextLayout, x: f64, y: f64) {
+        let w = 0.6 * layout.style.size_pt * layout.text.chars().count() as f64;
+        let h = layout.style.size_pt;
+        let rect = Path::rect(Rect { x, y: y - h, w, h });
+        let prev = self.cur().paint.clone();
+        self.set_paint(&Paint {
+            fill: None,
+            stroke: Some(Stroke {
+                color: layout.style.color, width: 0.5, dash: Some(vec![2.0, 2.0]),
+                cap: LineCap::Butt, join: LineJoin::Miter, miter_limit: 4.0,
+            }),
+            anti_alias: true,
+        });
+        self.stroke_path(&rect);
+        self.set_paint(&prev);
+    }
+
     fn push_clip_path_internal(&mut self, path: &TsPath) {
         let xf = self.cur().transform;
         let mask = if let Some(prev) = self.current_mask() {

@@ -6,5 +6,6 @@ description = "Scene -> PDF emitter for Veusz's parallel paint backends. Consume
 
 [dependencies]
 veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-text = { path = "../veusz-paint-text" }
 pdf-writer = "0.14"
 flate2 = "1"

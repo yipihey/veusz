@@ -87,6 +87,7 @@ struct PdfEmitter {
     content: Content,
     states: Vec<GraphicsState>,
     images: Vec<EmbeddedImage>, // collected during run, written at finish
+    text_engine: Option<veusz_paint_text::TextEngine>,
 }
 
 struct EmbeddedImage {
@@ -114,6 +115,7 @@ impl PdfEmitter {
             content,
             states: vec![GraphicsState::default()],
             images: Vec::new(),
+            text_engine: None,
         }
     }
 
@@ -203,7 +205,7 @@ impl PdfEmitter {
                 self.content.restore_state();
             }
             SceneOp::DrawText { layout, x, y } => {
-                self.emit_text_placeholder(layout, *x, *y);
+                self.emit_text(layout, *x, *y);
             }
         }
     }
@@ -270,11 +272,38 @@ impl PdfEmitter {
         id
     }
 
+    fn emit_text(&mut self, layout: &TextLayout, x: f64, y: f64) {
+        // Real text via Parley + skrifa: glyphs as filled paths in PDF.
+        // Portable (no font subsetting required), at the cost of larger
+        // streams. PDF Type0/CIDFont embedding lands in a follow-up.
+        if self.text_engine.is_none() {
+            self.text_engine = Some(veusz_paint_text::TextEngine::new());
+        }
+        let glyphs = self.text_engine.as_ref().unwrap()
+            .layout_to_glyph_paths(layout, (x, y));
+        if glyphs.is_empty() {
+            self.emit_text_placeholder(layout, x, y);
+            return;
+        }
+        self.content.save_state();
+        self.content.set_fill_rgb(
+            layout.style.color.r, layout.style.color.g, layout.style.color.b);
+        for g in glyphs {
+            self.content.save_state();
+            self.content.transform([
+                g.position.a as f32, g.position.b as f32,
+                g.position.c as f32, g.position.d as f32,
+                g.position.e as f32, g.position.f as f32,
+            ]);
+            emit_path(&mut self.content, &g.path);
+            self.content.fill_nonzero();
+            self.content.restore_state();
+        }
+        self.content.restore_state();
+    }
+
     fn emit_text_placeholder(&mut self, layout: &TextLayout, x: f64, y: f64) {
-        // Mirror the tiny-skia placeholder: a dashed bounding-box stroke at
-        // approximately the layout's intrinsic size. Same rough metrics as
-        // the tiny-skia backend so the two outputs are visually comparable
-        // until real text rendering lands.
+        // Fallback when no fonts are available.
         let w = 0.6 * layout.style.size_pt * (layout.text.chars().count() as f64);
         let h = layout.style.size_pt;
         self.content.save_state();
