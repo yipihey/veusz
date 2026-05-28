@@ -3447,6 +3447,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4864,7 +4874,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "veusz-paint-core"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
+ "serde_bytes",
  "serde_json",
 ]
 
@@ -4972,6 +4984,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "veusz-paint-core",
+ "veusz-paint-vello",
  "veusz-rpc",
 ]
 

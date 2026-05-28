@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Veusz figure — Vello (WASM/WebGPU)</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 24px; }
+      #status { color: #555; margin: 12px 0; }
+      #status.error { color: #b45309; }
+      canvas { border: 1px solid #ddd; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <h1>Veusz figure — client-side Vello (WASM / WebGPU)</h1>
+    <p>Renders a pre-exported Scene IR in the browser with no Python daemon.
+       Requires WebGPU (Chrome or Safari 26+); WKWebView is not supported.</p>
+    <p id="status">Loading…</p>
+    <canvas id="figure" width="700" height="500"></canvas>
+    <script type="module" src="/src/figure/main.ts"></script>
+  </body>
+</html>

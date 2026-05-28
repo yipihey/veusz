@@ -327,6 +327,28 @@ pub trait Painter {
     // text
     fn draw_text(&mut self, layout: &TextLayout, x: f64, y: f64);
 
+    // batched markers: stamp `path` (marker-local coords) at each
+    // `(xs[i], ys[i])`, optionally scaled by `scales[i]`, filling and/or
+    // stroking with the current paint. Default expands to per-marker
+    // transform + fill/stroke; backends may specialise for instancing.
+    fn draw_markers(&mut self, path: &Path, xs: &[f64], ys: &[f64],
+                    scales: Option<&[f64]>, fill: bool, stroke: bool) {
+        let n = xs.len().min(ys.len());
+        for i in 0..n {
+            self.save();
+            self.concat_transform(Affine::translate(xs[i], ys[i]));
+            if let Some(sc) = scales {
+                if !sc.is_empty() {
+                    let s = sc[i % sc.len()];
+                    self.concat_transform(Affine::scale(s, s));
+                }
+            }
+            if fill { self.fill_path(path, FillRule::NonZero); }
+            if stroke { self.stroke_path(path); }
+            self.restore();
+        }
+    }
+
     // lifecycle
     fn finish(&mut self);
 }

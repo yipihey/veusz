@@ -367,6 +367,34 @@ impl SceneBuilder {
             SceneOp::DrawText { layout, x, y } => {
                 self.emit_text(layout, *x, *y);
             }
+            SceneOp::DrawMarkers { path, xs, ys, scales, fill, stroke } => {
+                // One marker path, instanced over the position arrays — keeps
+                // huge scatters cheap (no per-marker op or path clone).
+                let bez = vpath_to_bez(path);
+                let base_xf = self.cur().transform;
+                let mp = self.cur().paint.clone();
+                if let Some(mp) = mp {
+                    let n = xs.len().min(ys.len());
+                    for i in 0..n {
+                        let mut xf = base_xf * KAffine::translate((xs[i], ys[i]));
+                        if let Some(sc) = scales {
+                            if !sc.is_empty() {
+                                xf = xf * KAffine::scale(sc[i % sc.len()]);
+                            }
+                        }
+                        if *fill {
+                            if let Some(brush) = &mp.fill_brush {
+                                self.scene.fill(vrule_to_peniko(FillRule::NonZero), xf, brush, None, &bez);
+                            }
+                        }
+                        if *stroke {
+                            if let (Some(brush), Some(stroke_style)) = (&mp.stroke_brush, &mp.stroke) {
+                                self.scene.stroke(stroke_style, xf, brush, None, &bez);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -70,6 +70,9 @@ export interface DocState {
    *  null = not yet probed. When false, selecting vello-wasm transparently
    *  degrades to server-side vello. */
   webgpuAvailable: boolean | null;
+  /** Native GPU (Tauri Vello) availability for the vello-gpu path.
+   *  null = not yet probed. False outside Tauri / with no GPU adapter. */
+  gpuNativeAvailable: boolean | null;
   /** Update policy: 'disable' | 'change' | seconds-as-string.
    *  Mirrors prefs.plot.update_policy. */
   updatePolicy: string;
@@ -161,6 +164,8 @@ export interface DocState {
   /** Probe WebGPU availability (idempotent-ish; re-probes on demand) and
    *  store the result in `webgpuAvailable`. */
   probeWebgpu: () => Promise<boolean>;
+  /** Probe native GPU (Tauri Vello) availability; stores `gpuNativeAvailable`. */
+  probeGpuNative: () => Promise<boolean>;
   setUpdatePolicy: (policy: string) => Promise<void>;
   /** Render immediately, bypassing the coalesce window (Force update). */
   forceRender: (w: number, h: number, dpi?: number) => Promise<void>;
@@ -241,6 +246,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       antialias: true,
       backend: 'qt',
       webgpuAvailable: null,
+      gpuNativeAvailable: null,
       updatePolicy: 'change',
 
       refreshTree: async () => {
@@ -641,10 +647,13 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       setBackend: async (backend) => {
         set({ backend });
         await guard(() => rpc.prefs.set('plot.backend', backend));
-        // Probe WebGPU when entering the client-side path so renderAt can
-        // decide between the WASM canvas and a server-side fallback.
+        // Probe the relevant GPU path when entering it so renderAt can
+        // decide between local GPU rendering and a server-side fallback.
         if (backend === 'vello-wasm' && get().webgpuAvailable === null) {
           await get().probeWebgpu();
+        }
+        if (backend === 'vello-gpu' && get().gpuNativeAvailable === null) {
+          await get().probeGpuNative();
         }
       },
 
@@ -660,6 +669,18 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         return ok;
       },
 
+      probeGpuNative: async () => {
+        let ok = false;
+        try {
+          const { gpuAvailable } = await import('../components/plot/velloNative');
+          ok = await gpuAvailable();
+        } catch {
+          ok = false;
+        }
+        set({ gpuNativeAvailable: ok });
+        return ok;
+      },
+
       setUpdatePolicy: async (policy) => {
         set({ updatePolicy: policy });
         await guard(() => rpc.prefs.set('plot.update_policy', policy));
@@ -672,9 +693,25 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
 
       renderAt: async (page, w, h, dpi = 96) => {
         const backend = get().backend;
-        // Client-side path: fetch the Scene IR and let PlotCanvas rasterise
-        // it via WASM/WebGPU. Only when WebGPU is actually available;
-        // otherwise fall through to the server-side branch (degrade to vello).
+        // Native in-process GPU path: fetch the Scene IR and rasterise it on
+        // the local GPU via the Tauri command, returning a PNG. Only when a
+        // native GPU adapter is available; otherwise degrade to server vello.
+        if (backend === 'vello-gpu' && get().gpuNativeAvailable === true) {
+          const s = await guard(() => rpc.render.scene(page, w, h, dpi));
+          if (s) {
+            const { gpuRenderScene } = await import('../components/plot/velloNative');
+            const png = await guard(() => gpuRenderScene(s.scene_b64, s.width, s.height));
+            if (png) {
+              set({ render: {
+                png, width: s.width, height: s.height, bounds: s.bounds,
+              } });
+            }
+          }
+          return;
+        }
+        // Client-side WASM path: fetch the Scene IR and let PlotCanvas
+        // rasterise it via WASM/WebGPU. Only when WebGPU is actually
+        // available; otherwise fall through to the server-side branch.
         if (backend === 'vello-wasm' && get().webgpuAvailable === true) {
           const s = await guard(() => rpc.render.scene(page, w, h, dpi));
           if (s) {
@@ -685,9 +722,9 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
           }
           return;
         }
-        // Server-side path. 'vello-wasm' degrades to server 'vello'.
+        // Server-side path. The client-GPU paths degrade to server 'vello'.
         const serverBackend: ServerBackend =
-          backend === 'vello-wasm' ? 'vello' : backend;
+          backend === 'vello-wasm' || backend === 'vello-gpu' ? 'vello' : backend;
         const r = await guard(() =>
           rpc.render.png(page, w, h, dpi, get().antialias, serverBackend));
         if (r) set({ render: r });

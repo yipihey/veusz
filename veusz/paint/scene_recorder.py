@@ -13,8 +13,11 @@ the Rust extension ``veusz.paint._paint_ext`` rasterises and returns PNG.
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, Optional
+
+import numpy as np
 
 from .protocol import (
     Affine,
@@ -143,6 +146,24 @@ def _image(img: Image) -> dict:
 # Recorder
 # ---------------------------------------------------------------------------
 
+def _to_floats(seq) -> list:
+    """JSON-ready list of floats. Uses numpy's fast C-level ``tolist`` when
+    available (the hot path for large position arrays), else coerces."""
+    tolist = getattr(seq, "tolist", None)
+    if tolist is not None:
+        return tolist()
+    return [float(v) for v in seq]
+
+
+def _coord_b64(arr) -> str:
+    """Pack a coordinate array as base64 of little-endian float32 — the wire
+    form the Rust ``coord_blob`` codec reads. ``astype('<f4').tobytes()`` is a
+    C-level memcpy (no per-element Python work), and base64 of 4·N bytes is
+    far smaller and faster than a JSON number array (~18 chars/float)."""
+    a = np.ascontiguousarray(np.asarray(arr, dtype="<f4"))
+    return base64.b64encode(a.tobytes()).decode("ascii")
+
+
 class PythonSceneRecorder:
     """:class:`Painter` that builds a Scene as a list of JSON-ready ops.
 
@@ -218,6 +239,23 @@ class PythonSceneRecorder:
         self._ops.append({"DrawText": {
             "layout": _text_layout(layout),
             "x": float(x), "y": float(y),
+        }})
+
+    # ---- batched markers ------------------------------------------------
+
+    def draw_markers(self, path: Path, xs, ys, scales=None,
+                     fill: bool = True, stroke: bool = True) -> None:
+        """Stamp ``path`` (marker-local) at each ``(xs[i], ys[i])``, optionally
+        scaled by ``scales[i]``, filling/stroking with the current paint. One
+        op for N markers — the key to browser-scale scatters (compact JSON,
+        O(1) Python emit)."""
+        self._ops.append({"DrawMarkers": {
+            "path": _path(path),
+            "xs": _coord_b64(xs),
+            "ys": _coord_b64(ys),
+            "scales": _to_floats(scales) if scales is not None else None,
+            "fill": bool(fill),
+            "stroke": bool(stroke),
         }})
 
     # ---- lifecycle ------------------------------------------------------

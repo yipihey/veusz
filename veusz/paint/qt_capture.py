@@ -484,6 +484,11 @@ def _emit_lines(painter, x1, y1, x2, y2, clip=None, *_a, **_k):
 
 def _emit_paths(painter, qpath, xpos, ypos, scaling=None, clip=None,
                 colorimg=None, scaleline=False, *_a, **_k):
+    # Emit ONE batched DrawMarkers op (path + position arrays) rather than a
+    # per-point save/transform/fill/stroke/restore loop. This collapses the
+    # Python work and the scene JSON from O(N) ops to O(1) op + position
+    # arrays — the difference between seconds + hundreds of MB and
+    # milliseconds + a few MB for large scatters.
     import numpy as np
     rec = painter.recorder
     base = qtt.qpath_to_path(qpath)
@@ -492,22 +497,17 @@ def _emit_paths(painter, qpath, xpos, ypos, scaling=None, clip=None,
     n = min(xa.size, ya.size)
     if n == 0:
         return
-    sc = np.asarray(scaling, dtype=float).ravel() if scaling is not None else None
+    scales = None
+    if scaling is not None:
+        sc = np.asarray(scaling, dtype=float).ravel()
+        if sc.size:
+            scales = sc
     pushed = _maybe_push_clip(painter, clip)
     fill = qtt.qbrush_to_fill(painter.brush())
     stroke = qtt.qpen_to_stroke(painter.pen())
     rec.set_paint(Paint(fill=fill, stroke=stroke, anti_alias=painter._cur_aa))
-    for i in range(n):
-        rec.save()
-        rec.concat_transform(Affine.translate(float(xa[i]), float(ya[i])))
-        if sc is not None and sc.size:
-            s = float(sc[i % sc.size])
-            rec.concat_transform(Affine.scale(s, s))
-        if fill is not None:
-            rec.fill_path(base)
-        if stroke is not None:
-            rec.stroke_path(base)
-        rec.restore()
+    rec.draw_markers(base, xa[:n], ya[:n], scales,
+                     fill is not None, stroke is not None)
     if pushed:
         rec.pop_clip()
 

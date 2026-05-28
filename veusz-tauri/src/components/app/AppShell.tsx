@@ -60,6 +60,7 @@ export function AppShell({
   const backend = store((s) => s.backend);
   const setBackend = store((s) => s.setBackend);
   const webgpuAvailable = store((s) => s.webgpuAvailable);
+  const gpuNativeAvailable = store((s) => s.gpuNativeAvailable);
   const selectedDatasets = store((s) => s.selectedDatasets);
 
   const refreshAll = store((s) => s.refreshAll);
@@ -182,7 +183,7 @@ export function AppShell({
       requestRender(currentPage, renderWidth, renderHeight);
     }
   }, [treeChangeKey, renderWidth, renderHeight, requestRender, values, tree,
-      currentPage, antialias, backend, webgpuAvailable]);
+      currentPage, antialias, backend, webgpuAvailable, gpuNativeAvailable]);
 
   const handleImport = async () => {
     if (!onPickCsv) return;
@@ -233,6 +234,7 @@ export function AppShell({
         backend={backend}
         activeBackend={render?.backend}
         webgpuAvailable={webgpuAvailable}
+        gpuNativeAvailable={gpuNativeAvailable}
         onSetBackend={setBackend}
         onOpen={onPickVsz ? handleOpen : undefined}
         onSave={onPickSavePath || filename ? handleSave : undefined}
@@ -369,6 +371,7 @@ function Toolbar({
   backend,
   activeBackend,
   webgpuAvailable,
+  gpuNativeAvailable,
   onSetBackend,
   onOpen,
   onSave,
@@ -384,8 +387,10 @@ function Toolbar({
   backend: PaintBackend;
   /** The backend that produced the current render (daemon echo). */
   activeBackend?: ServerBackend;
-  /** WebGPU probe result for the client-side path (null = probing). */
+  /** WebGPU probe result for the client-side vello-wasm path (null = probing). */
   webgpuAvailable: boolean | null;
+  /** Native-GPU probe result for the vello-gpu path (null = probing). */
+  gpuNativeAvailable: boolean | null;
   onSetBackend: (b: PaintBackend) => void;
   onOpen?: () => void;
   onSave?: () => void;
@@ -452,6 +457,18 @@ function Toolbar({
                 : '· GPU unavailable → server vello'}
           </span>
         )}
+        {backend === 'vello-gpu' && (
+          <span
+            data-testid="backend-gpu-status"
+            style={{ fontSize: 11, color: gpuNativeAvailable === false ? '#b45309' : '#666' }}
+          >
+            {gpuNativeAvailable === null
+              ? '· probing GPU…'
+              : gpuNativeAvailable
+                ? '· native GPU'
+                : '· no GPU → server vello'}
+          </span>
+        )}
       </div>
       <span data-testid="toolbar-filename" style={{ flex: 1, color: '#666' }}>
         {filename ?? '(unsaved)'}
@@ -492,7 +509,10 @@ function lastSegment(path: string): string {
 const BACKEND_OPTIONS: { id: PaintBackend; label: string; title: string }[] = [
   { id: 'qt', label: 'Qt', title: 'Render via Qt/QPainter (server)' },
   { id: 'tiny-skia', label: 'tiny-skia', title: 'Render via tiny-skia CPU rasteriser (server)' },
-  { id: 'vello', label: 'Vello', title: 'Render via Vello GPU rasteriser (server)' },
+  { id: 'vello', label: 'Vello', title: 'Render via Vello GPU rasteriser (server/daemon)' },
+  { id: 'vello-gpu', label: 'Vello (GPU)',
+    title: 'Render natively on the local GPU in the Tauri process (Metal/Vulkan/DX12); '
+         + 'degrades to server-side Vello outside Tauri or with no GPU adapter' },
   { id: 'vello-wasm', label: 'Vello (WASM)',
     title: 'Render in the browser via Vello/WebGPU (no Python in the paint path); '
          + 'degrades to server-side Vello where WebGPU is unavailable' },

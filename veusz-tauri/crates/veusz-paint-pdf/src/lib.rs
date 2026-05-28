@@ -207,6 +207,32 @@ impl PdfEmitter {
             SceneOp::DrawText { layout, x, y } => {
                 self.emit_text(layout, *x, *y);
             }
+            SceneOp::DrawMarkers { path, xs, ys, scales, fill, stroke } => {
+                let has_fill = self.cur_mut().has_fill_color;
+                let has_stroke = self.cur_mut().has_stroke_color;
+                let n = xs.len().min(ys.len());
+                for i in 0..n {
+                    let s = scales.as_ref()
+                        .filter(|v| !v.is_empty())
+                        .map(|v| v[i % v.len()])
+                        .unwrap_or(1.0);
+                    // CTM concat: scale the marker then translate to (x, y),
+                    // bracketed so it doesn't leak into the next marker.
+                    self.content.save_state();
+                    self.content.transform([
+                        s as f32, 0.0, 0.0, s as f32, xs[i] as f32, ys[i] as f32,
+                    ]);
+                    if *fill && has_fill {
+                        emit_path(&mut self.content, path);
+                        self.content.fill_nonzero();
+                    }
+                    if *stroke && has_stroke {
+                        emit_path(&mut self.content, path);
+                        self.content.stroke();
+                    }
+                    self.content.restore_state();
+                }
+            }
         }
     }
 

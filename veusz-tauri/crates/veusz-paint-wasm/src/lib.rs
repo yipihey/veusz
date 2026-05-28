@@ -355,6 +355,36 @@ fn build_scene(scene: &VScene) -> VelloScene {
             SceneOp::DrawText { layout, x, y } => {
                 emit_text_glyphs(&mut out, states.last().unwrap(), layout, *x, *y);
             }
+            SceneOp::DrawMarkers { path, xs, ys, scales, fill, stroke } => {
+                // One marker path instanced over the position arrays — this is
+                // what makes browser-scale scatters viable (compact scene +
+                // no per-marker op).
+                let bez = vpath_to_bez(path);
+                let cur = states.last().unwrap();
+                let base_xf = cur.transform;
+                let mp = cur.paint.clone();
+                if let Some(mp) = mp {
+                    let n = xs.len().min(ys.len());
+                    for i in 0..n {
+                        let mut xf = base_xf * KAffine::translate((xs[i], ys[i]));
+                        if let Some(sc) = scales {
+                            if !sc.is_empty() {
+                                xf = xf * KAffine::scale(sc[i % sc.len()]);
+                            }
+                        }
+                        if *fill {
+                            if let Some(brush) = &mp.fill_brush {
+                                out.fill(vrule_to_peniko(FillRule::NonZero), xf, brush, None, &bez);
+                            }
+                        }
+                        if *stroke {
+                            if let (Some(brush), Some(stroke_style)) = (&mp.stroke_brush, &mp.stroke) {
+                                out.stroke(stroke_style, xf, brush, None, &bez);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     out

@@ -83,11 +83,14 @@ export interface WidgetTreeNode {
  * Selectable paint backend / render path for the plot canvas.
  *  - qt / tiny-skia / vello: render server-side in the daemon, returned
  *    as a PNG by `render.png`.
+ *  - vello-gpu: render natively in the Tauri process (Vello/wgpu → Metal),
+ *    fed by the Scene IR from `render.scene`; degrades to server-side vello
+ *    outside Tauri / where no GPU adapter exists.
  *  - vello-wasm: render client-side in the browser (WebGPU) from the
  *    Scene IR returned by `render.scene`; degrades to server-side vello
  *    where WebGPU is unavailable.
  */
-export type PaintBackend = 'qt' | 'tiny-skia' | 'vello' | 'vello-wasm';
+export type PaintBackend = 'qt' | 'tiny-skia' | 'vello' | 'vello-gpu' | 'vello-wasm';
 
 /** Backends that render server-side and return a PNG via render.png. */
 export type ServerBackend = 'qt' | 'tiny-skia' | 'vello';

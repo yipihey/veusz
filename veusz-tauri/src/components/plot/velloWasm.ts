@@ -12,10 +12,12 @@
  * rejects if the module can't load — callers fall back to server-side
  * rendering.
  *
- * The dynamic import uses a non-literal path + `@vite-ignore` (the same
- * pattern AppShell uses for `@tauri-apps/api/window`) so neither tsc nor
- * the production build tries to resolve the out-of-tree wasm glue at
- * build time; it resolves at runtime inside the webview.
+ * The wasm-bindgen glue + binary are copied into `public/wasm/` by
+ * `scripts/sync-wasm.mjs` (run from the `dev`/`build` npm scripts), so Vite
+ * serves them in dev and copies them into `dist/` on build. We dynamic-import
+ * the served glue (`@vite-ignore` since it's a runtime static asset, not a
+ * module to bundle) and init it with an explicit wasm URL — robust across
+ * dev and the production bundle.
  */
 
 interface VelloModule {
@@ -30,8 +32,9 @@ interface VelloModule {
   ) => Promise<void>;
 }
 
-// Relative to this file: components/plot -> components -> src -> root.
-const WASM_GLUE = '../../../crates/veusz-paint-wasm/pkg/veusz_paint_wasm.js';
+const WASM_BASE = '/wasm';
+const WASM_GLUE = `${WASM_BASE}/veusz_paint_wasm.js`;
+const WASM_BINARY = `${WASM_BASE}/veusz_paint_wasm_bg.wasm`;
 
 let modulePromise: Promise<VelloModule> | null = null;
 
@@ -40,7 +43,9 @@ function loadModule(): Promise<VelloModule> {
     modulePromise = (async () => {
       const glue = WASM_GLUE;
       const mod = (await import(/* @vite-ignore */ glue)) as VelloModule;
-      await mod.default(); // wasm-bindgen init: instantiates the .wasm
+      // Pass the wasm URL explicitly rather than relying on import.meta.url
+      // resolution of the glue served from public/.
+      await mod.default({ module_or_path: WASM_BINARY });
       return mod;
     })().catch((e) => {
       // Reset so a later attempt can retry (e.g. after a fix/reload).
@@ -74,14 +79,22 @@ export function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-/** Rasterise a base64 Scene IR onto `canvas` via Vello/WebGPU. Rejects if
- *  the wasm can't load or the GPU render fails. */
+/** Rasterise raw Scene-IR JSON bytes onto `canvas` via Vello/WebGPU. Rejects
+ *  if the wasm can't load or the GPU render fails. */
+export async function renderSceneBytesToCanvas(
+  canvas: HTMLCanvasElement,
+  bytes: Uint8Array,
+  bg: [number, number, number, number] = [0, 0, 0, 0],
+): Promise<void> {
+  const mod = await loadModule();
+  await mod.render_scene_to_canvas(canvas, bytes, bg[0], bg[1], bg[2], bg[3]);
+}
+
+/** Rasterise a base64 Scene IR onto `canvas` via Vello/WebGPU. */
 export async function renderSceneToCanvas(
   canvas: HTMLCanvasElement,
   sceneB64: string,
   bg: [number, number, number, number] = [0, 0, 0, 0],
 ): Promise<void> {
-  const mod = await loadModule();
-  const bytes = base64ToBytes(sceneB64);
-  await mod.render_scene_to_canvas(canvas, bytes, bg[0], bg[1], bg[2], bg[3]);
+  await renderSceneBytesToCanvas(canvas, base64ToBytes(sceneB64), bg);
 }

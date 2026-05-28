@@ -46,7 +46,7 @@ _PREFS_SCHEMA: dict[str, dict] = {
     # WebGPU), degrading to server-side vello where WebGPU is absent.
     'plot.backend':             {'type': 'string',  'default': 'qt',
                                  'choices': ['qt', 'tiny-skia', 'vello',
-                                             'vello-wasm']},
+                                             'vello-gpu', 'vello-wasm']},
     'ui.theme':                 {'type': 'string',  'default': 'system',
                                  'choices': ['system', 'light', 'dark']},
     'ui.font_size':             {'type': 'integer', 'default': 13,    'min': 9, 'max': 24},

@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { webgpuAvailable } from '../components/plot/velloWasm';
+import { gpuAvailable, gpuRenderScene } from '../components/plot/velloNative';
 import { createDocStore } from './doc';
 import { createRpc } from '../rpc/client';
 import { mockTransport } from '../rpc/transport';
@@ -16,7 +17,14 @@ vi.mock('../components/plot/velloWasm', () => ({
   base64ToBytes: () => new Uint8Array(),
 }));
 
+vi.mock('../components/plot/velloNative', () => ({
+  gpuAvailable: vi.fn(),
+  gpuRenderScene: vi.fn(),
+}));
+
 const mockWebgpu = vi.mocked(webgpuAvailable);
+const mockGpuAvail = vi.mocked(gpuAvailable);
+const mockGpuRender = vi.mocked(gpuRenderScene);
 
 function rig() {
   const pngBackends: string[] = [];
@@ -38,7 +46,11 @@ function rig() {
 }
 
 describe('paint backend selection', () => {
-  beforeEach(() => mockWebgpu.mockReset());
+  beforeEach(() => {
+    mockWebgpu.mockReset();
+    mockGpuAvail.mockReset();
+    mockGpuRender.mockReset();
+  });
 
   it('vello-wasm degrades to server-side vello when WebGPU is unavailable', async () => {
     mockWebgpu.mockResolvedValue(false);
@@ -64,6 +76,32 @@ describe('paint backend selection', () => {
     expect(r.sceneCalls).toBe(1);
     expect(r.store.getState().render?.sceneB64).toBe('U0NFTkU=');
     expect(r.store.getState().render?.png).toBe('');
+  });
+
+  it('vello-gpu degrades to server-side vello when no native GPU', async () => {
+    mockGpuAvail.mockResolvedValue(false);
+    const r = rig();
+    await r.store.getState().setBackend('vello-gpu');
+    expect(r.store.getState().gpuNativeAvailable).toBe(false);
+
+    await r.store.getState().renderAt(0, 100, 100);
+    expect(r.pngBackends).toEqual(['vello']);
+    expect(mockGpuRender).not.toHaveBeenCalled();
+  });
+
+  it('vello-gpu renders natively via the Tauri command when a GPU is available', async () => {
+    mockGpuAvail.mockResolvedValue(true);
+    mockGpuRender.mockResolvedValue('UE5HQllURVM=');
+    const r = rig();
+    await r.store.getState().setBackend('vello-gpu');
+    expect(r.store.getState().gpuNativeAvailable).toBe(true);
+
+    await r.store.getState().renderAt(0, 100, 100);
+    // No server PNG render; the scene was fetched and rasterised natively.
+    expect(r.pngBackends).toEqual([]);
+    expect(r.sceneCalls).toBe(1);
+    expect(mockGpuRender).toHaveBeenCalledTimes(1);
+    expect(r.store.getState().render?.png).toBe('UE5HQllURVM=');
   });
 
   it('server backends render via render.png with the chosen backend', async () => {

@@ -2,6 +2,7 @@
 // linking the binary entrypoint.
 
 pub mod clipboard;
+pub mod gpu;
 pub mod ipc;
 
 use tauri::{generate_handler, Manager, RunEvent};
@@ -35,6 +36,9 @@ pub fn run() {
                 }
             });
             app.manage(bridge);
+            // Build the native Vello renderer off the hot path so the first
+            // GPU render doesn't pay the wgpu-device + pipeline-compile cost.
+            tauri::async_runtime::spawn_blocking(gpu::warm);
             Ok(())
         })
         .invoke_handler(generate_handler![
@@ -43,6 +47,8 @@ pub fn run() {
             clipboard::clipboard_write_image_png,
             clipboard::clipboard_read_mime,
             clipboard::clipboard_has_mime,
+            gpu::gpu_available,
+            gpu::gpu_render_scene,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri app failed to build")

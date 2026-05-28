@@ -96,7 +96,19 @@ def test_scene_has_expected_op_categories(_qt_app, name):
     # be present in the captured scene.
     assert "DrawText" in kinds, f"{name}: no text captured (drawText gap)"
     assert "StrokePath" in kinds, f"{name}: no stroke geometry (qtloops gap)"
-    assert "FillPath" in kinds, f"{name}: no fills captured"
+    # Fills come from bars / background (FillPath) or markers, which are
+    # batched into a single DrawMarkers op for browser-scale scatters.
+    assert ("FillPath" in kinds) or ("DrawMarkers" in kinds), \
+        f"{name}: no fills/markers captured"
+
+
+@pytest.mark.parametrize("name", ["sin", "coloredpoints"])
+def test_scatter_uses_batched_markers(_qt_app, name):
+    """Marker plots emit a single batched DrawMarkers op (not per-point
+    fills) — the optimisation that makes large scatters cheap to capture
+    and ship to the browser."""
+    kinds = _op_kinds(_capture(_load(name)))
+    assert "DrawMarkers" in kinds, f"{name}: markers not batched into DrawMarkers"
 
 
 @pytest.mark.parametrize("name", EXAMPLES)
