@@ -9,8 +9,14 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Allow the dev server to serve the wasm glue + binary for the
+    // client-side Vello path (crates/veusz-paint-wasm/pkg), which sits
+    // inside the Vite root but outside src/.
+    fs: { allow: ['.', './crates'] },
   },
   envPrefix: ['VITE_', 'TAURI_'],
+  // Treat the wasm binary as an asset so wasm-bindgen's init fetch resolves.
+  assetsInclude: ['**/*.wasm'],
   build: {
     target: 'esnext',
     sourcemap: true,

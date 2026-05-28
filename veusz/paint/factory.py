@@ -50,13 +50,13 @@ def create_painter(width: int, height: int, dpi: float = 96.0,
     wrap; otherwise a fresh ``QImage`` is created and a :class:`QtPainter`
     that paints onto it is returned.
 
-    For the ``tiny-skia`` backend a :class:`TinySkiaSceneBackend` is
+    For the ``tiny-skia`` and ``vello`` backends a :class:`SceneBackend` is
     returned. It records ops via :class:`PythonSceneRecorder` and flushes
     them to the Rust extension on :meth:`Painter.finish` /
-    :meth:`TinySkiaSceneBackend.to_png`. PNG bytes are then available via
-    :attr:`TinySkiaSceneBackend.png_bytes`.
-
-    The ``vello`` backend still raises :class:`BackendError`.
+    :meth:`SceneBackend.to_png`. PNG bytes are then available via
+    :attr:`SceneBackend.png_bytes`. Both backends share the same Scene IR
+    and PDF emitter; only the rasteriser differs (CPU tiny-skia vs GPU
+    wgpu Vello).
     """
     name = active_backend(backend)
 
@@ -74,46 +74,48 @@ def create_painter(width: int, height: int, dpi: float = 96.0,
         shim._owned_image = image
         return shim
 
-    if name == "tiny-skia":
+    if name in ("tiny-skia", "vello"):
         try:
             from . import _paint_ext  # type: ignore
         except ImportError as exc:
             raise BackendError(
-                "tiny-skia backend requires the veusz.paint._paint_ext "
-                "Rust extension. Build with: "
-                "`cargo build -p veusz-paint-py --release` and copy the "
-                "resulting libveusz_paint_ext.so / lib_paint_ext.so to "
-                "veusz/paint/_paint_ext.abi3.so. See "
-                "docs/parallel-paint-backends-plan.md §7.4 for packaging."
+                f"{name} backend requires the veusz.paint._paint_ext "
+                "Rust extension. Build with scripts/build_paint_ext.sh "
+                "(see docs/parallel-paint-backends-plan.md §7.4)."
             ) from exc
-        return TinySkiaSceneBackend(int(width), int(height),
-                                    background=tuple(background),
-                                    _ext=_paint_ext)
-
-    if name == "vello":
-        raise BackendError(
-            "vello backend lands in phase 3; see "
-            "docs/parallel-paint-backends-plan.md §8"
-        )
+        available = _paint_ext.available_backends()
+        if name not in available:
+            raise BackendError(
+                f"{name} backend is not available in this build/runtime "
+                f"(available: {list(available)}). Vello needs a working "
+                "wgpu adapter; fall back to tiny-skia where none exists."
+            )
+        return SceneBackend(int(width), int(height), backend=name,
+                            background=tuple(background),
+                            _ext=_paint_ext)
 
     raise BackendError(f"Unhandled backend {name!r}")  # unreachable
 
 
-class TinySkiaSceneBackend:
-    """Recording Painter that rasterises through tiny-skia on finish.
+class SceneBackend:
+    """Recording Painter that rasterises a recorded Scene on finish.
 
     Implements :class:`Painter` by delegating every op to an internal
     :class:`PythonSceneRecorder`, then on :meth:`finish` ships the recorded
-    scene to the ``_paint_ext`` extension and stores the PNG bytes.
+    scene to the ``_paint_ext`` extension and stores the PNG bytes. The
+    ``backend`` name selects the rasteriser (``tiny-skia`` CPU or ``vello``
+    GPU); both consume the identical Scene IR.
     """
 
     def __init__(self, width: int, height: int,
+                 backend: str = "tiny-skia",
                  background: tuple = (1.0, 1.0, 1.0, 1.0),
                  _ext=None) -> None:
         from .scene_recorder import PythonSceneRecorder
         self._recorder = PythonSceneRecorder()
         self.width = int(width)
         self.height = int(height)
+        self.backend = backend
         self.background = tuple(background)
         self._ext = _ext
         self.png_bytes: Optional[bytes] = None
@@ -146,7 +148,7 @@ class TinySkiaSceneBackend:
             raise BackendError("backend extension was not bound at construction time")
         scene_json = self._recorder.to_json()
         self.png_bytes = self._ext.render_scene_to_png(
-            scene_json, self.width, self.height, self.background, "tiny-skia",
+            scene_json, self.width, self.height, self.background, self.backend,
         )
 
     # convenience

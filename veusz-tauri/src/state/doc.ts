@@ -18,7 +18,9 @@
 import { create } from 'zustand';
 import type {
   DataInfo,
+  PaintBackend,
   RenderResult,
+  ServerBackend,
   WidgetSchema,
   WidgetTreeNode,
 } from '../rpc/types';
@@ -60,6 +62,14 @@ export interface DocState {
   currentPage: number;
   /** Antialias flag passed to render.png; mirrors prefs.plot.antialias. */
   antialias: boolean;
+  /** Active paint backend / render path; mirrors prefs.plot.backend.
+   *  qt/tiny-skia/vello render server-side; vello-wasm renders in the
+   *  browser. The plot re-renders live when this changes. */
+  backend: PaintBackend;
+  /** WebGPU adapter availability for the client-side vello-wasm path.
+   *  null = not yet probed. When false, selecting vello-wasm transparently
+   *  degrades to server-side vello. */
+  webgpuAvailable: boolean | null;
   /** Update policy: 'disable' | 'change' | seconds-as-string.
    *  Mirrors prefs.plot.update_policy. */
   updatePolicy: string;
@@ -144,6 +154,13 @@ export interface DocState {
   nextPage: () => void;
   prevPage: () => void;
   setAntialias: (on: boolean) => Promise<void>;
+  /** Switch the active paint backend / render path. Persists the pref;
+   *  the live re-render is driven by the AppShell render effect (which
+   *  depends on `backend`). Selecting vello-wasm triggers a WebGPU probe. */
+  setBackend: (backend: PaintBackend) => Promise<void>;
+  /** Probe WebGPU availability (idempotent-ish; re-probes on demand) and
+   *  store the result in `webgpuAvailable`. */
+  probeWebgpu: () => Promise<boolean>;
   setUpdatePolicy: (policy: string) => Promise<void>;
   /** Render immediately, bypassing the coalesce window (Force update). */
   forceRender: (w: number, h: number, dpi?: number) => Promise<void>;
@@ -222,6 +239,8 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       selectedDatasets: [],
       currentPage: 0,
       antialias: true,
+      backend: 'qt',
+      webgpuAvailable: null,
       updatePolicy: 'change',
 
       refreshTree: async () => {
@@ -595,9 +614,13 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       loadPlotPrefs: async () => {
         const aa = await guard(() => rpc.prefs.get('plot.antialias'));
         const up = await guard(() => rpc.prefs.get('plot.update_policy'));
+        const be = await guard(() => rpc.prefs.get('plot.backend'));
         const patch: Partial<DocState> = {};
         if (aa && typeof aa.value === 'boolean') patch.antialias = aa.value;
         if (up && typeof up.value === 'string') patch.updatePolicy = up.value;
+        if (be && typeof be.value === 'string') {
+          patch.backend = be.value as PaintBackend;
+        }
         if (Object.keys(patch).length) set(patch);
       },
 
@@ -615,6 +638,28 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await guard(() => rpc.prefs.set('plot.antialias', on));
       },
 
+      setBackend: async (backend) => {
+        set({ backend });
+        await guard(() => rpc.prefs.set('plot.backend', backend));
+        // Probe WebGPU when entering the client-side path so renderAt can
+        // decide between the WASM canvas and a server-side fallback.
+        if (backend === 'vello-wasm' && get().webgpuAvailable === null) {
+          await get().probeWebgpu();
+        }
+      },
+
+      probeWebgpu: async () => {
+        let ok = false;
+        try {
+          const { webgpuAvailable } = await import('../components/plot/velloWasm');
+          ok = await webgpuAvailable();
+        } catch {
+          ok = false;
+        }
+        set({ webgpuAvailable: ok });
+        return ok;
+      },
+
       setUpdatePolicy: async (policy) => {
         set({ updatePolicy: policy });
         await guard(() => rpc.prefs.set('plot.update_policy', policy));
@@ -626,8 +671,25 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       },
 
       renderAt: async (page, w, h, dpi = 96) => {
+        const backend = get().backend;
+        // Client-side path: fetch the Scene IR and let PlotCanvas rasterise
+        // it via WASM/WebGPU. Only when WebGPU is actually available;
+        // otherwise fall through to the server-side branch (degrade to vello).
+        if (backend === 'vello-wasm' && get().webgpuAvailable === true) {
+          const s = await guard(() => rpc.render.scene(page, w, h, dpi));
+          if (s) {
+            set({ render: {
+              png: '', sceneB64: s.scene_b64, width: s.width,
+              height: s.height, bounds: s.bounds,
+            } });
+          }
+          return;
+        }
+        // Server-side path. 'vello-wasm' degrades to server 'vello'.
+        const serverBackend: ServerBackend =
+          backend === 'vello-wasm' ? 'vello' : backend;
         const r = await guard(() =>
-          rpc.render.png(page, w, h, dpi, get().antialias));
+          rpc.render.png(page, w, h, dpi, get().antialias, serverBackend));
         if (r) set({ render: r });
       },
 

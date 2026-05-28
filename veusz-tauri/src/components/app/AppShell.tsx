@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../../state/doc';
+import type { PaintBackend, ServerBackend } from '../../rpc/types';
 import { Tree, type SelectMode } from '../tree/Tree';
 import { TreeContextMenu } from '../tree/TreeContextMenu';
 import { Inspector } from '../inspector/Inspector';
@@ -56,6 +57,9 @@ export function AppShell({
   const filename = store((s) => s.filename);
   const currentPage = store((s) => s.currentPage);
   const antialias = store((s) => s.antialias);
+  const backend = store((s) => s.backend);
+  const setBackend = store((s) => s.setBackend);
+  const webgpuAvailable = store((s) => s.webgpuAvailable);
   const selectedDatasets = store((s) => s.selectedDatasets);
 
   const refreshAll = store((s) => s.refreshAll);
@@ -169,16 +173,16 @@ export function AppShell({
   }, [refreshAll, loadPlotPrefs, subscribeToDaemon]);
 
   // Re-render whenever the doc tree mutates (selection, edits, undo),
-  // the current page changes, or the antialias toggle flips. Goes
-  // through `requestRender` which coalesces inside a ~33 ms window so
-  // slider drags don't fire 60 renders per second.
+  // the current page changes, or the antialias / backend toggle flips.
+  // Goes through `requestRender` which coalesces inside a ~33 ms window
+  // so slider drags don't fire 60 renders per second.
   const treeChangeKey = JSON.stringify(tree);
   useEffect(() => {
     if (tree && tree.children.length > 0) {
       requestRender(currentPage, renderWidth, renderHeight);
     }
   }, [treeChangeKey, renderWidth, renderHeight, requestRender, values, tree,
-      currentPage, antialias]);
+      currentPage, antialias, backend, webgpuAvailable]);
 
   const handleImport = async () => {
     if (!onPickCsv) return;
@@ -226,6 +230,10 @@ export function AppShell({
         onRedo={redo}
         error={error}
         filename={filename}
+        backend={backend}
+        activeBackend={render?.backend}
+        webgpuAvailable={webgpuAvailable}
+        onSetBackend={setBackend}
         onOpen={onPickVsz ? handleOpen : undefined}
         onSave={onPickSavePath || filename ? handleSave : undefined}
         onSaveAs={onPickSavePath ? handleSaveAs : undefined}
@@ -264,6 +272,7 @@ export function AppShell({
           {render ? (
             <PlotCanvas
               png={render.png}
+              sceneB64={render.sceneB64}
               width={render.width}
               height={render.height}
               bounds={render.bounds}
@@ -357,6 +366,10 @@ function Toolbar({
   onRedo,
   error,
   filename,
+  backend,
+  activeBackend,
+  webgpuAvailable,
+  onSetBackend,
   onOpen,
   onSave,
   onSaveAs,
@@ -368,6 +381,12 @@ function Toolbar({
   onRedo: () => void;
   error: string | null;
   filename: string | null;
+  backend: PaintBackend;
+  /** The backend that produced the current render (daemon echo). */
+  activeBackend?: ServerBackend;
+  /** WebGPU probe result for the client-side path (null = probing). */
+  webgpuAvailable: boolean | null;
+  onSetBackend: (b: PaintBackend) => void;
   onOpen?: () => void;
   onSave?: () => void;
   onSaveAs?: () => void;
@@ -395,6 +414,45 @@ function Toolbar({
           Export…
         </button>
       )}
+      <div
+        data-testid="backend-selector"
+        data-active-backend={activeBackend ?? ''}
+        role="group"
+        aria-label="Paint backend"
+        style={{ display: 'flex', gap: 2, alignItems: 'center', marginLeft: 8 }}
+      >
+        <span style={{ color: '#666', fontSize: 12 }}>Painter:</span>
+        {BACKEND_OPTIONS.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            data-testid={`backend-${opt.id}`}
+            aria-pressed={backend === opt.id}
+            onClick={() => onSetBackend(opt.id)}
+            title={opt.title}
+            style={{
+              fontWeight: backend === opt.id ? 700 : 400,
+              background: backend === opt.id ? '#1f6feb' : undefined,
+              color: backend === opt.id ? '#fff' : undefined,
+              borderRadius: 3,
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+        {backend === 'vello-wasm' && (
+          <span
+            data-testid="backend-wasm-status"
+            style={{ fontSize: 11, color: webgpuAvailable === false ? '#b45309' : '#666' }}
+          >
+            {webgpuAvailable === null
+              ? '· probing GPU…'
+              : webgpuAvailable
+                ? '· GPU'
+                : '· GPU unavailable → server vello'}
+          </span>
+        )}
+      </div>
       <span data-testid="toolbar-filename" style={{ flex: 1, color: '#666' }}>
         {filename ?? '(unsaved)'}
       </span>
@@ -427,6 +485,18 @@ function lastSegment(path: string): string {
   const parts = path.split('/').filter(Boolean);
   return parts.length ? parts[parts.length - 1] : '';
 }
+
+/** Server-side paint backends offered in the toolbar. The client-side
+ *  'vello-wasm' path is added separately (Workstream 2) once a WebGPU
+ *  capability probe confirms it can run. */
+const BACKEND_OPTIONS: { id: PaintBackend; label: string; title: string }[] = [
+  { id: 'qt', label: 'Qt', title: 'Render via Qt/QPainter (server)' },
+  { id: 'tiny-skia', label: 'tiny-skia', title: 'Render via tiny-skia CPU rasteriser (server)' },
+  { id: 'vello', label: 'Vello', title: 'Render via Vello GPU rasteriser (server)' },
+  { id: 'vello-wasm', label: 'Vello (WASM)',
+    title: 'Render in the browser via Vello/WebGPU (no Python in the paint path); '
+         + 'degrades to server-side Vello where WebGPU is unavailable' },
+];
 
 const layout = {
   root: { display: 'flex', flexDirection: 'column' as const, height: '100vh' },

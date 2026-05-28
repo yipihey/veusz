@@ -241,6 +241,56 @@ describe('live daemon: full Phase-1 loop', () => {
       }, { timeout: 5000 });
     }, 30000);
 
+    it('toolbar backend switch re-renders live with a shared control state', async () => {
+      if (skipReason) { console.warn('SKIP:', skipReason); return; }
+      if (!client) throw new Error('client should be ready');
+
+      // Probe whether a scene backend (tiny-skia) is available in this
+      // runtime — requires the built _paint_ext extension. Skip cleanly
+      // otherwise so environments without the Rust build stay green.
+      try {
+        await client.call<RenderResult>('render.png',
+          { page: 0, w: 80, h: 60, backend: 'tiny-skia' });
+      } catch (e) {
+        console.warn('SKIP backend-switch: scene backend unavailable:',
+          (e as Error).message);
+        return;
+      }
+
+      const rpc = createRpc(clientTransport(client));
+      const store = createDocStore(rpc);
+      cleanup();
+      render(<AppShell store={store} renderWidth={400} renderHeight={300} />);
+      await waitFor(() =>
+        expect(screen.getByTestId('tree-node-/page1/graph1/xy1')).toBeInTheDocument());
+
+      // Establish a qt baseline (settingdb may carry a prior pref).
+      await store.getState().setBackend('qt');
+      await waitFor(() => expect(store.getState().render?.backend).toBe('qt'),
+        { timeout: 5000 });
+      const qtBounds = Object.keys(store.getState().render!.bounds).sort();
+      const qtPng = store.getState().render!.png;
+
+      // Flip to tiny-skia via the toolbar control.
+      fireEvent.click(screen.getByTestId('backend-tiny-skia'));
+      await waitFor(() =>
+        expect(store.getState().render?.backend).toBe('tiny-skia'),
+        { timeout: 5000 });
+
+      // Shared control state: the selectable widget bounds tree is identical
+      // regardless of which backend rasterised the pixels.
+      const skBounds = Object.keys(store.getState().render!.bounds).sort();
+      expect(skBounds).toEqual(qtBounds);
+      // A different rasteriser produced different pixels (the switch did
+      // real work, not a no-op).
+      expect(store.getState().render!.png).not.toBe(qtPng);
+      expect(screen.getByTestId('backend-tiny-skia'))
+        .toHaveAttribute('aria-pressed', 'true');
+
+      // Restore the default so we don't pollute settingdb for later runs.
+      await store.getState().setBackend('qt');
+    }, 30000);
+
     it('AppShell receives doc.changed push events from the live daemon', async () => {
       if (skipReason) { console.warn('SKIP:', skipReason); return; }
       if (!client) throw new Error('client should be ready');

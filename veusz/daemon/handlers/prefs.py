@@ -40,6 +40,13 @@ _PREFS_SCHEMA: dict[str, dict] = {
     'plot.update_policy':       {'type': 'string',  'default': 'change',
                                  'choices': ['disable', 'change',
                                              '0.1', '0.5', '1', '2', '5', '10']},
+    # Active paint backend / render path for the plot canvas. qt /
+    # tiny-skia / vello render server-side (PNG over render.png);
+    # vello-wasm renders client-side in the browser (render.scene +
+    # WebGPU), degrading to server-side vello where WebGPU is absent.
+    'plot.backend':             {'type': 'string',  'default': 'qt',
+                                 'choices': ['qt', 'tiny-skia', 'vello',
+                                             'vello-wasm']},
     'ui.theme':                 {'type': 'string',  'default': 'system',
                                  'choices': ['system', 'light', 'dark']},
     'ui.font_size':             {'type': 'integer', 'default': 13,    'min': 9, 'max': 24},

@@ -17,8 +17,11 @@ import type { ZoomCommands } from './PlotContextMenu';
  * same intrinsic size; CSS scaling is the only scaling.
  */
 export interface PlotCanvasProps {
-  /** base64 PNG, no data: prefix. */
+  /** base64 PNG, no data: prefix. Empty when rendering a client-side scene. */
   png: string;
+  /** base64 Scene IR. When set, the plot is rasterised client-side via
+   *  WASM/Vello onto a <canvas> instead of showing the server PNG. */
+  sceneB64?: string;
   width: number;
   height: number;
   /** path → [x1, y1, x2, y2] in PNG-pixel coordinates. */
@@ -47,6 +50,7 @@ const MAX_ZOOM = 16;
 
 export function PlotCanvas({
   png,
+  sceneB64,
   width,
   height,
   bounds,
@@ -58,9 +62,30 @@ export function PlotCanvas({
   const [view, setView] = useState<View>({ zoom: 1, tx: 0, ty: 0 });
   const [hovered, setHovered] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
 
   const src = `data:image/png;base64,${png}`;
+  const useGpu = !!sceneB64;
+
+  // Client-side render: rasterise the Scene IR onto the canvas via
+  // WASM/Vello. Best-effort — failures are logged; the store gates this
+  // path behind a successful WebGPU probe and otherwise sends a PNG.
+  useEffect(() => {
+    if (!sceneB64) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { renderSceneToCanvas } = await import('./velloWasm');
+        if (!cancelled) await renderSceneToCanvas(canvas, sceneB64);
+      } catch (e) {
+        if (!cancelled) console.error('vello-wasm render failed', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sceneB64, width, height]);
 
   // Convert client-space coords into PNG-pixel space, taking the
   // current view transform into account.
@@ -205,15 +230,25 @@ export function PlotCanvas({
           transformOrigin: '0 0',
         }}
       >
-        <img
-          src={src}
-          width={width}
-          height={height}
-          alt="plot"
-          draggable={false}
-          data-testid="plot-png"
-          style={{ display: 'block', userSelect: 'none', imageRendering: 'auto' }}
-        />
+        {useGpu ? (
+          <canvas
+            ref={canvasRef}
+            width={width}
+            height={height}
+            data-testid="plot-gpu-canvas"
+            style={{ display: 'block', userSelect: 'none' }}
+          />
+        ) : (
+          <img
+            src={src}
+            width={width}
+            height={height}
+            alt="plot"
+            draggable={false}
+            data-testid="plot-png"
+            style={{ display: 'block', userSelect: 'none', imageRendering: 'auto' }}
+          />
+        )}
         <svg
           data-testid="plot-overlay"
           width={width}

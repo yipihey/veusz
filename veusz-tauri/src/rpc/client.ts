@@ -8,6 +8,8 @@ import type {
   DataInfo,
   DocSetOp,
   RenderResult,
+  SceneResult,
+  ServerBackend,
   WidgetSchema,
   WidgetTreeNode,
 } from './types';
@@ -227,8 +229,11 @@ export function createRpc(transport: Transport) {
     },
 
     render: {
-      png: (page = 0, w = 800, h = 600, dpi = 96, antialias = true) =>
-        t('render.png', { page, w, h, dpi, antialias }) as Promise<RenderResult>,
+      png: (page = 0, w = 800, h = 600, dpi = 96, antialias = true,
+            backend: ServerBackend = 'qt') =>
+        t('render.png', { page, w, h, dpi, antialias, backend }) as Promise<RenderResult>,
+      scene: (page = 0, w = 800, h = 600, dpi = 96) =>
+        t('render.scene', { page, w, h, dpi }) as Promise<SceneResult>,
       svg: (page = 0, w = 800, h = 600, dpi = 96) =>
         t('render.svg', { page, w, h, dpi }) as Promise<{
           svg: string;

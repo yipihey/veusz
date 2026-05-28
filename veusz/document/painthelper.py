@@ -202,6 +202,11 @@ class PaintHelper:
         else:
             # only paint to one output painter
             p = self.directpaint
+            # tell the painter which widget it's drawing so a stack-aware
+            # directpaint (e.g. the scene-capturing painter) can maintain
+            # widgetstack and link the bounds tree. Plain DirectPainter
+            # ignores this (its __enter__/__exit__ are no-ops).
+            p.widget = widget
             # make sure we get the same state each time
             p.restore()
             p.save()

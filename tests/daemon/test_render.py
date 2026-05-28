@@ -31,6 +31,60 @@ async def test_render_no_pages_fails(daemon):
         await daemon.call('render.png', page=0, w=100, h=100)
 
 
+async def _build_minimal_plot(daemon):
+    await daemon.call('doc.add', parent='/', type='page')
+    await daemon.call('doc.add', parent='/page1', type='graph')
+    await daemon.call('doc.add', parent='/page1/graph1', type='xy')
+    await daemon.call('data.set', name='x', values=list(range(20)))
+    await daemon.call('data.set', name='y', values=[i * i for i in range(20)])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('backend', ['tiny-skia', 'vello'])
+async def test_render_scene_backend_parity(daemon, backend):
+    """Scene backends produce a valid PNG and an identical bounds tree to qt
+    — proving the control state (widget tree / bounds) is backend-independent.
+    Pixel parity is a separate (feature-complete) concern."""
+    pytest.importorskip('veusz.paint._paint_ext')
+    from veusz.paint import _paint_ext
+    if backend not in _paint_ext.available_backends():
+        pytest.skip(f'{backend} backend not available in this runtime')
+    await _build_minimal_plot(daemon)
+    r_qt = await daemon.call('render.png', page=0, w=320, h=240, backend='qt')
+    r = await daemon.call('render.png', page=0, w=320, h=240, backend=backend)
+    png = base64.b64decode(r['png'])
+    assert png[:8] == b'\x89PNG\r\n\x1a\n'
+    assert r['backend'] == backend
+    assert r['width'] == 320 and r['height'] == 240
+    # Bounds tree (the selectable widget geometry) must match qt exactly.
+    assert set(r['bounds']) == set(r_qt['bounds'])
+
+
+@pytest.mark.asyncio
+async def test_render_scene_returns_scene_ir(daemon):
+    """render.scene returns the base64 Scene IR + a bounds tree matching
+    render.png — the wire format the browser-WASM vello path consumes."""
+    import json
+    await _build_minimal_plot(daemon)
+    r = await daemon.call('render.scene', page=0, w=320, h=240, dpi=96)
+    assert 'scene_b64' in r
+    scene = json.loads(base64.b64decode(r['scene_b64']))
+    assert isinstance(scene.get('ops'), list) and len(scene['ops']) > 0
+    assert r['width'] == 320 and r['height'] == 240
+    # Same selectable widget geometry as the PNG path.
+    r_png = await daemon.call('render.png', page=0, w=320, h=240, backend='qt')
+    assert set(r['bounds']) == set(r_png['bounds'])
+
+
+@pytest.mark.asyncio
+async def test_render_unknown_backend_fails(daemon):
+    await daemon.call('doc.add', parent='/', type='page')
+    await daemon.call('doc.add', parent='/page1', type='graph')
+    with pytest.raises(RuntimeError, match='unknown backend'):
+        await daemon.call('render.png', page=0, w=100, h=100,
+                          backend='frobnicate')
+
+
 @pytest.mark.asyncio
 async def test_hittest_after_render(daemon):
     await daemon.call('doc.add', parent='/', type='page')

@@ -77,11 +77,16 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       path: (params as { path: string }).path,
       pages: [0],
     }),
-    // AppShell loads plot prefs (antialias, update_policy) at boot.
-    'prefs.get': (p) => ({
-      key: (p as { key: string }).key,
-      value: (p as { key: string }).key === 'plot.antialias' ? true : 'change',
-    }),
+    // AppShell loads plot prefs (antialias, update_policy, backend) at boot.
+    'prefs.get': (p) => {
+      const key = (p as { key: string }).key;
+      const value =
+        key === 'plot.antialias' ? true
+        : key === 'plot.backend' ? 'qt'
+        : 'change';
+      return { key, value };
+    },
+    'prefs.set': (p) => ({ ok: true, ...(p as Record<string, unknown>) }),
     ...over,
   };
   const t = mockTransport(handlers);
@@ -238,6 +243,36 @@ describe('AppShell (mock RPC)', () => {
     fireEvent.click(screen.getByTestId('toolbar-export'));
     await waitFor(() => expect(exports.length).toBe(1));
     expect((exports[0] as { path: string }).path).toBe('/tmp/out.pdf');
+  });
+
+  it('defaults to the qt backend in the selector', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('backend-selector'));
+    expect(screen.getByTestId('backend-qt')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('backend-vello')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('switching backend re-renders via render.png with the chosen backend', async () => {
+    const backends: string[] = [];
+    const { store } = rig({
+      'render.png': (p) => {
+        const backend = (p as { backend?: string }).backend ?? 'qt';
+        backends.push(backend);
+        return {
+          png: PNG_1PX, width: 100, height: 100,
+          bounds: { '/page1/graph1/xy1': [10, 10, 90, 90] }, backend,
+        };
+      },
+    });
+    render(<AppShell store={store} />);
+    // Initial render(s) go through the default qt backend.
+    await waitFor(() => expect(backends).toContain('qt'));
+    fireEvent.click(screen.getByTestId('backend-vello'));
+    // The flip drives a fresh render through the vello backend.
+    await waitFor(() => expect(backends).toContain('vello'));
+    expect(screen.getByTestId('backend-vello')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('backend-qt')).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('hooks the Import button to the supplied picker', async () => {

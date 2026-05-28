@@ -32,6 +32,8 @@ from .protocol import (
     RadialGradient,
     Rect,
     Stroke,
+    TextLayout,
+    TextStyle,
 )
 
 
@@ -310,6 +312,63 @@ def qfill_rule_to_fill_rule(rule_int) -> FillRule:
     return FillRule.EVEN_ODD if _enum_int(rule_int) == QT_FILL_RULE_ODD_EVEN else FillRule.NON_ZERO
 
 
+# ---------------------------------------------------------------------------
+# Text
+# ---------------------------------------------------------------------------
+
+def qfont_to_text_style(font, color: Color, dpi: float = 96.0) -> TextStyle:
+    """``QFont`` + draw colour -> :class:`TextStyle`.
+
+    ``size_pt`` is expressed in *device pixels* (what the Scene text engine
+    treats as the glyph size): ``pixelSize()`` when set, otherwise
+    ``pointSizeF`` scaled by the device dpi (px = pt * dpi / 72)."""
+    px = float(font.pixelSize())
+    if px <= 0:
+        pt = float(font.pointSizeF())
+        if pt <= 0:
+            pt = 10.0
+        px = pt * float(dpi) / 72.0
+    # Qt6 QFont.weight() is on the CSS 1..1000 scale (Normal=400, Bold=700).
+    try:
+        weight = _enum_int(font.weight())
+    except Exception:
+        weight = 700 if font.bold() else 400
+    return TextStyle(
+        family=str(font.family()) or "sans-serif",
+        size_pt=px,
+        weight=int(weight),
+        italic=bool(font.italic()),
+        color=color,
+    )
+
+
+def text_layout(text: str, font, color: Color, dpi: float = 96.0) -> TextLayout:
+    """Build a :class:`TextLayout` from a string + ``QFont`` + colour."""
+    return TextLayout(text=str(text),
+                      style=qfont_to_text_style(font, color, dpi))
+
+
+# ---------------------------------------------------------------------------
+# Ellipse
+# ---------------------------------------------------------------------------
+
+_ELLIPSE_KAPPA = 0.5522847498307936  # 4/3 * (sqrt(2) - 1)
+
+
+def ellipse_path(cx: float, cy: float, rx: float, ry: float) -> Path:
+    """A closed ellipse centred at ``(cx, cy)`` with radii ``(rx, ry)`` as
+    four cubic Bézier segments — the standard kappa approximation."""
+    kx, ky = _ELLIPSE_KAPPA * rx, _ELLIPSE_KAPPA * ry
+    p = Path()
+    p.move_to(cx + rx, cy)
+    p.cubic_to(cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry)
+    p.cubic_to(cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy)
+    p.cubic_to(cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry)
+    p.cubic_to(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy)
+    p.close()
+    return p
+
+
 # Self-export of the FillRule for callers that don't want to import twice.
 __all__ = [
     "qcolor_to_color", "qtransform_to_affine",
@@ -318,5 +377,6 @@ __all__ = [
     "qrectf_to_rect", "pen_brush_to_paint",
     "composition_mode_to_blend", "render_hints_to_quality",
     "qfill_rule_to_fill_rule",
+    "qfont_to_text_style", "text_layout", "ellipse_path",
     "FillRule",  # convenience re-export
 ]

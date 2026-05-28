@@ -20,6 +20,8 @@ aggregation, diff math, etc.).
 
 from __future__ import annotations
 
+import contextlib
+import sys
 from typing import Optional
 
 from .protocol import (
@@ -42,6 +44,21 @@ def _import_qt():
     """Lazy Qt import. Raises a clear error if Qt is missing."""
     from .. import qtall as qt
     return qt
+
+
+def _coerce_qimage(qimg):
+    """Return ``qimg`` in a format :func:`qt_translate.qimage_to_image` can
+    read (ARGB32 / ARGB32_Premultiplied / RGBA8888), converting if needed.
+
+    Veusz produces colormap / colorbar images in formats like RGB32 or
+    Indexed8; without this they'd serialise to a fully-transparent (and
+    therefore invisible) Scene image."""
+    qt = _import_qt()
+    F = qt.QImage.Format
+    if qimg.format() not in (F.Format_ARGB32, F.Format_ARGB32_Premultiplied,
+                             F.Format_RGBA8888):
+        qimg = qimg.convertToFormat(F.Format_ARGB32)
+    return qimg
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +103,9 @@ def make_scene_capturing_painter(target_device, qt_module=None):
             self.pagesize = (0.0, 0.0)
             self.maxdim = 0.0
             self.textrects = None
+            # Set per-widget by PaintHelper.painter(); used to maintain
+            # helper.widgetstack so the bounds tree links correctly.
+            self.widget = None
 
         # PainterRoot-style methods PaintHelper calls on directpaint. We
         # don't need to record these — they're caller-side state used by
@@ -112,8 +132,16 @@ def make_scene_capturing_painter(target_device, qt_module=None):
                 return None
             return self.colors.getIndex(index + 1)
 
-        def __enter__(self): pass
-        def __exit__(self, *_): pass
+        # Maintain helper.widgetstack like RecordPainter does, so the
+        # PaintHelper bounds tree (rootstate + children) links correctly
+        # in directpaint mode — otherwise widgetBoundsIterator only yields
+        # the root and selection/hit-test break for scene backends.
+        def __enter__(self):
+            if self.helper is not None and self.widget is not None:
+                self.helper.widgetstack.append(self.widget)
+        def __exit__(self, *_):
+            if self.helper is not None and self.widget is not None:
+                self.helper.widgetstack.pop()
 
         # ---- intercept the active paint state --------------------------
 
@@ -253,13 +281,53 @@ def make_scene_capturing_painter(target_device, qt_module=None):
             return super().drawRect(*args)
 
         def drawEllipse(self, *args):
-            # Approximate by building a 4-cubic-curve circle. For now we
-            # delegate to Qt to draw, and capture as an unfilled rectangle
-            # bounding-box marker; full conversion via Path.ellipse() lands
-            # when widgets actually use this path.
-            # TODO: real ellipse path via Path cubic_to.
-            self._emit_paint()
+            # Overloads: drawEllipse(QRectF|QRect), drawEllipse(x,y,w,h),
+            # drawEllipse(QPointF|QPoint center, rx, ry).
+            ell = None
+            if len(args) == 1 and hasattr(args[0], "width"):
+                r = args[0]
+                rx, ry = float(r.width()) / 2.0, float(r.height()) / 2.0
+                ell = (float(r.x()) + rx, float(r.y()) + ry, rx, ry)
+            elif len(args) == 4 and not hasattr(args[0], "x"):
+                x, y, w, h = (float(v) for v in args)
+                ell = (x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0)
+            elif len(args) == 3 and hasattr(args[0], "x"):
+                c = args[0]
+                ell = (float(c.x()), float(c.y()), float(args[1]), float(args[2]))
+            if ell is not None:
+                cx, cy, rx, ry = ell
+                p = qtt.ellipse_path(cx, cy, rx, ry)
+                self._emit_paint()
+                if qtt.qbrush_to_fill(self.brush()) is not None:
+                    self.recorder.fill_path(p)
+                if qtt.qpen_to_stroke(self.pen()) is not None:
+                    self.recorder.stroke_path(p)
             return super().drawEllipse(*args)
+
+        def drawText(self, *args):
+            # Overloads we handle:
+            #   drawText(QPointF|QPoint, str)      -> baseline at the point
+            #   drawText(x, y, str)                -> baseline at (x, y)
+            #   drawText(QRectF|QRect, flags, str) -> aligned in a rect
+            # Veusz's text renderer (utils/textrender.py) uses the QPointF
+            # baseline form; (x, y) is the glyph baseline origin, which is
+            # exactly what the Scene draw_text op expects.
+            text = None
+            x = y = 0.0
+            if len(args) == 2 and isinstance(args[1], str):
+                pt = args[0]
+                x, y, text = float(pt.x()), float(pt.y()), args[1]
+            elif len(args) == 3 and isinstance(args[2], str) and not hasattr(args[0], "width"):
+                x, y, text = float(args[0]), float(args[1]), args[2]
+            elif len(args) >= 3 and isinstance(args[-1], str) and hasattr(args[0], "width"):
+                # Rect form: approximate the baseline at the rect's lower-left.
+                r = args[0]
+                x, y, text = float(r.x()), float(r.y()) + float(r.height()), args[-1]
+            if text:
+                col = qtt.qcolor_to_color(self.pen().color())
+                layout = qtt.text_layout(text, self.font(), col, self.dpi)
+                self.recorder.draw_text(layout, x, y)
+            return super().drawText(*args)
 
         def drawPath(self, qpath):
             self._emit_paint()
@@ -358,7 +426,7 @@ def make_scene_capturing_painter(target_device, qt_module=None):
                     # QPoint: blit at native size.
                     dst = Rect(float(target.x()), float(target.y()),
                                float(qimg.width()), float(qimg.height()))
-                img = qtt.qimage_to_image(qimg)
+                img = qtt.qimage_to_image(_coerce_qimage(qimg))
                 src_rect = None
                 if src is not None and hasattr(src, "width"):
                     src_rect = Rect(float(src.x()), float(src.y()),
@@ -370,11 +438,211 @@ def make_scene_capturing_painter(target_device, qt_module=None):
 
 
 # ---------------------------------------------------------------------------
+# qtloops interception
+#
+# Veusz batches a lot of geometry through the C++ ``qtloops`` extension
+# (axis ticks, error bars, gridlines, markers, polygon series, …). Those
+# calls draw straight onto the C++ QPainter and never dispatch to the
+# Python overrides above, so they'd be missing from the captured Scene.
+# We monkey-patch the qtloops entry points for the duration of a capture
+# so that, whenever the painter is a SceneCapturingPainter, the same
+# geometry is also recorded into its Scene. The real C++ call still runs
+# (harmless; we never read its pixels), keeping behaviour unchanged for
+# every other caller.
+# ---------------------------------------------------------------------------
+
+def _maybe_push_clip(painter, clip) -> bool:
+    if clip is not None and hasattr(clip, "width") and hasattr(clip, "x"):
+        try:
+            painter.recorder.push_clip_rect(Rect(
+                float(clip.x()), float(clip.y()),
+                float(clip.width()), float(clip.height())))
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def _emit_lines(painter, x1, y1, x2, y2, clip=None, *_a, **_k):
+    import numpy as np
+    rec = painter.recorder
+    a1 = np.asarray(x1, dtype=float).ravel()
+    b1 = np.asarray(y1, dtype=float).ravel()
+    a2 = np.asarray(x2, dtype=float).ravel()
+    b2 = np.asarray(y2, dtype=float).ravel()
+    n = min(a1.size, b1.size, a2.size, b2.size)
+    if n == 0:
+        return
+    pushed = _maybe_push_clip(painter, clip)
+    painter._emit_paint(stroke_only=True)
+    for i in range(n):
+        rec.stroke_path(Path.line(float(a1[i]), float(b1[i]),
+                                  float(a2[i]), float(b2[i])))
+    if pushed:
+        rec.pop_clip()
+
+
+def _emit_paths(painter, qpath, xpos, ypos, scaling=None, clip=None,
+                colorimg=None, scaleline=False, *_a, **_k):
+    import numpy as np
+    rec = painter.recorder
+    base = qtt.qpath_to_path(qpath)
+    xa = np.asarray(xpos, dtype=float).ravel()
+    ya = np.asarray(ypos, dtype=float).ravel()
+    n = min(xa.size, ya.size)
+    if n == 0:
+        return
+    sc = np.asarray(scaling, dtype=float).ravel() if scaling is not None else None
+    pushed = _maybe_push_clip(painter, clip)
+    fill = qtt.qbrush_to_fill(painter.brush())
+    stroke = qtt.qpen_to_stroke(painter.pen())
+    rec.set_paint(Paint(fill=fill, stroke=stroke, anti_alias=painter._cur_aa))
+    for i in range(n):
+        rec.save()
+        rec.concat_transform(Affine.translate(float(xa[i]), float(ya[i])))
+        if sc is not None and sc.size:
+            s = float(sc[i % sc.size])
+            rec.concat_transform(Affine.scale(s, s))
+        if fill is not None:
+            rec.fill_path(base)
+        if stroke is not None:
+            rec.stroke_path(base)
+        rec.restore()
+    if pushed:
+        rec.pop_clip()
+
+
+def _emit_clipped_polyline(painter, cliprect, pts, *_a, **_k):
+    rec = painter.recorder
+    coords = painter._polygon_points(pts)
+    if len(coords) < 4:
+        return
+    pushed = _maybe_push_clip(painter, cliprect)
+    painter._emit_paint(stroke_only=True)
+    rec.stroke_path(Path.polyline(coords, closed=False))
+    if pushed:
+        rec.pop_clip()
+
+
+def _emit_clipped_polygon(painter, cliprect, pts, *_a, **_k):
+    rec = painter.recorder
+    coords = painter._polygon_points(pts)
+    if len(coords) < 4:
+        return
+    pushed = _maybe_push_clip(painter, cliprect)
+    painter._emit_paint()
+    poly = Path.polyline(coords, closed=True)
+    if qtt.qbrush_to_fill(painter.brush()) is not None:
+        rec.fill_path(poly)
+    if qtt.qpen_to_stroke(painter.pen()) is not None:
+        rec.stroke_path(poly)
+    if pushed:
+        rec.pop_clip()
+
+
+def _emit_image_as_rects(painter, rect, image, *_a, **_k):
+    # plotImageAsRects(painter, QRectF rect, QImage image) maps the image
+    # onto `rect` as a grid of filled rects. For orthogonal axes that's a
+    # plain image blit; emit a single draw_image (the backend scales it).
+    if not hasattr(image, "format") or not hasattr(rect, "width"):
+        return
+    dst = Rect(float(rect.x()), float(rect.y()),
+               float(rect.width()), float(rect.height()))
+    painter.recorder.draw_image(
+        qtt.qimage_to_image(_coerce_qimage(image)), dst, None)
+
+
+def _emit_boxes(painter, xmin, ymin, xmax, ymax, clip=None, *_a, **_k):
+    import numpy as np
+    rec = painter.recorder
+    a = np.asarray(xmin, dtype=float).ravel()
+    b = np.asarray(ymin, dtype=float).ravel()
+    c = np.asarray(xmax, dtype=float).ravel()
+    d = np.asarray(ymax, dtype=float).ravel()
+    n = min(a.size, b.size, c.size, d.size)
+    if n == 0:
+        return
+    pushed = _maybe_push_clip(painter, clip)
+    painter._emit_paint()
+    hasfill = qtt.qbrush_to_fill(painter.brush()) is not None
+    hasstroke = qtt.qpen_to_stroke(painter.pen()) is not None
+    for i in range(n):
+        r = Path.rect(Rect(float(a[i]), float(b[i]),
+                           float(c[i]) - float(a[i]), float(d[i]) - float(b[i])))
+        if hasfill:
+            rec.fill_path(r)
+        if hasstroke:
+            rec.stroke_path(r)
+    if pushed:
+        rec.pop_clip()
+
+
+# Map qtloops function name -> the recorder-emit function for it.
+_QTLOOPS_EMITTERS = {
+    "plotLinesToPainter": _emit_lines,
+    "plotPathsToPainter": _emit_paths,
+    "plotClippedPolyline": _emit_clipped_polyline,
+    "plotClippedPolygon": _emit_clipped_polygon,
+    "plotBoxesToPainter": _emit_boxes,
+    "plotImageAsRects": _emit_image_as_rects,
+}
+
+
+def _make_qtloops_wrapper(orig, emit):
+    def wrapper(painter, *args, **kwargs):
+        ret = orig(painter, *args, **kwargs)
+        rec = getattr(painter, "recorder", None)
+        if rec is not None:
+            # Capture must never break the real draw.
+            try:
+                emit(painter, *args, **kwargs)
+            except Exception:
+                pass
+        return ret
+    return wrapper
+
+
+@contextlib.contextmanager
+def _capture_qtloops():
+    """Patch every veusz binding of the intercepted qtloops functions with a
+    recorder-aware wrapper, restoring the originals on exit. Patches across
+    all imported ``veusz.*`` modules so both ``qtloops.X`` and
+    ``from ...qtloops import X`` call sites are covered."""
+    try:
+        from ..helpers import qtloops  # noqa: F401
+    except Exception:
+        # No qtloops extension — nothing to intercept (pure-Python paths
+        # are already captured by the painter overrides).
+        yield
+        return
+
+    saved = []  # (module, name, original)
+    for name, emit in _QTLOOPS_EMITTERS.items():
+        orig = getattr(qtloops, name, None)
+        if orig is None:
+            continue
+        wrapper = _make_qtloops_wrapper(orig, emit)
+        for mod in list(sys.modules.values()):
+            if mod is None:
+                continue
+            if not getattr(mod, "__name__", "").startswith("veusz"):
+                continue
+            if getattr(mod, name, None) is orig:
+                saved.append((mod, name, orig))
+                setattr(mod, name, wrapper)
+    try:
+        yield
+    finally:
+        for mod, name, orig in saved:
+            setattr(mod, name, orig)
+
+
+# ---------------------------------------------------------------------------
 # Convenience: drive a Veusz document through this painter
 # ---------------------------------------------------------------------------
 
 def capture_document_scene(document, page: int, *, pagesize_px=None,
-                            dpi=(96.0, 96.0)) -> bytes:
+                            dpi=(96.0, 96.0), with_helper: bool = False):
     """Render ``page`` of ``document`` through a SceneCapturingPainter and
     return the scene as JSON bytes (the format consumed by
     ``veusz.paint._paint_ext``).
@@ -382,6 +650,11 @@ def capture_document_scene(document, page: int, *, pagesize_px=None,
     Uses Veusz's existing :class:`PaintHelper` infrastructure. The painter
     target is a dummy 1×1 QImage — we only need a valid QPaintDevice so
     QPainter accepts ``begin()``; we never read pixels off it.
+
+    When ``with_helper`` is true, returns ``(scene_json, helper)`` where
+    ``helper`` is the :class:`PaintHelper` that drove the paint — callers
+    can use it for widget bounds / hit-testing without re-evaluating the
+    document. Otherwise returns just ``scene_json`` (legacy callers).
     """
     qt = _import_qt()
     from ..document.painthelper import PaintHelper
@@ -417,9 +690,10 @@ def capture_document_scene(document, page: int, *, pagesize_px=None,
     # PaintHelper.painter() pops/pushes a save frame each call; seed one.
     capturing.save()
 
+    helper = PaintHelper(document, pagesize_px, dpi=dpi, directpaint=capturing)
     try:
-        helper = PaintHelper(document, pagesize_px, dpi=dpi, directpaint=capturing)
-        document.paintTo(helper, page)
+        with _capture_qtloops():
+            document.paintTo(helper, page)
     finally:
         try:
             capturing.restore()
@@ -427,4 +701,7 @@ def capture_document_scene(document, page: int, *, pagesize_px=None,
             pass
         capturing.end()
 
-    return capturing.recorder.to_json()
+    scene_json = capturing.recorder.to_json()
+    if with_helper:
+        return scene_json, helper
+    return scene_json

@@ -79,8 +79,36 @@ export interface WidgetTreeNode {
   children: WidgetTreeNode[];
 }
 
+/**
+ * Selectable paint backend / render path for the plot canvas.
+ *  - qt / tiny-skia / vello: render server-side in the daemon, returned
+ *    as a PNG by `render.png`.
+ *  - vello-wasm: render client-side in the browser (WebGPU) from the
+ *    Scene IR returned by `render.scene`; degrades to server-side vello
+ *    where WebGPU is unavailable.
+ */
+export type PaintBackend = 'qt' | 'tiny-skia' | 'vello' | 'vello-wasm';
+
+/** Backends that render server-side and return a PNG via render.png. */
+export type ServerBackend = 'qt' | 'tiny-skia' | 'vello';
+
 export interface RenderResult {
-  png: string; // base64
+  png: string; // base64; empty when this frame is a client-side scene
+  width: number;
+  height: number;
+  bounds: Record<string, [number, number, number, number]>;
+  /** Echoes the backend that produced this render (daemon-set). */
+  backend?: ServerBackend;
+  /** Present when the frame is the Scene IR for client-side (WASM/Vello)
+   *  rasterisation rather than a server PNG. Set by the store, not the
+   *  daemon. */
+  sceneB64?: string;
+}
+
+/** Result of `render.scene` — the abstract Scene IR for client-side
+ *  (browser WASM / Vello) rasterisation. `scene_b64` is base64 JSON. */
+export interface SceneResult {
+  scene_b64: string;
   width: number;
   height: number;
   bounds: Record<string, [number, number, number, number]>;
