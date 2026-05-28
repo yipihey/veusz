@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Veusz figure runtime</title>
+    <style>body{font:14px system-ui,sans-serif;max-width:48rem;margin:3rem auto;padding:0 1rem}code{background:#f3f3f3;padding:.1em .3em;border-radius:3px}</style>
+  </head>
+  <body>
+    <h1>Veusz figure runtime (WASM / Vello)</h1>
+    <p>CORS-enabled hosting for the client-side Vello/WebGPU renderer used to embed
+       Veusz figures in web pages. Pin a versioned path:</p>
+    <pre><code>https://yipihey.github.io/veusz/figure-runtime/v0.1.0/veusz_paint_wasm_bg.wasm</code></pre>
+    <p>Consumes the Scene IR from <code>capture_document_scene</code> / the
+       <code>render.scene</code> RPC. See the GitHub repo for the
+       <code>&lt;veusz-figure&gt;</code> component and exporter.</p>
+    <ul>
+      <li><a href="figure-runtime/v0.1.0/veusz_paint_wasm_bg.wasm">veusz_paint_wasm_bg.wasm</a></li>
+      <li><a href="figure-runtime/v0.1.0/veusz_paint_wasm.js">veusz_paint_wasm.js</a></li>
+      <li><a href="figure-runtime/v0.1.0/veusz_paint_wasm.d.ts">veusz_paint_wasm.d.ts</a></li>
+    </ul>
+  </body>
+</html>
