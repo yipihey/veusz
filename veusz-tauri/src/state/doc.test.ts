@@ -102,9 +102,9 @@ describe('DocStore', () => {
   it('select fetches the schema and current values for that widget', async () => {
     const { store } = makeStore();
     await store.getState().refreshAll();
-    await store.getState().select('/page1/graph1/xy1');
+    await store.getState().select(['/page1/graph1/xy1']);
     const s = store.getState();
-    expect(s.selected).toBe('/page1/graph1/xy1');
+    expect(s.selected).toEqual(['/page1/graph1/xy1']);
     expect(s.schema?.typename).toBe('xy');
     expect(s.values['/page1/graph1/xy1/marker']).toBe('circle');
   });
@@ -112,7 +112,7 @@ describe('DocStore', () => {
   it('setValue calls doc.set and updates the local value cache', async () => {
     const { store, setOps } = makeStore();
     await store.getState().refreshAll();
-    await store.getState().select('/page1/graph1/xy1');
+    await store.getState().select(['/page1/graph1/xy1']);
     await store.getState().setValue('/page1/graph1/xy1/marker', 'square');
     expect(setOps).toEqual([{ path: '/page1/graph1/xy1/marker', value: 'square' }]);
     expect(store.getState().values['/page1/graph1/xy1/marker']).toBe('square');
@@ -160,7 +160,7 @@ describe('DocStore', () => {
   it('undo refreshes tree + re-fetches values for current selection', async () => {
     const { store } = makeStore();
     await store.getState().refreshAll();
-    await store.getState().select('/page1/graph1/xy1');
+    await store.getState().select(['/page1/graph1/xy1']);
     const refreshTreeSpy = vi.spyOn(store.getState(), 'refreshTree');
     await store.getState().undo();
     expect(store.getState().canRedo).toBe(true);
@@ -178,11 +178,11 @@ describe('DocStore', () => {
   it('openFile updates filename and clears selection', async () => {
     const { store } = makeStore();
     await store.getState().refreshAll();
-    await store.getState().select('/page1/graph1/xy1');
-    expect(store.getState().selected).toBe('/page1/graph1/xy1');
+    await store.getState().select(['/page1/graph1/xy1']);
+    expect(store.getState().selected).toEqual(['/page1/graph1/xy1']);
     await store.getState().openFile('/tmp/loaded.vsz');
     expect(store.getState().filename).toBe('/tmp/loaded.vsz');
-    expect(store.getState().selected).toBeNull();
+    expect(store.getState().selected).toEqual([]);
   });
 
   it('saveFile without a current filename surfaces an error', async () => {

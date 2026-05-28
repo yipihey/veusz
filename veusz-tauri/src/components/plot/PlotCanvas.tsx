@@ -22,7 +22,8 @@ export interface PlotCanvasProps {
   height: number;
   /** path → [x1, y1, x2, y2] in PNG-pixel coordinates. */
   bounds: Record<string, [number, number, number, number]>;
-  selected?: string;
+  /** Selected widget paths — every one gets a selection ring. */
+  selected?: string[];
   onSelect?: (path: string | null) => void;
   /** Fires (debounced) after pan/zoom settles. */
   onViewportChange?: (view: { zoom: number; tx: number; ty: number }) => void;
@@ -184,16 +185,19 @@ export function PlotCanvas({
           style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }}
           onClick={(e) => onSelect?.(hit(...toLocal(e.clientX, e.clientY)))}
         >
-          {selected && bounds[selected] && (
-            <Rect
-              path={selected}
-              box={bounds[selected]}
-              stroke="#1f6feb"
-              strokeWidth={2 / view.zoom}
-              data-testid={`overlay-selected-${selected}`}
-            />
+          {(selected ?? []).map((sel) =>
+            bounds[sel] ? (
+              <Rect
+                key={sel}
+                path={sel}
+                box={bounds[sel]}
+                stroke="#1f6feb"
+                strokeWidth={2 / view.zoom}
+                data-testid={`overlay-selected-${sel}`}
+              />
+            ) : null,
           )}
-          {hovered && hovered !== selected && bounds[hovered] && (
+          {hovered && !(selected ?? []).includes(hovered) && bounds[hovered] && (
             <Rect
               path={hovered}
               box={bounds[hovered]}

@@ -68,7 +68,7 @@ export function StylesheetEditor({ rpc, onChange, initialValues }: StylesheetEdi
       <h3>Stylesheet</h3>
       <Inspector
         schema={schema}
-        widgetPath={ROOT}
+        widgetPaths={[ROOT]}
         values={values}
         onChange={handleChange}
       />

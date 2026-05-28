@@ -84,7 +84,7 @@ describe('live daemon: full Phase-1 loop', () => {
       // 3. Pull the tree and render it through the React Tree component
       const tree = await client.call<WidgetTreeNode>('doc.tree');
       cleanup();
-      render(<Tree root={tree} selected="/page1/graph1/xy1" onSelect={() => {}} />);
+      render(<Tree root={tree} selected={['/page1/graph1/xy1']} onSelect={() => {}} />);
       expect(screen.getByTestId('tree-node-/page1/graph1/xy1')).toBeInTheDocument();
       expect(screen.getByTestId('tree-node-/page1/graph1/xy1').dataset.selected).toBe('true');
 
@@ -113,7 +113,7 @@ describe('live daemon: full Phase-1 loop', () => {
       render(
         <Inspector
           schema={schema}
-          widgetPath="/page1/graph1/xy1"
+          widgetPaths={['/page1/graph1/xy1']}
           values={values}
           datasets={datasets.map((d) => d.name)}
           onChange={() => {}}
@@ -141,7 +141,7 @@ describe('live daemon: full Phase-1 loop', () => {
           width={r.width}
           height={r.height}
           bounds={r.bounds}
-          selected="/page1/graph1/xy1"
+          selected={['/page1/graph1/xy1']}
           onSelect={() => {}}
         />,
       );

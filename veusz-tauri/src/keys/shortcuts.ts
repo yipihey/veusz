@@ -100,21 +100,21 @@ export function classify(s: Shortcut): ShortcutAction | null {
 export async function dispatch(action: ShortcutAction, store: DocStore) {
   const s = store.getState();
   const sel = s.selected;
+  const first = sel[0];
   switch (action) {
     case 'undo':
       return s.undo();
     case 'redo':
       return s.redo();
     case 'cut':
-      return sel ? s.cutWidgets([sel]) : undefined;
+      return sel.length ? s.cutWidgets(sel) : undefined;
     case 'copy':
-      return sel ? s.copyWidgets([sel]) : undefined;
+      return sel.length ? s.copyWidgets(sel) : undefined;
     case 'paste':
-      // Paste into the selected widget if it can accept; otherwise
-      // into its parent. Phase-2 tree wiring will refine the parent
-      // pick when the user right-clicks an explicit row.
-      if (!sel) return undefined;
-      return s.pasteWidgets(sel).then(() => undefined);
+      // Paste into the (first) selected widget. The tree's right-click
+      // Paste refines the parent pick when the user targets a row.
+      if (!first) return undefined;
+      return s.pasteWidgets(first).then(() => undefined);
     case 'copyAsImage':
       // Copies current page. AppShell will surface a page/size hint
       // when this is wired into a real menu; for now use the last
@@ -122,15 +122,18 @@ export async function dispatch(action: ShortcutAction, store: DocStore) {
       if (!s.render) return undefined;
       return s.copyWidgetAsImage(0, s.render.width, s.render.height);
     case 'delete':
-      return sel ? s.removeWidget(sel) : undefined;
+      // Delete every selected widget. Each removeWidget is its own
+      // undo step; multi-delete via the menu uses a batched path.
+      if (!sel.length) return undefined;
+      return Promise.all(sel.map((p) => s.removeWidget(p))).then(() => undefined);
     case 'hide':
-      return sel ? s.setHidden([sel], true) : undefined;
+      return sel.length ? s.setHidden(sel, true) : undefined;
     case 'show':
-      return sel ? s.setHidden([sel], false) : undefined;
+      return sel.length ? s.setHidden(sel, false) : undefined;
     case 'moveUp':
-      return sel ? s.moveWidget(sel, 'up') : undefined;
+      return first ? s.moveWidget(first, 'up') : undefined;
     case 'moveDown':
-      return sel ? s.moveWidget(sel, 'down') : undefined;
+      return first ? s.moveWidget(first, 'down') : undefined;
     case 'rename':
       // No actual rename here — the hook only emits an intent. The
       // Tree (Phase 2) listens for the same event and flips a row
@@ -139,21 +142,33 @@ export async function dispatch(action: ShortcutAction, store: DocStore) {
   }
 }
 
+export interface ShortcutHandlers {
+  /** Begin inline rename of the (first) selected widget. The hook
+   *  itself can't render an input, so 'rename' is delegated up. */
+  onRename?: (path: string) => void;
+}
+
 /** React hook to install/remove the global listener.
  *
  *  Use once at the AppShell root. The hook handles cleanup on
  *  unmount and avoids re-binding on every render via a stable
  *  dependency list. */
-export function useKeyboardShortcuts(store: DocStore) {
+export function useKeyboardShortcuts(store: DocStore, handlers: ShortcutHandlers = {}) {
+  const { onRename } = handlers;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (isEditableTarget(e.target)) return;
       const action = classify(eventToShortcut(e));
       if (!action) return;
       e.preventDefault();
+      if (action === 'rename') {
+        const first = store.getState().selected[0];
+        if (first) onRename?.(first);
+        return;
+      }
       void dispatch(action, store);
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [store]);
+  }, [store, onRename]);
 }

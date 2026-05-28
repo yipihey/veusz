@@ -108,7 +108,7 @@ describe('isEditableTarget', () => {
 
 // --- dispatch routing ------------------------------------------------------
 
-function fakeStore(selected: string | null) {
+function fakeStore(selected: string[]) {
   const calls: Array<[string, ...unknown[]]> = [];
   const trk = (name: string) => (...args: unknown[]) => {
     calls.push([name, ...args]);
@@ -135,7 +135,7 @@ function fakeStore(selected: string | null) {
 
 describe('dispatch', () => {
   it('cut/copy/paste/delete/hide/show/move route with selected path', async () => {
-    const f = fakeStore('/page1/graph1');
+    const f = fakeStore(['/page1/graph1']);
     await dispatch('cut', f.store);
     await dispatch('copy', f.store);
     await dispatch('paste', f.store);
@@ -157,7 +157,7 @@ describe('dispatch', () => {
   });
 
   it('undo / redo / copyAsImage do not require a selection', async () => {
-    const f = fakeStore(null);
+    const f = fakeStore([]);
     await dispatch('undo', f.store);
     await dispatch('redo', f.store);
     await dispatch('copyAsImage', f.store);
@@ -165,7 +165,7 @@ describe('dispatch', () => {
   });
 
   it('most actions are no-ops without a selection', async () => {
-    const f = fakeStore(null);
+    const f = fakeStore([]);
     await dispatch('cut', f.store);
     await dispatch('copy', f.store);
     await dispatch('delete', f.store);
@@ -174,8 +174,18 @@ describe('dispatch', () => {
     expect(f.calls).toHaveLength(0);
   });
 
+  it('cut/copy/delete act on the whole multi-selection', async () => {
+    const f = fakeStore(['/page1/graph1/x', '/page1/graph1/y']);
+    await dispatch('cut', f.store);
+    expect(f.calls[0]).toEqual(['cutWidgets', ['/page1/graph1/x', '/page1/graph1/y']]);
+    await dispatch('delete', f.store);
+    // delete maps over the selection -> one removeWidget per path.
+    const removes = f.calls.filter((c) => c[0] === 'removeWidget');
+    expect(removes).toHaveLength(2);
+  });
+
   it('rename is a no-op (intent emitted, no store action)', async () => {
-    const f = fakeStore('/page1');
+    const f = fakeStore(['/page1']);
     await dispatch('rename', f.store);
     expect(f.calls).toHaveLength(0);
   });

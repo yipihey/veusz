@@ -36,7 +36,13 @@ export interface DocState {
   clipboard: Clipboard;
   tree: WidgetTreeNode | null;
   datasets: DataInfo[];
-  selected: string | null;
+  /**
+   * Selected widget paths. Empty when nothing is selected; one entry
+   * for a single selection (the Inspector shows that widget's schema);
+   * more entries for multi-select (the Inspector falls back to
+   * `doc.common_schema` and writes go through batched `doc.set`).
+   */
+  selected: string[];
   schema: WidgetSchema | null;
   values: Record<string, unknown>;
   render: RenderResult | null;
@@ -57,7 +63,15 @@ export interface DocState {
   clearError: () => void;
 
   // --- selection ---
-  select: (path: string | null) => Promise<void>;
+  /**
+   * Replace the current selection with `paths`. Pass [] to clear,
+   * [x] for a single selection, [x, y, ...] for multi-select.
+   *
+   * The inspector schema/values are refreshed in the same call:
+   * length 0 → cleared; length 1 → per-widget schema; length >1 →
+   * common_schema (intersection across the selection).
+   */
+  select: (paths: string[]) => Promise<void>;
 
   // --- edits ---
   setValue: (path: string, value: unknown) => Promise<void>;
@@ -174,7 +188,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       clipboard,
       tree: null,
       datasets: [],
-      selected: null,
+      selected: [],
       schema: null,
       values: {},
       render: null,
@@ -219,7 +233,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       openFile: async (path) => {
         const r = await guard(() => rpc.file.open(path));
         if (!r) return;
-        set({ filename: r.path, selected: null, schema: null, values: {} });
+        set({ filename: r.path, selected: [], schema: null, values: {} });
         await Promise.all([get().refreshTree(), get().refreshDatasets(), get().refreshUndoState()]);
       },
 
@@ -244,25 +258,49 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         return r?.path ?? null;
       },
 
-      select: async (path) => {
-        if (path === null) {
-          set({ selected: null, schema: null, values: {} });
+      select: async (paths) => {
+        // Empty selection: clear inspector schema + values.
+        if (paths.length === 0) {
+          set({ selected: [], schema: null, values: {} });
           return;
         }
-        // Look up the widget type from the tree, then fetch schema + values.
-        const widgetType = findWidgetType(get().tree, path);
-        if (!widgetType) {
-          set({ selected: path, schema: null, values: {} });
+        // Single selection: load that widget's schema + current values.
+        if (paths.length === 1) {
+          const path = paths[0];
+          const widgetType = findWidgetType(get().tree, path);
+          if (!widgetType) {
+            set({ selected: [path], schema: null, values: {} });
+            return;
+          }
+          const schema = await guard(() => rpc.doc.schema(widgetType));
+          if (!schema) {
+            set({ selected: [path] });
+            return;
+          }
+          const settingPaths = collectSettingPaths(schema, path);
+          const values =
+            (await guard(() => rpc.doc.get(settingPaths))) ?? {};
+          set({ selected: [path], schema, values });
           return;
         }
-        const schema = await guard(() => rpc.doc.schema(widgetType));
-        if (!schema) {
-          set({ selected: path });
+        // Multi-selection: ask the daemon for the intersection schema
+        // (with mixed_value flags). Values per absolute path follow
+        // from a single doc.get over the union of common paths.
+        const common = await guard(() => rpc.doc.commonSchema(paths));
+        if (!common) {
+          set({ selected: paths });
           return;
         }
-        const paths = collectSettingPaths(schema, path);
-        const values = (await guard(() => rpc.doc.get(paths))) ?? {};
-        set({ selected: path, schema, values });
+        // For multi-edit, the "value" presented for any leaf is the
+        // common one — already returned per-leaf inside common_schema
+        // (with mixed_value=true and value=null when widgets disagree).
+        // We still pre-populate `values` for the path of the FIRST
+        // widget so existing controls have something to read; the
+        // mixed-value flag tells the leaf to render a placeholder.
+        const settingPaths = collectSettingPaths(common, paths[0]);
+        const values =
+          (await guard(() => rpc.doc.get(settingPaths))) ?? {};
+        set({ selected: paths, schema: common, values });
       },
 
       setValue: async (path, value) => {
@@ -285,8 +323,9 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
 
       removeWidget: async (path) => {
         await guard(() => rpc.doc.remove(path));
-        if (get().selected === path) {
-          await get().select(null);
+        const remaining = get().selected.filter((p) => p !== path);
+        if (remaining.length !== get().selected.length) {
+          await get().select(remaining);
         }
         await get().refreshTree();
         await get().refreshUndoState();
@@ -306,8 +345,13 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         const r = await guard(() => rpc.doc.rename(path, name));
         await get().refreshTree();
         await get().refreshUndoState();
-        if (r && get().selected === path) {
-          await get().select(r.path);
+        // If the renamed widget was selected, update the selection so
+        // the Inspector keeps pointing at it under its new path.
+        if (r) {
+          const sel = get().selected;
+          if (sel.includes(path)) {
+            await get().select(sel.map((p) => (p === path ? r.path : p)));
+          }
         }
         return r?.path ?? null;
       },
@@ -361,8 +405,9 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         for (const p of ordered) {
           await guard(() => rpc.doc.remove(p));
         }
-        if (paths.includes(get().selected ?? '')) {
-          await get().select(null);
+        const remaining = get().selected.filter((p) => !paths.includes(p));
+        if (remaining.length !== get().selected.length) {
+          await get().select(remaining);
         }
         set({ cutPaths: paths });
         await get().refreshTree();
@@ -404,14 +449,14 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await guard(() => rpc.doc.propagateSetting(path, scope, widget_paths));
         await get().refreshUndoState();
         const sel = get().selected;
-        if (sel) await get().select(sel);
+        if (sel.length) await get().select(sel);
       },
 
       resetSettingDefault: async (path) => {
         await guard(() => rpc.doc.resetSettingDefault(path));
         await get().refreshUndoState();
         const sel = get().selected;
-        if (sel) await get().select(sel);
+        if (sel.length) await get().select(sel);
       },
 
       setSettingDefault: async (path) => {
@@ -423,7 +468,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await guard(() => rpc.doc.unlinkSetting(path));
         await get().refreshUndoState();
         const sel = get().selected;
-        if (sel) await get().select(sel);
+        if (sel.length) await get().select(sel);
       },
 
       importCsv: async (filename) => {
@@ -544,7 +589,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await get().refreshTree();
         // If the current selection survives, refresh its values
         const sel = get().selected;
-        if (sel) await get().select(sel);
+        if (sel.length) await get().select(sel);
       },
 
       redo: async () => {
@@ -552,7 +597,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         if (r) set({ canUndo: r.can_undo, canRedo: r.can_redo });
         await get().refreshTree();
         const sel = get().selected;
-        if (sel) await get().select(sel);
+        if (sel.length) await get().select(sel);
       },
 
       subscribeToDaemon: () => {
@@ -563,7 +608,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
           void get().refreshTree();
           void get().refreshUndoState();
           const sel = get().selected;
-          if (sel) void get().select(sel);
+          if (sel.length) void get().select(sel);
         });
         const offData = rpc.subscribe('data.changed', () => {
           void get().refreshDatasets();

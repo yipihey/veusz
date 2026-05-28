@@ -41,7 +41,7 @@ describe('PlotCanvas', () => {
     render(
       <PlotCanvas
         png={ONE_PX} width={400} height={300} bounds={BOUNDS}
-        selected="/page1/graph1/xy1"
+        selected={['/page1/graph1/xy1']}
       />,
     );
     expect(screen.getByTestId('overlay-selected-/page1/graph1/xy1')).toBeInTheDocument();
@@ -86,7 +86,7 @@ describe('PlotCanvas', () => {
     render(
       <PlotCanvas
         png={ONE_PX} width={400} height={300} bounds={BOUNDS}
-        selected="/page1/graph1/xy1"
+        selected={['/page1/graph1/xy1']}
       />,
     );
     fireEvent.pointerMove(screen.getByTestId('plot-overlay'), { clientX: 200, clientY: 150 });

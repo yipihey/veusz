@@ -8,13 +8,16 @@
  * can drive the same shell against mock or live daemons.
  */
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../../state/doc';
-import { Tree } from '../tree/Tree';
+import { Tree, type SelectMode } from '../tree/Tree';
+import { TreeContextMenu } from '../tree/TreeContextMenu';
 import { Inspector } from '../inspector/Inspector';
 import { DatasetPanel } from '../data/DatasetPanel';
 import { PlotCanvas } from '../plot/PlotCanvas';
+import { flattenTreePaths, computeSelection } from './selection';
+import { useKeyboardShortcuts } from '../../keys/shortcuts';
 
 export interface AppShellProps {
   store: UseBoundStore<StoreApi<DocState>>;
@@ -52,6 +55,7 @@ export function AppShell({
   const requestRender = store((s) => s.requestRender);
   const select = store((s) => s.select);
   const setValue = store((s) => s.setValue);
+  const setValues = store((s) => s.setValues);
   const undo = store((s) => s.undo);
   const redo = store((s) => s.redo);
   const importCsv = store((s) => s.importCsv);
@@ -60,6 +64,46 @@ export function AppShell({
   const saveFileAs = store((s) => s.saveFileAs);
   const exportFile = store((s) => s.exportFile);
   const subscribeToDaemon = store((s) => s.subscribeToDaemon);
+
+  // Anchor for Shift-range selection. Survives re-renders; not state
+  // because changing it must not trigger a render.
+  const anchorRef = useRef<string | null>(null);
+  // Right-click target + inline-rename target for the tree context menu.
+  const [ctxPath, setCtxPath] = useState<string | null>(null);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+
+  // Install global keyboard shortcuts (cut/copy/paste/undo/redo/etc.).
+  // F2 routes up here to flip the selected tree row into rename mode.
+  useKeyboardShortcuts(store, { onRename: setRenamingPath });
+
+  const applySelection = (path: string, mode: SelectMode) => {
+    const order = flattenTreePaths(store.getState().tree);
+    const { selection, anchor } = computeSelection(
+      store.getState().selected,
+      path,
+      mode,
+      order,
+      anchorRef.current,
+    );
+    anchorRef.current = anchor;
+    void select(selection);
+  };
+
+  // Right-click: record the target and ensure it's in the selection
+  // before the context menu opens (matches Qt, which selects the
+  // row under the cursor if it isn't already selected).
+  const handleContextMenu = (path: string) => {
+    setCtxPath(path);
+    if (!store.getState().selected.includes(path)) {
+      anchorRef.current = path;
+      void select([path]);
+    }
+  };
+
+  const handleRenameCommit = (path: string, newName: string | null) => {
+    setRenamingPath(null);
+    if (newName) void store.getState().renameWidget(path, newName);
+  };
 
   useEffect(() => {
     void refreshAll();
@@ -132,7 +176,25 @@ export function AppShell({
         <aside data-testid="app-tree" style={layout.sidebar}>
           <h4>Document</h4>
           {tree ? (
-            <Tree root={tree} selected={selected ?? undefined} onSelect={select} />
+            <TreeContextMenu
+              store={store}
+              targetPath={ctxPath}
+              onStartRename={setRenamingPath}
+              renderWidth={renderWidth}
+              renderHeight={renderHeight}
+            >
+              <div>
+                <Tree
+                  root={tree}
+                  selected={selected}
+                  onSelect={applySelection}
+                  onContextMenu={handleContextMenu}
+                  renamingPath={renamingPath}
+                  onRenameCommit={handleRenameCommit}
+                  cutPaths={store.getState().cutPaths}
+                />
+              </div>
+            </TreeContextMenu>
           ) : (
             <p data-testid="app-tree-loading">Loading…</p>
           )}
@@ -145,8 +207,8 @@ export function AppShell({
               width={render.width}
               height={render.height}
               bounds={render.bounds}
-              selected={selected ?? undefined}
-              onSelect={select}
+              selected={selected}
+              onSelect={(p) => select(p === null ? [] : [p])}
             />
           ) : (
             <p data-testid="app-plot-empty">No plot yet — import a CSV.</p>
@@ -154,13 +216,14 @@ export function AppShell({
         </main>
 
         <aside data-testid="app-inspector" style={layout.sidebar}>
-          {schema && selected ? (
+          {schema && selected.length > 0 ? (
             <Inspector
               schema={schema}
-              widgetPath={selected}
+              widgetPaths={selected}
               values={values}
               datasets={datasets.map((d) => d.name)}
               onChange={setValue}
+              onChangeMany={setValues}
             />
           ) : (
             <p data-testid="app-inspector-empty">Select a widget.</p>

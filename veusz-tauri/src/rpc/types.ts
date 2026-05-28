@@ -33,6 +33,14 @@ export interface SettingSchema {
   usertext: string;
   formatting: boolean;
   hidden: boolean;
+  /** Whether the setting currently holds a reference (stylesheet
+   *  link). Drives the "Unlink setting" menu item. */
+  is_reference?: boolean;
+  /** Multi-edit only (from doc.common_schema): true when the selected
+   *  widgets disagree on this setting's value. */
+  mixed_value?: boolean;
+  /** Multi-edit only: the shared value when not mixed; null when mixed. */
+  value?: unknown;
   // Type-specific metadata. Present only on relevant typenames.
   minval?: number;
   maxval?: number;
@@ -56,8 +64,12 @@ export interface SettingsGroup {
 }
 
 export interface WidgetSchema extends SettingsGroup {
-  typename: string;
-  mode: 'class' | 'instance';
+  typename?: string;
+  mode: 'class' | 'instance' | 'common';
+  /** Multi-edit only: the widget typenames in the selection. */
+  typenames?: string[];
+  /** Multi-edit only: number of widgets in the selection. */
+  count?: number;
 }
 
 export interface WidgetTreeNode {

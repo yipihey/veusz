@@ -39,12 +39,12 @@ describe.each(TEST_WIDGETS)('Inspector(%s)', (widgetType) => {
   const schema = schemas[widgetType];
 
   it('renders without throwing', () => {
-    render(<Inspector schema={schema} widgetPath={`/${widgetType}1`} values={{}} onChange={() => {}} />);
+    render(<Inspector schema={schema} widgetPaths={[`/${widgetType}1`]} values={{}} onChange={() => {}} />);
     expect(screen.getByTestId('inspector')).toBeInTheDocument();
   });
 
   it('every visible setting has a real registry leaf (no fallbacks)', () => {
-    render(<Inspector schema={schema} widgetPath={`/${widgetType}1`} values={{}} onChange={() => {}} />);
+    render(<Inspector schema={schema} widgetPaths={[`/${widgetType}1`]} values={{}} onChange={() => {}} />);
     const fallbacks = screen.queryAllByTestId(/^fallback-/);
     if (fallbacks.length > 0) {
       // Surface which typenames are missing — actionable failure.

@@ -6,7 +6,7 @@ import { xyMiniSchema } from '../../test/fixtures';
 describe('Inspector', () => {
   const baseProps = {
     schema: xyMiniSchema,
-    widgetPath: '/page1/graph1/xy1',
+    widgetPaths: ['/page1/graph1/xy1'],
     datasets: ['x', 'y'],
     values: {
       '/page1/graph1/xy1/xData': 'x',
@@ -68,5 +68,57 @@ describe('Inspector', () => {
     const xRow = screen.getByTestId('row-xData');
     const list = xRow.querySelector('datalist');
     expect(list?.querySelectorAll('option')).toHaveLength(2);
+  });
+
+  describe('multi-edit', () => {
+    const multiProps = {
+      ...baseProps,
+      widgetPaths: ['/page1/graph1/xy1', '/page1/graph1/xy2'],
+      // Pretend common_schema gave us the same mini schema; the
+      // important part is widgetPaths.length > 1.
+    };
+
+    it('fans an edit out to every selected widget via onChangeMany', () => {
+      const onChange = vi.fn();
+      const onChangeMany = vi.fn();
+      render(
+        <Inspector {...multiProps} onChange={onChange} onChangeMany={onChangeMany} />,
+      );
+      fireEvent.change(screen.getByTestId('setting-marker'), {
+        target: { value: 'square' },
+      });
+      // Single-widget onChange must NOT be used in multi mode.
+      expect(onChange).not.toHaveBeenCalled();
+      expect(onChangeMany).toHaveBeenCalledWith([
+        { path: '/page1/graph1/xy1/marker', value: 'square' },
+        { path: '/page1/graph1/xy2/marker', value: 'square' },
+      ]);
+    });
+
+    it('titles the panel with the type and selection count', () => {
+      render(<Inspector {...multiProps} onChange={() => {}} onChangeMany={() => {}} />);
+      expect(screen.getByTestId('inspector').dataset.multi).toBe('true');
+      expect(screen.getByTestId('inspector').dataset.count).toBe('2');
+    });
+  });
+
+  it('marks a mixed-value setting and dims its label', () => {
+    // Clone the mini schema but flag `marker` as mixed.
+    const mixedSchema = {
+      ...baseProps.schema,
+      settings: baseProps.schema.settings.map((s) =>
+        s.name === 'marker' ? { ...s, mixed_value: true, value: null } : s,
+      ),
+    };
+    render(
+      <Inspector
+        {...baseProps}
+        schema={mixedSchema}
+        widgetPaths={['/a', '/b']}
+        onChange={() => {}}
+        onChangeMany={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('row-marker').dataset.mixed).toBe('true');
   });
 });

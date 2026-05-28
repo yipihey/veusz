@@ -1,0 +1,6 @@
+# pnpm 11 blocks postinstall build scripts unless allowlisted here.
+# esbuild fetches its platform binary; msw stages its service worker.
+# Both are needed for vite/vitest to run.
+onlyBuiltDependencies:
+  - esbuild
+  - msw
