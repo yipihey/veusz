@@ -18,17 +18,32 @@
 #
 ##############################################################################
 
-"""A convenience module to import used Qt symbols from."""
+"""A convenience module to import used Qt symbols from.
 
-from PyQt6.QtCore import *
-from PyQt6.QtWidgets import *
-from PyQt6.QtGui import *
-from PyQt6.QtSvg import *
-from PyQt6.QtPrintSupport import *
-from PyQt6.QtSvgWidgets import *
-from PyQt6.uic import loadUi
+Normally this re-exports PyQt6. When PyQt6 is unavailable — notably under
+Pyodide (CPython compiled to WebAssembly), where there is no Qt — we fall back
+to :mod:`veusz.qtshim`, a pure-Python stand-in covering the value/geometry
+types, a QPainter state machine, and fonttools-backed font metrics that the
+headless document model and the Vello scene-capture path need. The desktop app
+is unaffected (PyQt6 imports succeed and win)."""
 
 try:
-    from PyQt6 import sip
+    from PyQt6.QtCore import *
+    from PyQt6.QtWidgets import *
+    from PyQt6.QtGui import *
+    from PyQt6.QtSvg import *
+    from PyQt6.QtPrintSupport import *
+    from PyQt6.QtSvgWidgets import *
+    from PyQt6.uic import loadUi
+
+    try:
+        from PyQt6 import sip
+    except ImportError:
+        import sip
 except ImportError:
-    import sip
+    # No PyQt6 (e.g. Pyodide / headless capture). Replace this module with the
+    # pure-Python shim so that `from .. import qtall as qt` yields the shim and
+    # unknown GUI symbols resolve through the shim's PEP 562 __getattr__.
+    import sys
+    from . import qtshim as _qtshim
+    sys.modules[__name__] = _qtshim

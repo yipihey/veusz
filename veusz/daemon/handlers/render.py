@@ -193,9 +193,39 @@ def register(ctx):
         raise RpcError(INVALID_PARAMS,
                        f'unsupported format {format!r}; expected png|svg')
 
+    def pixel_to_data(x: float, y: float, **_):
+        """Map a canvas pixel (x, y) to data coordinates on every axis under
+        that point, using the PaintHelper cached by the last render.scene /
+        render.png. Drives interactive zoom (drag-rect -> axis min/max) and
+        hover tooltips. Returns ``{axes: [{path, direction, value}, …]}``;
+        empty when the point is over no axis."""
+        import numpy as np
+        from ...widgets import Axis
+        lr = ctx.last_render()
+        if lr is None:
+            raise RpcError(INVALID_PARAMS, 'no cached render; call render.scene first')
+        _key, phelper = lr
+        px, py = float(x), float(y)
+        out = []
+        for widget, bounds in phelper.widgetBoundsIterator(widgettype=Axis):
+            if bounds[0] <= px <= bounds[2] and bounds[1] <= py <= bounds[3]:
+                horiz = widget.settings.direction == 'horizontal'
+                val = px if horiz else py
+                try:
+                    coords = widget.plotterToGraphCoords(bounds, np.array([val]))
+                except Exception:
+                    continue
+                out.append({
+                    'path': widget.path,
+                    'direction': 'horizontal' if horiz else 'vertical',
+                    'value': float(coords[0]),
+                })
+        return {'axes': out}
+
     return {
         'render.png': png,
         'render.scene': scene,
         'render.svg': svg,
         'render.copy_image': copy_image,
+        'render.pixel_to_data': pixel_to_data,
     }

@@ -87,6 +87,66 @@ export function mockTransport(
   };
 }
 
+/**
+ * The Veusz runtime running inside Pyodide. Produced by
+ * `embed/runtime.ts`; here we only need its JSON-in/JSON-out dispatch and a
+ * way to register the push-notification callback. Both sides of the FFI
+ * exchange JSON strings, so there are no PyProxy lifetime concerns.
+ */
+export interface PyodideBridge {
+  dispatch_json(request: string): string;
+  set_notify(callback: (message: string) => void): void;
+}
+
+/**
+ * Transport backed by the in-browser (Pyodide) Veusz runtime. Calls run the
+ * Python handlers synchronously and resolve immediately; push notifications
+ * arrive through the bridge's single notify callback and fan out to
+ * per-method subscribers. Drop-in for the same `Transport` the daemon uses.
+ */
+export function pyodideTransport(bridge: PyodideBridge): Transport {
+  const listeners = new Map<string, Set<NotificationListener>>();
+  let nextId = 1;
+
+  bridge.set_notify((message: string) => {
+    let parsed: { method?: string; params?: unknown };
+    try {
+      parsed = JSON.parse(message);
+    } catch {
+      return;
+    }
+    if (parsed.method) listeners.get(parsed.method)?.forEach((fn) => fn(parsed.params));
+  });
+
+  return {
+    call: async (method, params = {}) => {
+      const req = JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params });
+      const resp = JSON.parse(bridge.dispatch_json(req)) as {
+        result?: unknown;
+        error?: { code: number; message: string; data?: unknown };
+      };
+      if (resp.error) {
+        const err = new Error(resp.error.message || 'rpc error') as Error & {
+          code?: number; data?: unknown;
+        };
+        err.code = resp.error.code;
+        err.data = resp.error.data;
+        throw err;
+      }
+      return resp.result;
+    },
+    subscribe: (method, fn) => {
+      let ls = listeners.get(method);
+      if (!ls) {
+        ls = new Set();
+        listeners.set(method, ls);
+      }
+      ls.add(fn);
+      return () => { ls!.delete(fn); };
+    },
+  };
+}
+
 /** Wraps a `NodeRpcClient` (which already owns request/response + on()). */
 export function clientTransport(client: {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;

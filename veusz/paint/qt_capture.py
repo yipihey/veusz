@@ -616,6 +616,12 @@ def _capture_qtloops():
         yield
         return
 
+    if getattr(qtloops, '_VEUSZ_PURE_RECORDER', False):
+        # The pure-Python qtloops fallback already records straight into the
+        # capturing painter; wrapping it would double-count every op.
+        yield
+        return
+
     saved = []  # (module, name, original)
     for name, emit in _QTLOOPS_EMITTERS.items():
         orig = getattr(qtloops, name, None)
