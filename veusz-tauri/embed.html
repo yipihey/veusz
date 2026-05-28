@@ -21,7 +21,13 @@
     (built in W5; set via the <code>veusz-wheel</code> attribute or a CDN default).
   </p>
 
-  <veusz-figure src="/samples/fit.vsz" width="640" height="480"></veusz-figure>
+  <!-- veusz-wheel points at the headless wheel built by
+       scripts/build_embed_wheel.py (copied to public/wheels/). In production
+       set this to a CDN URL instead. -->
+  <veusz-figure
+    src="/samples/fit.vsz"
+    width="640" height="480"
+    veusz-wheel="/wheels/veusz-4.2.1-py3-none-any.whl"></veusz-figure>
 
   <script type="module" src="/src/embed/main.tsx"></script>
 </body>

@@ -3,6 +3,7 @@ include MANIFEST.in *.py setup.cfg pyproject.toml run_veusz_inplace
 include scripts/veusz
 recursive-include src *.c *.cpp *.h README LICENSE_* QtMml*
 include VERSION
+recursive-include veusz/embed_data *.ttf
 recursive-include examples *.vsz *.py *.csv *.dat
 recursive-include icons *.icns *.png *.ico *.svg LICENSE-*
 recursive-include ui *.ui

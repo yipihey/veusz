@@ -586,10 +586,26 @@ class QFont:
 # ---------------------------------------------------------------------------
 
 # Default to the same TTF the Vello/WASM renderer draws with, so layout
-# metrics and rendered glyphs agree. Overridable via VEUSZ_SHIM_FONT.
-_DEFAULT_TTF = os.environ.get("VEUSZ_SHIM_FONT") or os.path.join(
-    os.path.dirname(__file__), "..", "veusz-tauri", "crates",
-    "veusz-paint-wasm", "assets", "LiberationSans-Regular.ttf")
+# metrics and rendered glyphs agree. The font ships inside the package
+# (veusz/embed_data) so it is available in a wheel/Pyodide; the dev-tree copy
+# under veusz-tauri is a fallback. Overridable via VEUSZ_SHIM_FONT.
+def _find_default_ttf():
+    env = os.environ.get("VEUSZ_SHIM_FONT")
+    if env and os.path.exists(env):
+        return env
+    here = os.path.dirname(__file__)
+    candidates = (
+        os.path.join(here, "embed_data", "LiberationSans-Regular.ttf"),
+        os.path.join(here, "..", "veusz-tauri", "crates",
+                     "veusz-paint-wasm", "assets", "LiberationSans-Regular.ttf"),
+    )
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
+
+
+_DEFAULT_TTF = _find_default_ttf()
 
 _FONT_CACHE = {}
 

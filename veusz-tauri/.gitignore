@@ -5,6 +5,9 @@ public/wasm/
 # Sample Scene IR for the standalone WASM figure harness (regenerate via
 # capture_document_scene; see figure.html).
 public/samples/
+# Headless veusz wheel served for the embed (built by
+# scripts/build_embed_wheel.py; in production load it from a CDN instead).
+public/wheels/
 target/
 src-tauri/target/
 src-tauri/gen/
