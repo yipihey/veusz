@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Embedded Veusz figure</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 15px/1.5 system-ui, -apple-system, sans-serif;
+      margin: 0; padding: 2rem 1rem;
+      background: #f4f5f7; color: #1c1e21;
+      display: flex; justify-content: center;
+    }
+    .page { max-width: 680px; width: 100%; }
+    h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+    .lede { color: #555; margin: 0 0 1.5rem; }
+    /* This is the embeddable unit: a self-contained figure card. */
+    .figure {
+      background: #fff; border: 1px solid #e2e4e8; border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06); padding: 1rem; margin: 0 0 1rem;
+    }
+    .figure figcaption {
+      font-size: .85rem; color: #666; margin-top: .6rem;
+      display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    }
+    .stage { position: relative; width: 100%; aspect-ratio: 1 / 1; }
+    .stage canvas, .stage img {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      border-radius: 6px; image-rendering: auto;
+    }
+    .stage img { display: none; object-fit: contain; }
+    .badge {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .15rem .5rem; border-radius: 999px; font-size: .78rem; font-weight: 600;
+    }
+    .badge.gpu { background: #e6f4ea; color: #137333; }
+    .badge.png { background: #fef7e0; color: #b06000; }
+    .badge.err { background: #fce8e6; color: #c5221f; }
+    .dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
+    code { background: #eef0f3; padding: .1rem .35rem; border-radius: 4px; font-size: .85em; }
+    .meta { color: #777; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>An embedded Veusz figure</h1>
+    <p class="lede">
+      The plot below is a real Veusz document rendered <em>in your browser</em>:
+      its vector scene is drawn by Veusz's Vello painter compiled to
+      WebAssembly, on the GPU via WebGPU. No Python, no Qt, no server in the
+      paint path &mdash; just a <code>.scene.json</code> blob and a
+      <code>.wasm</code> module.
+    </p>
+
+    <figure class="figure">
+      <div class="stage">
+        <canvas id="cv" width="566" height="566"></canvas>
+        <img id="fallback" alt="Veusz figure (static fallback)" src="./fit.png" />
+      </div>
+      <figcaption>
+        <span id="status" class="badge">starting…</span>
+        <span class="meta" id="meta"></span>
+      </figcaption>
+    </figure>
+
+    <p class="lede" style="font-size:.9rem">
+      Source: <code>examples/fit.vsz</code> &middot; scene captured via
+      <code>capture_document_scene</code> &middot; renderer:
+      <code>veusz-paint-wasm</code>.
+    </p>
+  </div>
+
+  <script type="module">
+    import init, { VelloCanvasRenderer } from "../pkg/veusz_paint_wasm.js";
+
+    const statusEl = document.getElementById("status");
+    const metaEl = document.getElementById("meta");
+    const canvas = document.getElementById("cv");
+    const fallback = document.getElementById("fallback");
+
+    const setStatus = (cls, text) => {
+      statusEl.className = `badge ${cls}`;
+      statusEl.innerHTML = `<span class="dot"></span>${text}`;
+    };
+    const showFallback = (why) => {
+      canvas.style.display = "none";
+      fallback.style.display = "block";
+      setStatus("png", `Static PNG fallback — ${why}`);
+    };
+
+    async function main() {
+      if (!("gpu" in navigator)) {
+        showFallback("WebGPU not available in this browser");
+        return;
+      }
+      try {
+        setStatus("gpu", "loading WebAssembly…");
+        await init();
+
+        setStatus("gpu", "initialising GPU renderer…");
+        const renderer = await new VelloCanvasRenderer(canvas);
+
+        const sceneBytes = new Uint8Array(
+          await (await fetch("./fit.scene.json")).arrayBuffer());
+
+        const t0 = performance.now();
+        // white opaque background (r, g, b, a in 0..1)
+        await renderer.render(sceneBytes, 1, 1, 1, 1);
+        const ms = performance.now() - t0;
+
+        setStatus("gpu", "Rendered in-browser via WebAssembly + WebGPU");
+        metaEl.textContent =
+          `${(sceneBytes.length / 1024).toFixed(1)} KB scene · ${ms.toFixed(1)} ms · 566×566`;
+      } catch (e) {
+        console.error(e);
+        showFallback(`WebGPU render failed (${e})`);
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>
