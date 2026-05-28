@@ -7,6 +7,7 @@
 import type {
   DataInfo,
   DocSetOp,
+  PluginInfo,
   RenderResult,
   SceneResult,
   ServerBackend,
@@ -319,6 +320,22 @@ export function createRpc(transport: Transport) {
       python: (code: string, capture_stdout = true) =>
         t('eval.python', { code, capture_stdout }) as Promise<{
           result: unknown; stdout: string; stderr: string;
+        }>,
+    },
+
+    plugins: {
+      list: () =>
+        t('plugins.list') as Promise<{
+          tools: PluginInfo[];
+          datasets: PluginInfo[];
+        }>,
+      run: (
+        kind: 'tools' | 'dataset',
+        name: string,
+        fields: Record<string, unknown>,
+      ) =>
+        t('plugins.run', { kind, name, fields }) as Promise<{
+          ok: true; created: string[];
         }>,
     },
 

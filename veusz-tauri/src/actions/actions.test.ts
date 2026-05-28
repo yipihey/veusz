@@ -19,7 +19,7 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
   const notify = vi.fn();
   const ctx: ActionCtx = {
     store, openDialog: vi.fn(), pick: {}, notify, toggleFullScreen: vi.fn(),
-    openUrl: vi.fn(),
+    openUrl: vi.fn(), openPlugin: vi.fn(),
   };
   return { store, ctx, adds, notify };
 }

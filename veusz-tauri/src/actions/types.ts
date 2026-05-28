@@ -7,6 +7,7 @@
 
 import type { DocState } from '../state/doc';
 import type { DocStore } from '../keys/shortcuts';
+import type { PluginInfo } from '../rpc/types';
 
 /** Modal dialogs an action can launch. Some are already built
  *  (stylesheet, fit, csv); others are stubs until their phase lands. */
@@ -23,7 +24,8 @@ export type DialogId =
   | 'dataCreate2d'
   | 'filter'
   | 'histogram'
-  | 'console';
+  | 'console'
+  | 'import';
 
 /** Host capabilities an action needs beyond the store (native pickers,
  *  dialog launching, fullscreen, notifications). AppShell builds this once
@@ -40,6 +42,9 @@ export interface ActionCtx {
   toggleFullScreen?: () => void;
   notify: (msg: string) => void;
   openUrl?: (url: string) => void;
+  /** Open the plugin-run dialog for the chosen tools/dataset plugin
+   *  (or run it directly if it takes no parameters). */
+  openPlugin: (kind: 'tools' | 'dataset', plugin: PluginInfo) => void;
 }
 
 export interface Action {
@@ -60,7 +65,10 @@ export type MenuItem =
   | { kind: 'separator' }
   | { kind: 'submenu'; label: string; items: MenuItem[] }
   /** Dynamic list of recent files (from store.recentFiles). */
-  | { kind: 'recent' };
+  | { kind: 'recent' }
+  /** Dynamic, nested list of tools/dataset plugins (from store.plugins),
+   *  grouped by each plugin's menu path. */
+  | { kind: 'plugins'; which: 'tools' | 'dataset' };
 
 export interface Menu {
   label: string;

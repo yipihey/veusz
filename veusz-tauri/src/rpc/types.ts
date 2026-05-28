@@ -132,3 +132,21 @@ export interface DocSetOp {
   path: string;
   value: unknown;
 }
+
+/** A single parameter of a tools/dataset plugin. `kind` is the Field subclass
+ *  name (FieldText, FieldBool, FieldCombo, FieldFloat, …). */
+export interface PluginField {
+  name: string;
+  descr: string;
+  default: unknown;
+  kind: string;
+  items: string[];
+}
+
+/** A registered tools or dataset plugin. `menu` is the nested menu path. */
+export interface PluginInfo {
+  name: string;
+  menu: string[];
+  has_parameters?: boolean;
+  fields: PluginField[];
+}

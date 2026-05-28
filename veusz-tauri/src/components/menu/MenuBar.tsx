@@ -8,6 +8,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { DocState } from '../../state/doc';
 import type { DocStore } from '../../keys/shortcuts';
+import type { PluginInfo } from '../../rpc/types';
 import { ACTIONS } from '../../actions/actions';
 import { MENUS } from '../../actions/menus';
 import { actionLabel, type ActionCtx, type MenuItem } from '../../actions/types';
@@ -75,6 +76,11 @@ function MenuPanel({
         if (it.kind === 'separator') return <div key={idx} style={separator} />;
         if (it.kind === 'recent') {
           return <RecentItems key={idx} state={state} ctx={ctx} onClose={onClose} />;
+        }
+        if (it.kind === 'plugins') {
+          return (
+            <PluginItems key={idx} which={it.which} state={state} ctx={ctx} onClose={onClose} />
+          );
         }
         if (it.kind === 'submenu') {
           return (
@@ -144,6 +150,105 @@ function RecentItems({
         <span>Clear recent</span>
       </button>
     </Fragment>
+  );
+}
+
+type PNode =
+  | { type: 'group'; label: string; children: PNode[] }
+  | { type: 'leaf'; label: string; plugin: PluginInfo };
+
+/** Group plugins into a nested tree by their menu paths (e.g. Colors → Swap). */
+function buildPluginTree(plugins: PluginInfo[]): PNode[] {
+  const roots: PNode[] = [];
+  for (const p of plugins) {
+    const path = p.menu.length ? p.menu : [p.name];
+    let level = roots;
+    path.forEach((seg, i) => {
+      if (i === path.length - 1) {
+        level.push({ type: 'leaf', label: seg, plugin: p });
+        return;
+      }
+      let grp = level.find((n) => n.type === 'group' && n.label === seg) as
+        Extract<PNode, { type: 'group' }> | undefined;
+      if (!grp) { grp = { type: 'group', label: seg, children: [] }; level.push(grp); }
+      level = grp.children;
+    });
+  }
+  return roots;
+}
+
+function PluginItems({
+  which, state, ctx, onClose,
+}: {
+  which: 'tools' | 'dataset'; state: DocState; ctx: ActionCtx; onClose: () => void;
+}) {
+  const plugins = which === 'tools' ? state.plugins.tools : state.plugins.datasets;
+  if (!plugins.length) {
+    return (
+      <div data-testid={`plugins-${which}-empty`}
+        style={{ ...item(false), justifyContent: 'flex-start' }}>
+        No plugins
+      </div>
+    );
+  }
+  return (
+    <PluginNodes nodes={buildPluginTree(plugins)} which={which} ctx={ctx} onClose={onClose} />
+  );
+}
+
+function PluginNodes({
+  nodes, which, ctx, onClose,
+}: {
+  nodes: PNode[]; which: 'tools' | 'dataset'; ctx: ActionCtx; onClose: () => void;
+}) {
+  return (
+    <Fragment>
+      {nodes.map((n) =>
+        n.type === 'group' ? (
+          <PluginGroup key={`g:${n.label}`} node={n} which={which} ctx={ctx} onClose={onClose} />
+        ) : (
+          <button
+            key={`l:${n.plugin.name}`}
+            type="button"
+            role="menuitem"
+            data-testid={`plugin-item-${n.plugin.name}`}
+            onClick={() => { onClose(); ctx.openPlugin(which, n.plugin); }}
+            style={item(true)}
+          >
+            <span>{n.label}</span>
+          </button>
+        ),
+      )}
+    </Fragment>
+  );
+}
+
+function PluginGroup({
+  node, which, ctx, onClose,
+}: {
+  node: Extract<PNode, { type: 'group' }>;
+  which: 'tools' | 'dataset'; ctx: ActionCtx; onClose: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      style={{ position: 'relative' }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button type="button" role="menuitem" aria-haspopup="true" aria-expanded={hover}
+        data-testid={`submenu-${node.label}`} style={item(true)}>
+        <span>{node.label}</span>
+        <span aria-hidden>{'▸'}</span>
+      </button>
+      {hover && (
+        <div style={{ position: 'absolute', left: '100%', top: -4 }}>
+          <div role="menu" style={panel}>
+            <PluginNodes nodes={node.children} which={which} ctx={ctx} onClose={onClose} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

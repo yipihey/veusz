@@ -53,14 +53,19 @@ export const MENUS: Menu[] = [
   {
     label: 'Data',
     items: [
-      a('data.import'), a('data.edit'), sep,
-      a('data.create'), a('data.create2d'), a('data.filter'), a('data.histogram'), sep,
+      a('data.import'), a('data.importfile'), a('data.edit'), sep,
+      a('data.create'), a('data.create2d'), a('data.filter'), a('data.histogram'),
+      { kind: 'submenu', label: 'Operations', items: [{ kind: 'plugins', which: 'dataset' }] },
+      sep,
       a('data.reload'),
     ],
   },
   {
     label: 'Tools',
-    items: [a('tools.console')],
+    items: [
+      a('tools.console'), sep,
+      { kind: 'plugins', which: 'tools' },
+    ],
   },
   {
     label: 'Help',

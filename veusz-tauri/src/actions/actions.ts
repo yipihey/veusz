@@ -193,8 +193,12 @@ export const ACTIONS: Record<string, Action> = {
 
   // ---- Data -----------------------------------------------------------
   'data.import': {
-    id: 'data.import', label: 'Import…', shortcut: 'Ctrl+I',
+    id: 'data.import', label: 'Import CSV…', shortcut: 'Ctrl+I',
     run: ({ openDialog }) => openDialog('importCsv'),
+  },
+  'data.importfile': {
+    id: 'data.importfile', label: 'Import data file…',
+    run: ({ openDialog }) => openDialog('import'),
   },
   'data.edit': {
     id: 'data.edit', label: 'Editor…', shortcut: 'Ctrl+E',

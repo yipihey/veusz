@@ -18,13 +18,14 @@ from typing import Callable
 from . import (
     core, data, doc, render, hittest, state,
     eval as eval_handler, file as file_handler, fit as fit_handler,
-    prefs as prefs_handler,
+    prefs as prefs_handler, plugins as plugins_handler,
 )
 
 
 _MODULES = (
     core, data, doc, render, hittest, state,
     eval_handler, file_handler, fit_handler, prefs_handler,
+    plugins_handler,
 )
 
 

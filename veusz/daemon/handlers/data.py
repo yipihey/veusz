@@ -122,19 +122,20 @@ def register(ctx):
         """Import a data file using one of Veusz's registered importers.
 
         ``kind`` is the bare format name: ``'csv'``, ``'fits'``, ``'hdf5'``,
-        ``'npy'``, ``'npz'``, ``'plaintext'``. Each maps to the
-        corresponding ``ImportFile<KIND>`` command on
-        :class:`CommandInterface`. ``options`` is forwarded as kwargs;
-        see ``veusz/dataimport/defn_*.py`` for the per-importer options.
+        ``'2d'``, ``'nd'``, ``'plaintext'``. Each maps to the corresponding
+        ``ImportFile*`` command on :class:`CommandInterface`. ``options`` is
+        forwarded as kwargs; see ``veusz/dataimport/defn_*.py`` for the
+        per-importer options (e.g. ``items`` for fits/hdf5, ``datasetnames``
+        for 2d, ``dataset`` for nd, ``descriptor`` for plaintext).
         """
         from ...document.commandinterface import CommandInterface
         ci = CommandInterface(ctx.document)
         cmd_name = {
             'csv': 'ImportFileCSV',
-            'fits': 'ImportFITSFile',
+            'fits': 'ImportFileFITS',
             'hdf5': 'ImportFileHDF5',
-            'npy': 'ImportFileNPY',
-            'npz': 'ImportFileNPZ',
+            '2d': 'ImportFile2D',
+            'nd': 'ImportFileND',
             'plaintext': 'ImportFile',
         }.get(kind.lower())
         if cmd_name is None or not hasattr(ci, cmd_name):

@@ -57,6 +57,18 @@ async def test_csv_to_rendered_plot_endtoend(daemon, csv_path):
 
 
 @pytest.mark.asyncio
+async def test_plaintext_import_with_descriptor(daemon, tmp_path):
+    """The 'plaintext' kind maps to ImportFile and honours a descriptor."""
+    p = tmp_path / 'cols.dat'
+    p.write_text('1 10\n2 20\n3 30\n')
+    r = await daemon.call('data.import', kind='plaintext',
+                          filename=str(p), options={'descriptor': 'a b'})
+    assert sorted(r['imported']) == ['a', 'b']
+    stats = await daemon.call('data.stats', name='b')
+    assert stats['max'] == 30
+
+
+@pytest.mark.asyncio
 async def test_import_bad_kind_errors(daemon):
     with pytest.raises(RuntimeError, match='unknown or unavailable importer'):
         await daemon.call('data.import', kind='not-a-format', filename='/dev/null')

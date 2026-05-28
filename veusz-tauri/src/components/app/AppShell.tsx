@@ -32,7 +32,10 @@ import { DataEditDialog } from '../data/DataEditDialog';
 import { DataDialog, type DataMode } from '../data/DataDialog';
 import { CustomDialog } from '../data/CustomDialog';
 import { ConsolePanel } from '../tools/ConsolePanel';
+import { PluginDialog } from '../tools/PluginDialog';
+import { ImportDialog } from '../data/ImportDialog';
 import type { ActionCtx, DialogId } from '../../actions/types';
+import type { PluginInfo } from '../../rpc/types';
 
 export interface AppShellProps {
   store: UseBoundStore<StoreApi<DocState>>;
@@ -102,6 +105,9 @@ export function AppShell({
   const [notice, setNotice] = useState<string | null>(null);
   // Active modal dialog (null = none).
   const [dialog, setDialog] = useState<DialogId | null>(null);
+  // Active plugin-run dialog (carries which plugin + kind), null = none.
+  const [pluginTarget, setPluginTarget] =
+    useState<{ kind: 'tools' | 'dataset'; plugin: PluginInfo } | null>(null);
   // Anchor for dataset Shift-range selection.
   const dsAnchorRef = useRef<string | null>(null);
 
@@ -186,8 +192,9 @@ export function AppShell({
   useEffect(() => {
     void refreshAll();
     void loadPlotPrefs();
+    void store.getState().loadPlugins();
     return subscribeToDaemon();
-  }, [refreshAll, loadPlotPrefs, subscribeToDaemon]);
+  }, [refreshAll, loadPlotPrefs, subscribeToDaemon, store]);
 
   // Re-render whenever the doc tree mutates (selection, edits, undo),
   // the current page changes, or the antialias / backend toggle flips.
@@ -259,6 +266,22 @@ export function AppShell({
     openUrl: (url: string) => {
       try { window.open(url, '_blank', 'noopener'); }
       catch { notify('Cannot open links here.'); }
+    },
+    openPlugin: (kind, plugin) => {
+      // Tools plugins always carry an implicit currentwidget; a real
+      // parameter form is needed only when the plugin declares fields
+      // beyond that. No-parameter plugins run straight away.
+      const formFields = plugin.fields.filter((f) => f.name !== 'currentwidget');
+      if (plugin.has_parameters === false || formFields.length === 0) {
+        void store.getState().runPlugin(kind, plugin.name, {}).then((created) => {
+          const err = store.getState().error;
+          notify(err ?? (created.length
+            ? `${plugin.name}: created ${created.join(', ')}`
+            : `Ran ${plugin.name}`));
+        });
+        return;
+      }
+      setPluginTarget({ kind, plugin });
     },
   };
 
@@ -469,6 +492,14 @@ export function AppShell({
               {dialog === 'console' && (
                 <ConsolePanel store={store} />
               )}
+              {dialog === 'import' && (
+                <ImportDialog
+                  store={store}
+                  onClose={() => setDialog(null)}
+                  notify={notify}
+                  onPickFile={onPickCsv}
+                />
+              )}
               {DATA_MODE[dialog] && (
                 <DataDialog
                   store={store} mode={DATA_MODE[dialog]!}
@@ -486,6 +517,36 @@ export function AppShell({
                   </p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pluginTarget && (
+        <div
+          data-testid="modal-backdrop"
+          onClick={() => setPluginTarget(null)}
+          style={layout.backdrop}
+        >
+          <div
+            data-testid="dialog-plugin"
+            onClick={(e) => e.stopPropagation()}
+            style={layout.dialog}
+          >
+            <div style={layout.dialogHeader}>
+              <strong>{pluginTarget.plugin.name}</strong>
+              <button type="button" data-testid="dialog-close" onClick={() => setPluginTarget(null)}>
+                Close
+              </button>
+            </div>
+            <div style={{ padding: 12 }}>
+              <PluginDialog
+                store={store}
+                kind={pluginTarget.kind}
+                plugin={pluginTarget.plugin}
+                onClose={() => setPluginTarget(null)}
+                notify={notify}
+              />
             </div>
           </div>
         </div>
@@ -642,6 +703,7 @@ const DIALOG_TITLES: Partial<Record<DialogId, string>> = {
   histogram: 'Histogram',
   custom: 'Custom definitions',
   console: 'Python console',
+  import: 'Import data',
   about: 'About Veusz',
 };
 

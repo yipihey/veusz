@@ -99,6 +99,22 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
     'doc.get_customs': () => ({ definition: [['pi', '3.14159']], import: [], color: [], colormap: [] }),
     'doc.set_customs': () => ({ ok: true, changeset: 1 }),
     'eval.python': (p) => ({ result: 42, stdout: `ran: ${(p as { code: string }).code}\n`, stderr: '' }),
+    'plugins.list': () => ({
+      tools: [
+        { name: 'Replace text', menu: ['General', 'Replace text'], has_parameters: true,
+          fields: [{ name: 'text1', descr: 'Find', default: '', kind: 'FieldText', items: [] }] },
+      ],
+      datasets: [
+        { name: 'Add', menu: ['Add', 'Constant'],
+          fields: [
+            { name: 'ds_in', descr: 'Input dataset', default: '', kind: 'FieldDataset', items: [] },
+            { name: 'value', descr: 'Value', default: 0, kind: 'FieldFloat', items: [] },
+            { name: 'ds_out', descr: 'Output dataset', default: '', kind: 'FieldDataset', items: [] },
+          ] },
+      ],
+    }),
+    'plugins.run': () => ({ ok: true, created: ['x10'] }),
+    'data.import': (p) => ({ imported: [`imported_${(p as { kind: string }).kind}`], errors: [] }),
     'file.export': (params) => ({
       ok: true,
       path: (params as { path: string }).path,
@@ -404,6 +420,64 @@ describe('AppShell (mock RPC)', () => {
     fireEvent.change(screen.getByTestId('console-input'), { target: { value: '1+1' } });
     fireEvent.click(screen.getByTestId('console-run'));
     await waitFor(() => expect(screen.getByTestId('console-log').textContent).toContain('ran: 1+1'));
+  });
+
+  it('Tools → plugin opens the param dialog and runs the plugin', async () => {
+    const runs: Array<Record<string, unknown>> = [];
+    const { store } = rig({ 'plugins.run': (p) => { runs.push(p); return { ok: true, created: [] }; } });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Tools'));
+    fireEvent.click(screen.getByTestId('menu-Tools'));
+    // The plugin is nested under its menu group (General → Replace text).
+    await waitFor(() => screen.getByTestId('submenu-General'));
+    fireEvent.mouseEnter(screen.getByTestId('submenu-General'));
+    await waitFor(() => screen.getByTestId('plugin-item-Replace text'));
+    fireEvent.click(screen.getByTestId('plugin-item-Replace text'));
+    await waitFor(() => screen.getByTestId('plugin-form'));
+    fireEvent.change(screen.getByTestId('plugin-field-text1'), { target: { value: 'foo' } });
+    fireEvent.click(screen.getByTestId('plugin-run'));
+    await waitFor(() => expect(runs.length).toBe(1));
+    expect(runs[0]).toMatchObject({ kind: 'tools', name: 'Replace text', fields: { text1: 'foo' } });
+  });
+
+  it('Data → Operations runs a dataset plugin via plugins.run', async () => {
+    const runs: Array<Record<string, unknown>> = [];
+    const { store } = rig({ 'plugins.run': (p) => { runs.push(p); return { ok: true, created: ['x10'] }; } });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-Data'));
+    fireEvent.mouseEnter(screen.getByTestId('submenu-Operations'));
+    await waitFor(() => screen.getByTestId('submenu-Add'));
+    fireEvent.mouseEnter(screen.getByTestId('submenu-Add'));
+    await waitFor(() => screen.getByTestId('plugin-item-Add'));
+    fireEvent.click(screen.getByTestId('plugin-item-Add'));
+    await waitFor(() => screen.getByTestId('plugin-form'));
+    fireEvent.change(screen.getByTestId('plugin-field-ds_in'), { target: { value: 'x' } });
+    fireEvent.change(screen.getByTestId('plugin-field-value'), { target: { value: '10' } });
+    fireEvent.change(screen.getByTestId('plugin-field-ds_out'), { target: { value: 'x10' } });
+    fireEvent.click(screen.getByTestId('plugin-run'));
+    await waitFor(() => expect(runs.length).toBe(1));
+    expect(runs[0]).toMatchObject({ kind: 'dataset', name: 'Add', fields: { ds_in: 'x', value: 10, ds_out: 'x10' } });
+  });
+
+  it('Data → Import data file imports via data.import', async () => {
+    const imports: Array<Record<string, unknown>> = [];
+    const { store } = rig({
+      'data.import': (p) => { imports.push(p); return { imported: ['col1'], errors: [] }; },
+    });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-item-data.importfile'));
+    await waitFor(() => screen.getByTestId('import-form'));
+    fireEvent.change(screen.getByTestId('import-filename'), { target: { value: '/data/file.dat' } });
+    fireEvent.change(screen.getByTestId('import-field-descriptor'), { target: { value: 'x y' } });
+    fireEvent.click(screen.getByTestId('import-run'));
+    await waitFor(() => expect(imports.length).toBe(1));
+    expect(imports[0]).toMatchObject({
+      kind: 'plaintext', filename: '/data/file.dat',
+      options: { descriptor: 'x y' },
+    });
   });
 
   it('Edit → Custom definitions loads the current definitions', async () => {

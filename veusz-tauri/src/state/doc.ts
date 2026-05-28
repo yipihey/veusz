@@ -19,6 +19,7 @@ import { create } from 'zustand';
 import type {
   DataInfo,
   PaintBackend,
+  PluginInfo,
   RenderResult,
   ServerBackend,
   WidgetSchema,
@@ -138,6 +139,13 @@ export interface DocState {
   /** Replace the dataset-panel selection. */
   selectDatasets: (names: string[]) => void;
   importCsv: (filename: string) => Promise<string[]>;
+  /** Generic import over data.import for any format (fits/hdf5/2d/nd/
+   *  plaintext/csv). Refreshes the dataset list. Returns imported names. */
+  importData: (
+    kind: string,
+    filename: string,
+    options?: Record<string, unknown>,
+  ) => Promise<string[]>;
   deleteDatasets: (names: string[]) => Promise<void>;
   renameDataset: (oldName: string, newName: string) => Promise<void>;
   duplicateDataset: (name: string, new_name?: string) => Promise<string | null>;
@@ -150,6 +158,20 @@ export interface DocState {
   reloadFile: (filename?: string) => Promise<void>;
   unlinkAllInFile: (filename: string) => Promise<void>;
   deleteAllInFile: (filename: string) => Promise<void>;
+
+  // --- plugins (Tools menu + Data operations) ---
+  /** Registered tools + dataset plugins (from plugins.list). Loaded lazily;
+   *  drives the dynamic Tools menu and Data → Operations submenu. */
+  plugins: { tools: PluginInfo[]; datasets: PluginInfo[] };
+  /** Fetch the plugin registry once (skips the call if already loaded). */
+  loadPlugins: () => Promise<void>;
+  /** Run a tools/dataset plugin; refreshes tree + datasets afterward.
+   *  Returns the names of any datasets the plugin created. */
+  runPlugin: (
+    kind: 'tools' | 'dataset',
+    name: string,
+    fields: Record<string, unknown>,
+  ) => Promise<string[]>;
 
   // --- file ---
   filename: string | null;
@@ -256,6 +278,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       error: null,
       filename: null,
       recentFiles: [],
+      plugins: { tools: [], datasets: [] },
       cutPaths: [],
       selectedDatasets: [],
       currentPage: 0,
@@ -584,6 +607,13 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         return r?.imported ?? [];
       },
 
+      importData: async (kind, filename, options = {}) => {
+        const r = await guard(() => rpc.data.import(kind, filename, options));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+        return r?.imported ?? [];
+      },
+
       deleteDatasets: async (names) => {
         if (!names.length) return;
         await guard(() => rpc.data.delete(names));
@@ -669,6 +699,20 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await guard(() => rpc.data.deleteAllFile(filename));
         await get().refreshDatasets();
         await get().refreshUndoState();
+      },
+
+      loadPlugins: async () => {
+        const cur = get().plugins;
+        if (cur.tools.length || cur.datasets.length) return;
+        const r = await guard(() => rpc.plugins.list());
+        if (r) set({ plugins: { tools: r.tools, datasets: r.datasets } });
+      },
+
+      runPlugin: async (kind, name, fields) => {
+        const r = await guard(() => rpc.plugins.run(kind, name, fields));
+        await Promise.all([get().refreshTree(), get().refreshDatasets()]);
+        await get().refreshUndoState();
+        return r?.created ?? [];
       },
 
       loadPlotPrefs: async () => {
