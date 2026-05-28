@@ -7,6 +7,7 @@
 import type {
   DataInfo,
   DocSetOp,
+  ImportItem,
   PluginInfo,
   RenderResult,
   SceneResult,
@@ -191,6 +192,12 @@ export function createRpc(transport: Transport) {
         t('data.import', { kind, filename, options }) as Promise<{
           imported: string[];
           errors: string[];
+        }>,
+      inspectFile: (kind: string, filename: string) =>
+        t('data.inspect_file', { kind, filename }) as Promise<{
+          available: boolean;
+          items: ImportItem[];
+          reason?: string;
         }>,
       previewCsv: (params: {
         filename: string;

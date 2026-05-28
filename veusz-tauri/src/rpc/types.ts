@@ -150,3 +150,12 @@ export interface PluginInfo {
   has_parameters?: boolean;
   fields: PluginField[];
 }
+
+/** An importable item inside an HDF5/FITS file (from data.inspect_file).
+ *  `path` is the exact value the importer's `items` option expects. */
+export interface ImportItem {
+  path: string;
+  kind: string;
+  shape: number[];
+  dtype: string;
+}

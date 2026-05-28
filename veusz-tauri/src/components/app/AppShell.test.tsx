@@ -115,6 +115,18 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
     }),
     'plugins.run': () => ({ ok: true, created: ['x10'] }),
     'data.import': (p) => ({ imported: [`imported_${(p as { kind: string }).kind}`], errors: [] }),
+    'data.inspect_file': (p) => {
+      if ((p as { kind: string }).kind === 'hdf5') {
+        return {
+          available: true,
+          items: [
+            { path: '/alpha', kind: 'dataset', shape: [10], dtype: 'f' },
+            { path: '/grp/beta', kind: 'dataset', shape: [5], dtype: 'f' },
+          ],
+        };
+      }
+      return { available: false, items: [], reason: 'no introspection' };
+    },
     'file.export': (params) => ({
       ok: true,
       path: (params as { path: string }).path,
@@ -477,6 +489,30 @@ describe('AppShell (mock RPC)', () => {
     expect(imports[0]).toMatchObject({
       kind: 'plaintext', filename: '/data/file.dat',
       options: { descriptor: 'x y' },
+    });
+  });
+
+  it('Import HDF5 introspects the file and imports the ticked items', async () => {
+    const imports: Array<Record<string, unknown>> = [];
+    const { store } = rig({
+      'data.import': (p) => { imports.push(p); return { imported: ['alpha'], errors: [] }; },
+    });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-item-data.importfile'));
+    await waitFor(() => screen.getByTestId('import-form'));
+    fireEvent.change(screen.getByTestId('import-kind'), { target: { value: 'hdf5' } });
+    fireEvent.change(screen.getByTestId('import-filename'), { target: { value: '/data/sample.h5' } });
+    fireEvent.click(screen.getByTestId('import-inspect'));
+    await waitFor(() => screen.getByTestId('import-items'));
+    // Both items are listed and pre-checked; untick one before importing.
+    expect(screen.getByTestId('import-item-/alpha')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('import-item-/grp/beta'));
+    fireEvent.click(screen.getByTestId('import-run'));
+    await waitFor(() => expect(imports.length).toBe(1));
+    expect(imports[0]).toMatchObject({
+      kind: 'hdf5', filename: '/data/sample.h5', options: { items: ['/alpha'] },
     });
   });
 

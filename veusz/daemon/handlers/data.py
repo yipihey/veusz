@@ -17,6 +17,71 @@ from ..errors import RpcError, INVALID_PARAMS
 DATA_MIME = 'text/x-vnd.veusz-data-1'
 
 
+def _inspect_hdf5(filename):
+    """Walk an HDF5 file and list its importable datasets.
+
+    Reuses the same path/compound conventions as the Qt import dialog:
+    each leaf dataset is exposed by its absolute HDF5 path, and the fields
+    of a compound dataset are exposed as ``<path>/<field>``.
+    """
+    import h5py  # optional dependency; ImportError handled by caller
+    items = []
+
+    def visit(_name, obj):
+        if not isinstance(obj, h5py.Dataset):
+            return
+        try:
+            dt = obj.dtype
+        except TypeError:
+            return  # datatype unsupported by h5py
+        shape = list(obj.shape)
+        if dt.kind == 'V' and dt.names:
+            for field in dt.names:
+                items.append({
+                    'path': f'{obj.name}/{field}', 'kind': 'column',
+                    'shape': shape, 'dtype': str(dt[field]),
+                })
+        else:
+            items.append({
+                'path': obj.name, 'kind': 'dataset',
+                'shape': shape, 'dtype': dt.kind,
+            })
+
+    with h5py.File(filename, 'r') as f:
+        f.visititems(visit)
+    items.sort(key=lambda it: it['path'])
+    return items
+
+
+def _inspect_fits(filename):
+    """List the importable HDUs / table columns in a FITS file.
+
+    Mirrors the Qt dialog: image HDUs are ``/hduname``; table columns are
+    ``/hduname/column`` (lower-cased), matching ``ImportFileFITS``'s items.
+    """
+    from astropy.io import fits  # optional dependency
+    from ...dataimport import fits_hdf5_helpers as H
+    items = []
+    with fits.open(filename, 'readonly') as f:
+        hdunames = H.getFITSHduNames(f)
+        for idx, hdu in enumerate(f):
+            hduname = hdunames[idx]
+            if hdu.is_image:
+                shape = list(hdu.shape) if hdu.data is not None else []
+                items.append({
+                    'path': f'/{hduname}', 'kind': 'image',
+                    'shape': shape, 'dtype': str(hdu.header.get('BITPIX', '')),
+                })
+            elif hasattr(hdu, 'columns'):
+                tabshape = list(hdu.data.shape)
+                for col in hdu.columns:
+                    items.append({
+                        'path': f'/{hduname}/{col.name.lower()}', 'kind': 'column',
+                        'shape': tabshape, 'dtype': str(col.format),
+                    })
+    return items
+
+
 def register(ctx):
     def list_(**_):
         out = []
@@ -151,6 +216,31 @@ def register(ctx):
             'names': imported, 'kind': 'import',
         })
         return {'imported': imported, 'errors': []}
+
+    def inspect_file(kind: str, filename: str, **_):
+        """List the importable items inside an HDF5 or FITS file.
+
+        Returns ``{available, items, reason?}``. Each item is
+        ``{path, kind, shape, dtype}`` where ``path`` is exactly the value
+        the importer's ``items`` argument expects (HDF5 dataset path, or
+        FITS ``/hduname`` / ``/hduname/column``). ``available`` is False with
+        a ``reason`` when the optional backend (h5py / astropy) is missing,
+        so the UI can degrade to manual entry rather than erroring.
+        """
+        k = kind.lower()
+        try:
+            if k == 'hdf5':
+                return {'available': True, 'items': _inspect_hdf5(filename)}
+            if k == 'fits':
+                return {'available': True, 'items': _inspect_fits(filename)}
+        except ImportError as e:
+            return {'available': False, 'items': [], 'reason': str(e)}
+        except RpcError:
+            raise
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'inspect failed: {e}') from e
+        return {'available': False, 'items': [],
+                'reason': f'no introspection for kind: {kind}'}
 
     # --- Dataset CRUD (delete / rename / duplicate) ---------------------
 
@@ -505,6 +595,7 @@ def register(ctx):
         'data.filter': filter_,
         'data.histogram': histogram,
         'data.import': import_,
+        'data.inspect_file': inspect_file,
         'data.preview_csv': preview_csv,
         'data.delete': delete,
         'data.rename': rename,
