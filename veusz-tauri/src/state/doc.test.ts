@@ -300,3 +300,207 @@ describe('DocStore', () => {
     off();
   });
 });
+
+// --- Context-menu actions (Phase 1) ---------------------------------------
+
+describe('DocStore context-menu actions', () => {
+  it('renameWidget routes to rpc.doc.rename and refreshes the tree', async () => {
+    let renamedTo: string | null = null;
+    let treeCalls = 0;
+    const { store } = makeStore({
+      'doc.rename': (params) => {
+        const p = params as { path: string; name: string };
+        renamedTo = p.name;
+        return { path: '/page1/graph1/' + p.name, changeset: 1 };
+      },
+      'doc.tree': () => { treeCalls++; return TREE; },
+    });
+    const out = await store.getState().renameWidget('/page1/graph1/xy1', 'scatter');
+    expect(renamedTo).toBe('scatter');
+    expect(out).toBe('/page1/graph1/scatter');
+    expect(treeCalls).toBeGreaterThan(0);
+  });
+
+  it('moveWidget routes direction through to the daemon', async () => {
+    const directions: string[] = [];
+    const { store } = makeStore({
+      'doc.move': (params) => {
+        const p = params as { direction: string };
+        directions.push(p.direction);
+        return { path: '/page1/graph1/xy1', moved: true, changeset: 1 };
+      },
+    });
+    await store.getState().moveWidget('/page1/graph1/xy1', 'up');
+    await store.getState().moveWidget('/page1/graph1/xy1', 'down');
+    expect(directions).toEqual(['up', 'down']);
+  });
+
+  it('duplicateWidget returns the new path', async () => {
+    const { store } = makeStore({
+      'doc.duplicate': () =>
+        ({ path: '/page1/graph1/xy1_copy', changeset: 1 }),
+    });
+    const out = await store.getState().duplicateWidget('/page1/graph1/xy1');
+    expect(out).toBe('/page1/graph1/xy1_copy');
+  });
+
+  it('setHidden writes one /hide op per selected path in a single batch', async () => {
+    let lastOps: Array<{ path: string; value: unknown }> | null = null;
+    const { store } = makeStore({
+      'doc.set': (params) => {
+        const ops = (params as { ops: Array<{ path: string; value: unknown }> }).ops;
+        lastOps = ops;
+        return {
+          changeset: 1,
+          diffs: ops.map((o) => ({ path: o.path, old: false, new: o.value })),
+        };
+      },
+    });
+    await store.getState().setHidden(
+      ['/page1/graph1/xy1', '/page1/graph1/xy2'], true,
+    );
+    expect(lastOps).toEqual([
+      { path: '/page1/graph1/xy1/hide', value: true },
+      { path: '/page1/graph1/xy2/hide', value: true },
+    ]);
+  });
+
+  it('copyWidgets writes the daemon-returned MIME bytes to the clipboard', async () => {
+    let serialized: { paths?: string[] } = {};
+    const { store } = makeStore({
+      'doc.serialize_widgets': (params) => {
+        serialized = params as { paths: string[] };
+        return {
+          mime_type: 'text/x-vnd.veusz-widget-3',
+          payload_b64: 'PAYLOAD',
+          count: 1,
+        };
+      },
+    });
+    await store.getState().copyWidgets(['/page1/graph1/xy1']);
+    expect(serialized.paths).toEqual(['/page1/graph1/xy1']);
+    // The clipboard now reports as having a widget payload.
+    const cb = store.getState().clipboard;
+    expect(await cb.has(['text/x-vnd.veusz-widget-3'])).toBe(true);
+  });
+
+  it('cutWidgets serializes, writes the clipboard, then removes', async () => {
+    const removed: string[] = [];
+    const { store } = makeStore({
+      'doc.serialize_widgets': () => ({
+        mime_type: 'text/x-vnd.veusz-widget-3',
+        payload_b64: 'CUT', count: 1,
+      }),
+      'doc.remove': (params) => {
+        removed.push((params as { path: string }).path);
+        return { ok: true, changeset: 1 };
+      },
+    });
+    await store.getState().cutWidgets(['/page1/graph1/xy1']);
+    expect(removed).toEqual(['/page1/graph1/xy1']);
+    // The cut path is tracked so the tree (Phase 2) can render an
+    // italic-pending affordance if it wants — even though the actual
+    // remove happens immediately (Qt parity).
+    expect(store.getState().cutPaths).toEqual(['/page1/graph1/xy1']);
+  });
+
+  it('pasteWidgets posts the clipboard payload to the daemon', async () => {
+    let pasteArgs: { parent?: string; mime_type?: string } = {};
+    const { store } = makeStore({
+      'doc.serialize_widgets': () => ({
+        mime_type: 'text/x-vnd.veusz-widget-3',
+        payload_b64: 'WIRE', count: 1,
+      }),
+      'doc.paste_widgets_mime': (params) => {
+        pasteArgs = params as { parent: string; mime_type: string };
+        return { paths: ['/page1/graph1/xy_pasted'], changeset: 2 };
+      },
+    });
+    // Seed the clipboard via copy.
+    await store.getState().copyWidgets(['/page1/graph1/xy1']);
+    const pasted = await store.getState().pasteWidgets('/page1/graph1');
+    expect(pasted).toEqual(['/page1/graph1/xy_pasted']);
+    expect(pasteArgs.parent).toBe('/page1/graph1');
+    expect(pasteArgs.mime_type).toBe('text/x-vnd.veusz-widget-3');
+  });
+
+  it('canPasteWidgets returns false when the clipboard is empty', async () => {
+    const { store } = makeStore();
+    expect(await store.getState().canPasteWidgets('/page1/graph1')).toBe(false);
+  });
+
+  it('propagateSetting forwards scope and widget_paths', async () => {
+    let captured: { scope?: string; widget_paths?: string[] } = {};
+    const { store } = makeStore({
+      'doc.propagate_setting': (params) => {
+        captured = params as { scope: string; widget_paths: string[] };
+        return { changeset: 1 };
+      },
+    });
+    await store.getState().propagateSetting(
+      '/page1/graph1/xy1/marker',
+      'widgets',
+      ['/page1/graph1/xy2'],
+    );
+    expect(captured.scope).toBe('widgets');
+    expect(captured.widget_paths).toEqual(['/page1/graph1/xy2']);
+  });
+
+  it('deleteDatasets routes a name list to data.delete', async () => {
+    let deletedNames: string[] | null = null;
+    const { store } = makeStore({
+      'data.delete': (params) => {
+        deletedNames = (params as { names: string[] }).names;
+        return { deleted: deletedNames };
+      },
+    });
+    await store.getState().deleteDatasets(['a', 'b']);
+    expect(deletedNames).toEqual(['a', 'b']);
+  });
+
+  it('tagDatasets / untagDatasets forward both the names and the tag', async () => {
+    let lastTag = '';
+    let lastNames: string[] = [];
+    const { store } = makeStore({
+      'data.tag': (params) => {
+        const p = params as { names: string[]; tag: string };
+        lastNames = p.names; lastTag = p.tag;
+        return { tagged: p.names, tag: p.tag };
+      },
+      'data.untag': (params) => {
+        const p = params as { names: string[]; tag: string };
+        lastNames = p.names; lastTag = p.tag;
+        return { untagged: p.names, tag: p.tag };
+      },
+    });
+    await store.getState().tagDatasets(['a', 'b'], 'important');
+    expect(lastTag).toBe('important');
+    expect(lastNames).toEqual(['a', 'b']);
+    await store.getState().untagDatasets(['a'], 'important');
+    expect(lastNames).toEqual(['a']);
+  });
+
+  it('setValues batches multi-path edits into a single doc.set call', async () => {
+    let lastOps: Array<{ path: string; value: unknown }> = [];
+    let setCalls = 0;
+    const { store } = makeStore({
+      'doc.set': (params) => {
+        setCalls++;
+        const ops = (params as { ops: Array<{ path: string; value: unknown }> }).ops;
+        lastOps = ops;
+        return {
+          changeset: 1,
+          diffs: ops.map((o) => ({ path: o.path, old: 'circle', new: o.value })),
+        };
+      },
+    });
+    await store.getState().setValues([
+      { path: '/page1/graph1/xy1/marker', value: 'square' },
+      { path: '/page1/graph1/xy2/marker', value: 'square' },
+    ]);
+    expect(setCalls).toBe(1);
+    expect(lastOps.length).toBe(2);
+  });
+
+  void vi;
+});

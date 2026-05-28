@@ -23,9 +23,17 @@ import type {
   WidgetTreeNode,
 } from '../rpc/types';
 import type { Rpc } from '../rpc/client';
+import {
+  createClipboard,
+  type Clipboard,
+} from '../clipboard';
+
+const WIDGET_MIME = 'text/x-vnd.veusz-widget-3';
+const DATA_MIME = 'text/x-vnd.veusz-data-1';
 
 export interface DocState {
   rpc: Rpc;
+  clipboard: Clipboard;
   tree: WidgetTreeNode | null;
   datasets: DataInfo[];
   selected: string | null;
@@ -36,6 +44,10 @@ export interface DocState {
   canRedo: boolean;
   /** Most recent failed call, surfaced to the UI's error banner. */
   error: string | null;
+  /** Path that was just cut and is awaiting paste. Cut is
+   *  immediate-remove + undo (Qt parity), so this is purely
+   *  informational — set then cleared after the next paste. */
+  cutPaths: string[];
 
   // --- lifecycle ---
   refreshTree: () => Promise<void>;
@@ -49,11 +61,48 @@ export interface DocState {
 
   // --- edits ---
   setValue: (path: string, value: unknown) => Promise<void>;
+  /** Batch setting writes — used by Inspector multi-edit. Collapses
+   *  to a single undo step daemon-side via OperationMultiple. */
+  setValues: (ops: Array<{ path: string; value: unknown }>) => Promise<void>;
   addWidget: (parent: string, type: string, name?: string) => Promise<string>;
   removeWidget: (path: string) => Promise<void>;
+  renameWidget: (path: string, name: string) => Promise<string | null>;
+  moveWidget: (path: string, direction: 'up' | 'down') => Promise<void>;
+  duplicateWidget: (path: string) => Promise<string | null>;
+  setHidden: (paths: string[], hidden: boolean) => Promise<void>;
+
+  // --- clipboard (widgets) ---
+  copyWidgets: (paths: string[]) => Promise<void>;
+  cutWidgets: (paths: string[]) => Promise<void>;
+  pasteWidgets: (parent: string) => Promise<string[]>;
+  canPasteWidgets: (parent: string) => Promise<boolean>;
+  copyWidgetAsImage: (page: number, w: number, h: number, dpi?: number)
+    => Promise<void>;
+
+  // --- setting-label actions ---
+  propagateSetting: (
+    path: string,
+    scope: 'all_of_type' | 'siblings' | 'type_and_name' | 'widgets',
+    widget_paths?: string[],
+  ) => Promise<void>;
+  resetSettingDefault: (path: string) => Promise<void>;
+  setSettingDefault: (path: string) => Promise<void>;
+  unlinkSetting: (path: string) => Promise<void>;
 
   // --- data ---
   importCsv: (filename: string) => Promise<string[]>;
+  deleteDatasets: (names: string[]) => Promise<void>;
+  renameDataset: (oldName: string, newName: string) => Promise<void>;
+  duplicateDataset: (name: string, new_name?: string) => Promise<string | null>;
+  unlinkDatasetFile: (names: string[]) => Promise<void>;
+  unlinkDatasetRelation: (names: string[]) => Promise<void>;
+  tagDatasets: (names: string[], tag: string) => Promise<void>;
+  untagDatasets: (names: string[], tag: string) => Promise<void>;
+  copyDatasets: (names: string[]) => Promise<void>;
+  pasteDatasets: () => Promise<string[]>;
+  reloadFile: (filename?: string) => Promise<void>;
+  unlinkAllInFile: (filename: string) => Promise<void>;
+  deleteAllInFile: (filename: string) => Promise<void>;
 
   // --- file ---
   filename: string | null;
@@ -100,7 +149,7 @@ function joinPath(parent: string, name: string): string {
  *  p95 render time (~11 ms in the perf spike). */
 const RENDER_COALESCE_MS = 33;
 
-export function createDocStore(rpc: Rpc) {
+export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard()) {
   // Live at store-creation scope (not state) so they're not subject
   // to React's render lifecycle.
   let renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,6 +171,7 @@ export function createDocStore(rpc: Rpc) {
 
     return {
       rpc,
+      clipboard,
       tree: null,
       datasets: [],
       selected: null,
@@ -132,6 +182,7 @@ export function createDocStore(rpc: Rpc) {
       canRedo: false,
       error: null,
       filename: null,
+      cutPaths: [],
 
       refreshTree: async () => {
         const tree = await guard(() => rpc.doc.tree());
@@ -241,10 +292,231 @@ export function createDocStore(rpc: Rpc) {
         await get().refreshUndoState();
       },
 
+      setValues: async (ops) => {
+        if (!ops.length) return;
+        const r = await guard(() => rpc.doc.set(ops));
+        if (!r) return;
+        const next = { ...get().values };
+        for (const d of r.diffs) next[d.path] = d.new;
+        set({ values: next });
+        await get().refreshUndoState();
+      },
+
+      renameWidget: async (path, name) => {
+        const r = await guard(() => rpc.doc.rename(path, name));
+        await get().refreshTree();
+        await get().refreshUndoState();
+        if (r && get().selected === path) {
+          await get().select(r.path);
+        }
+        return r?.path ?? null;
+      },
+
+      moveWidget: async (path, direction) => {
+        await guard(() => rpc.doc.move(path, direction));
+        await get().refreshTree();
+        await get().refreshUndoState();
+      },
+
+      duplicateWidget: async (path) => {
+        const r = await guard(() => rpc.doc.duplicate(path));
+        await get().refreshTree();
+        await get().refreshUndoState();
+        return r?.path ?? null;
+      },
+
+      setHidden: async (paths, hidden) => {
+        if (!paths.length) return;
+        await get().setValues(paths.map((p) => ({
+          path: p + '/hide', value: hidden,
+        })));
+        await get().refreshTree();
+      },
+
+      copyWidgets: async (paths) => {
+        if (!paths.length) return;
+        const r = await guard(() => rpc.doc.serializeWidgets(paths));
+        if (!r) return;
+        await clipboard.write({
+          mime_type: r.mime_type,
+          payload_b64: r.payload_b64,
+        });
+        // A fresh copy clears any pending "cut" marker.
+        set({ cutPaths: [] });
+      },
+
+      cutWidgets: async (paths) => {
+        if (!paths.length) return;
+        // Qt parity: cut = copy then remove. The clipboard is set first
+        // so an interrupted cut still leaves the bytes recoverable via
+        // paste; the remove is wrapped in undo, so Ctrl+Z restores it.
+        const r = await guard(() => rpc.doc.serializeWidgets(paths));
+        if (!r) return;
+        await clipboard.write({
+          mime_type: r.mime_type,
+          payload_b64: r.payload_b64,
+        });
+        // Remove deepest-first so parents don't disappear under children.
+        const ordered = [...paths].sort((a, b) => b.length - a.length);
+        for (const p of ordered) {
+          await guard(() => rpc.doc.remove(p));
+        }
+        if (paths.includes(get().selected ?? '')) {
+          await get().select(null);
+        }
+        set({ cutPaths: paths });
+        await get().refreshTree();
+        await get().refreshUndoState();
+      },
+
+      pasteWidgets: async (parent) => {
+        const payload = await clipboard.read([WIDGET_MIME]);
+        if (!payload) return [];
+        const r = await guard(() => rpc.doc.pasteWidgetsMime(
+          parent, payload.mime_type, payload.payload_b64,
+        ));
+        if (!r) return [];
+        set({ cutPaths: [] });
+        await get().refreshTree();
+        await get().refreshUndoState();
+        return r.paths;
+      },
+
+      canPasteWidgets: async (parent) => {
+        const payload = await clipboard.read([WIDGET_MIME]);
+        if (!payload) return false;
+        const r = await guard(() => rpc.doc.canPasteMime(
+          parent, payload.mime_type, payload.payload_b64,
+        ));
+        return r?.ok ?? false;
+      },
+
+      copyWidgetAsImage: async (page, w, h, dpi = 96) => {
+        const r = await guard(() => rpc.render.copyImage(page, w, h, dpi, 'png'));
+        if (!r) return;
+        await clipboard.write({
+          mime_type: r.mime_type,
+          payload_b64: r.payload_b64,
+        });
+      },
+
+      propagateSetting: async (path, scope, widget_paths) => {
+        await guard(() => rpc.doc.propagateSetting(path, scope, widget_paths));
+        await get().refreshUndoState();
+        const sel = get().selected;
+        if (sel) await get().select(sel);
+      },
+
+      resetSettingDefault: async (path) => {
+        await guard(() => rpc.doc.resetSettingDefault(path));
+        await get().refreshUndoState();
+        const sel = get().selected;
+        if (sel) await get().select(sel);
+      },
+
+      setSettingDefault: async (path) => {
+        await guard(() => rpc.doc.setSettingDefault(path));
+        await get().refreshUndoState();
+      },
+
+      unlinkSetting: async (path) => {
+        await guard(() => rpc.doc.unlinkSetting(path));
+        await get().refreshUndoState();
+        const sel = get().selected;
+        if (sel) await get().select(sel);
+      },
+
       importCsv: async (filename) => {
         const r = await guard(() => rpc.data.import('csv', filename));
         await get().refreshDatasets();
         return r?.imported ?? [];
+      },
+
+      deleteDatasets: async (names) => {
+        if (!names.length) return;
+        await guard(() => rpc.data.delete(names));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      renameDataset: async (oldName, newName) => {
+        await guard(() => rpc.data.rename(oldName, newName));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      duplicateDataset: async (name, new_name) => {
+        const r = await guard(() => rpc.data.duplicate(name, new_name));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+        return r?.name ?? null;
+      },
+
+      unlinkDatasetFile: async (names) => {
+        if (!names.length) return;
+        await guard(() => rpc.data.unlinkFile(names));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      unlinkDatasetRelation: async (names) => {
+        if (!names.length) return;
+        await guard(() => rpc.data.unlinkRelation(names));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      tagDatasets: async (names, tag) => {
+        if (!names.length) return;
+        await guard(() => rpc.data.tag(names, tag));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      untagDatasets: async (names, tag) => {
+        if (!names.length) return;
+        await guard(() => rpc.data.untag(names, tag));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      copyDatasets: async (names) => {
+        if (!names.length) return;
+        const r = await guard(() => rpc.data.serialize(names));
+        if (!r) return;
+        await clipboard.write({
+          mime_type: r.mime_type,
+          payload_b64: r.payload_b64,
+        });
+      },
+
+      pasteDatasets: async () => {
+        const payload = await clipboard.read([DATA_MIME]);
+        if (!payload) return [];
+        const r = await guard(() => rpc.data.pasteMime(
+          payload.mime_type, payload.payload_b64,
+        ));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+        return r?.pasted ?? [];
+      },
+
+      reloadFile: async (filename) => {
+        await guard(() => rpc.data.reloadFile(filename));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      unlinkAllInFile: async (filename) => {
+        await guard(() => rpc.data.unlinkAllFile(filename));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
+      },
+
+      deleteAllInFile: async (filename) => {
+        await guard(() => rpc.data.deleteAllFile(filename));
+        await get().refreshDatasets();
+        await get().refreshUndoState();
       },
 
       renderAt: async (page, w, h, dpi = 96) => {

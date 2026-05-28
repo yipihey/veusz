@@ -59,6 +59,80 @@ export function createRpc(transport: Transport) {
         }>,
       canUndo: () =>
         t('doc.can_undo') as Promise<{ can_undo: boolean; can_redo: boolean }>,
+      rename: (path: string, name: string) =>
+        t('doc.rename', { path, name }) as Promise<{
+          path: string;
+          changeset: number;
+        }>,
+      move: (path: string, direction: 'up' | 'down') =>
+        t('doc.move', { path, direction }) as Promise<{
+          path: string;
+          moved: boolean;
+          changeset: number;
+        }>,
+      duplicate: (path: string) =>
+        t('doc.duplicate', { path }) as Promise<{
+          path: string;
+          changeset: number;
+        }>,
+      serializeWidgets: (paths: string[]) =>
+        t('doc.serialize_widgets', { paths }) as Promise<{
+          mime_type: string;
+          payload_b64: string;
+          count: number;
+        }>,
+      pasteWidgetsMime: (
+        parent: string,
+        mime_type: string,
+        payload_b64: string,
+      ) =>
+        t('doc.paste_widgets_mime', { parent, mime_type, payload_b64 }) as Promise<{
+          paths: string[];
+          changeset: number;
+        }>,
+      canPasteMime: (
+        parent: string,
+        mime_type: string,
+        payload_b64: string,
+      ) =>
+        t('doc.can_paste_mime', { parent, mime_type, payload_b64 }) as Promise<{
+          ok: boolean;
+        }>,
+      propagateSetting: (
+        path: string,
+        scope:
+          | 'all_of_type'
+          | 'siblings'
+          | 'type_and_name'
+          | 'widgets',
+        widget_paths?: string[],
+      ) =>
+        t('doc.propagate_setting', {
+          path,
+          scope,
+          widget_paths,
+        }) as Promise<{ changeset: number }>,
+      resetSettingDefault: (path: string) =>
+        t('doc.reset_setting_default', { path }) as Promise<{
+          value: unknown;
+          changeset: number;
+        }>,
+      setSettingDefault: (path: string) =>
+        t('doc.set_setting_default', { path }) as Promise<{
+          changeset: number;
+          stylesheet_path: string;
+        }>,
+      unlinkSetting: (path: string) =>
+        t('doc.unlink_setting', { path }) as Promise<{
+          value: unknown;
+          changeset: number;
+        }>,
+      commonSchema: (paths: string[]) =>
+        t('doc.common_schema', { paths }) as Promise<WidgetSchema & {
+          mode: 'common';
+          count: number;
+          typenames: string[];
+        }>,
     },
 
     data: {
@@ -103,6 +177,53 @@ export function createRpc(transport: Transport) {
           total_lines_estimated: number;
           truncated: boolean;
         }>,
+      delete: (names: string[]) =>
+        t('data.delete', { names }) as Promise<{ deleted: string[] }>,
+      rename: (old: string, newName: string) =>
+        t('data.rename', { old, new: newName }) as Promise<{ name: string }>,
+      duplicate: (name: string, new_name?: string) =>
+        t('data.duplicate', { name, new_name }) as Promise<{ name: string }>,
+      unlinkFile: (names: string[]) =>
+        t('data.unlink_file', { names }) as Promise<{ unlinked: string[] }>,
+      unlinkRelation: (names: string[]) =>
+        t('data.unlink_relation', { names }) as Promise<{ unlinked: string[] }>,
+      tag: (names: string[], tag: string) =>
+        t('data.tag', { names, tag }) as Promise<{
+          tagged: string[]; tag: string;
+        }>,
+      untag: (names: string[], tag: string) =>
+        t('data.untag', { names, tag }) as Promise<{
+          untagged: string[]; tag: string;
+        }>,
+      tagsList: () =>
+        t('data.tags_list') as Promise<Record<string, string[]>>,
+      reloadFile: (filename?: string) =>
+        t('data.reload_file', { filename }) as Promise<{
+          reloaded: string[];
+          errors: Record<string, number>;
+        }>,
+      unlinkAllFile: (filename: string) =>
+        t('data.unlink_all_file', { filename }) as Promise<{
+          unlinked: string[];
+        }>,
+      deleteAllFile: (filename: string) =>
+        t('data.delete_all_file', { filename }) as Promise<{
+          deleted: string[];
+        }>,
+      useAsTargets: (name: string) =>
+        t('data.use_as_targets', { name }) as Promise<{
+          targets: Array<{ path: string; typename: string; widget: string }>;
+        }>,
+      serialize: (names: string[]) =>
+        t('data.serialize', { names }) as Promise<{
+          mime_type: string;
+          payload_b64: string;
+          count: number;
+        }>,
+      pasteMime: (mime_type: string, payload_b64: string) =>
+        t('data.paste_mime', { mime_type, payload_b64 }) as Promise<{
+          pasted: string[];
+        }>,
     },
 
     render: {
@@ -111,6 +232,20 @@ export function createRpc(transport: Transport) {
       svg: (page = 0, w = 800, h = 600, dpi = 96) =>
         t('render.svg', { page, w, h, dpi }) as Promise<{
           svg: string;
+          width: number;
+          height: number;
+        }>,
+      copyImage: (
+        page = 0,
+        w = 800,
+        h = 600,
+        dpi = 96,
+        format: 'png' | 'svg' = 'png',
+      ) =>
+        t('render.copy_image', { page, w, h, dpi, format }) as Promise<{
+          format: 'png' | 'svg';
+          mime_type: string;
+          payload_b64: string;
           width: number;
           height: number;
         }>,
