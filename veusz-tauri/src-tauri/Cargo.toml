@@ -21,6 +21,18 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 thiserror = "1"
+base64 = "0.22"
+
+# macOS clipboard interop. The legacy Qt Veusz writes widget/dataset
+# bytes to the OS pasteboard under custom MIME types; the standard
+# Tauri clipboard plugin only does text/html/image, so we go straight
+# to NSPasteboard to read/write arbitrary types. Custom Tauri commands
+# need no ACL grant (unlike plugin commands), and the round-trip is
+# unit-testable without a webview.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSArray"] }
 
 [dev-dependencies]
 tempfile = "3"

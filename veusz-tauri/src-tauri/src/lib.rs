@@ -1,6 +1,7 @@
 // Tauri shell library — split out so unit tests can target it without
 // linking the binary entrypoint.
 
+pub mod clipboard;
 pub mod ipc;
 
 use tauri::{generate_handler, Manager, RunEvent};
@@ -36,7 +37,13 @@ pub fn run() {
             app.manage(bridge);
             Ok(())
         })
-        .invoke_handler(generate_handler![rpc])
+        .invoke_handler(generate_handler![
+            rpc,
+            clipboard::clipboard_write_mime,
+            clipboard::clipboard_write_image_png,
+            clipboard::clipboard_read_mime,
+            clipboard::clipboard_has_mime,
+        ])
         .build(tauri::generate_context!())
         .expect("Tauri app failed to build")
         .run(|app, event| {
