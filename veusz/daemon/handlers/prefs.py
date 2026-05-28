@@ -33,6 +33,13 @@ _PREFS_SCHEMA: dict[str, dict] = {
     'export.pdf_dpi':           {'type': 'integer', 'default': 72,    'min': 36, 'max': 600},
     'csv.default_encoding':     {'type': 'string',  'default': 'utf-8'},
     'plot.live_preview':        {'type': 'boolean', 'default': True},
+    # Plot-canvas right-click toggles. Antialias drives render.png's
+    # antialias flag; update_policy mirrors the legacy "Updates" menu
+    # (disable / on-change / timed interval in seconds).
+    'plot.antialias':           {'type': 'boolean', 'default': True},
+    'plot.update_policy':       {'type': 'string',  'default': 'change',
+                                 'choices': ['disable', 'change',
+                                             '0.1', '0.5', '1', '2', '5', '10']},
     'ui.theme':                 {'type': 'string',  'default': 'system',
                                  'choices': ['system', 'light', 'dark']},
     'ui.font_size':             {'type': 'integer', 'default': 13,    'min': 9, 'max': 24},

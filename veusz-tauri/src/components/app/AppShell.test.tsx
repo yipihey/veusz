@@ -77,6 +77,11 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       path: (params as { path: string }).path,
       pages: [0],
     }),
+    // AppShell loads plot prefs (antialias, update_policy) at boot.
+    'prefs.get': (p) => ({
+      key: (p as { key: string }).key,
+      value: (p as { key: string }).key === 'plot.antialias' ? true : 'change',
+    }),
     ...over,
   };
   const t = mockTransport(handlers);

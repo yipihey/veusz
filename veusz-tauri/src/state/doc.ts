@@ -54,6 +54,13 @@ export interface DocState {
    *  immediate-remove + undo (Qt parity), so this is purely
    *  informational — set then cleared after the next paste. */
   cutPaths: string[];
+  /** Plot-view state driven by the plot canvas context menu. */
+  currentPage: number;
+  /** Antialias flag passed to render.png; mirrors prefs.plot.antialias. */
+  antialias: boolean;
+  /** Update policy: 'disable' | 'change' | seconds-as-string.
+   *  Mirrors prefs.plot.update_policy. */
+  updatePolicy: string;
 
   // --- lifecycle ---
   refreshTree: () => Promise<void>;
@@ -126,6 +133,17 @@ export interface DocState {
   exportFile: (path: string, pages?: number[]) => Promise<string | null>;
   refreshFileInfo: () => Promise<void>;
 
+  // --- plot view (context-menu driven) ---
+  /** Load plot prefs (antialias, update_policy) from the daemon. */
+  loadPlotPrefs: () => Promise<void>;
+  setPage: (page: number) => void;
+  nextPage: () => void;
+  prevPage: () => void;
+  setAntialias: (on: boolean) => Promise<void>;
+  setUpdatePolicy: (policy: string) => Promise<void>;
+  /** Render immediately, bypassing the coalesce window (Force update). */
+  forceRender: (w: number, h: number, dpi?: number) => Promise<void>;
+
   // --- rendering ---
   renderAt: (page: number, w: number, h: number, dpi?: number) => Promise<void>;
   /** Debounced render — multiple calls inside the coalesce window
@@ -197,6 +215,9 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       error: null,
       filename: null,
       cutPaths: [],
+      currentPage: 0,
+      antialias: true,
+      updatePolicy: 'change',
 
       refreshTree: async () => {
         const tree = await guard(() => rpc.doc.tree());
@@ -564,8 +585,42 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await get().refreshUndoState();
       },
 
+      loadPlotPrefs: async () => {
+        const aa = await guard(() => rpc.prefs.get('plot.antialias'));
+        const up = await guard(() => rpc.prefs.get('plot.update_policy'));
+        const patch: Partial<DocState> = {};
+        if (aa && typeof aa.value === 'boolean') patch.antialias = aa.value;
+        if (up && typeof up.value === 'string') patch.updatePolicy = up.value;
+        if (Object.keys(patch).length) set(patch);
+      },
+
+      setPage: (page) => {
+        const count = get().tree?.children.length ?? 0;
+        const clamped = Math.max(0, Math.min(page, Math.max(0, count - 1)));
+        set({ currentPage: clamped });
+      },
+
+      nextPage: () => get().setPage(get().currentPage + 1),
+      prevPage: () => get().setPage(get().currentPage - 1),
+
+      setAntialias: async (on) => {
+        set({ antialias: on });
+        await guard(() => rpc.prefs.set('plot.antialias', on));
+      },
+
+      setUpdatePolicy: async (policy) => {
+        set({ updatePolicy: policy });
+        await guard(() => rpc.prefs.set('plot.update_policy', policy));
+      },
+
+      forceRender: async (w, h, dpi = 96) => {
+        // Bypass the coalesce timer entirely.
+        await get().renderAt(get().currentPage, w, h, dpi);
+      },
+
       renderAt: async (page, w, h, dpi = 96) => {
-        const r = await guard(() => rpc.render.png(page, w, h, dpi, false));
+        const r = await guard(() =>
+          rpc.render.png(page, w, h, dpi, get().antialias));
         if (r) set({ render: r });
       },
 

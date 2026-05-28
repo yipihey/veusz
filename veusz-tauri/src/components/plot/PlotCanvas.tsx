@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { ZoomCommands } from './PlotContextMenu';
 
 /**
  * Plot canvas. Displays the latest PNG returned by `render.png` and
@@ -27,6 +28,12 @@ export interface PlotCanvasProps {
   onSelect?: (path: string | null) => void;
   /** Fires (debounced) after pan/zoom settles. */
   onViewportChange?: (view: { zoom: number; tx: number; ty: number }) => void;
+  /** Optional wrapper that injects a right-click context menu around
+   *  the canvas. Receives the canvas element plus the zoom command
+   *  set (so the menu's Zoom items drive this canvas's local view).
+   *  When omitted, the canvas renders bare (keeps the component
+   *  store-agnostic for unit tests). */
+  renderWithContextMenu?: (canvas: ReactNode, zoom: ZoomCommands) => ReactNode;
 }
 
 interface View {
@@ -46,6 +53,7 @@ export function PlotCanvas({
   selected,
   onSelect,
   onViewportChange,
+  renderWithContextMenu,
 }: PlotCanvasProps) {
   const [view, setView] = useState<View>({ zoom: 1, tx: 0, ty: 0 });
   const [hovered, setHovered] = useState<string | null>(null);
@@ -135,7 +143,36 @@ export function PlotCanvas({
   const reset = () =>
     setView({ zoom: 1, tx: 0, ty: 0 });
 
-  return (
+  // Zoom commands for the context menu. Width/height/page fits use the
+  // wrapper's measured size against the PNG's intrinsic size, centering
+  // the result. Mirrors plotwindow.py's slotViewZoom* family.
+  const zoomBy = (factor: number) =>
+    setView((v) => ({ ...v, zoom: clamp(v.zoom * factor, MIN_ZOOM, MAX_ZOOM) }));
+  const fit = (mode: 'width' | 'height' | 'page') => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const zw = r.width / width;
+    const zh = r.height / height;
+    const zoom = clamp(
+      mode === 'width' ? zw : mode === 'height' ? zh : Math.min(zw, zh),
+      MIN_ZOOM, MAX_ZOOM,
+    );
+    setView({
+      zoom,
+      tx: (r.width - width * zoom) / 2,
+      ty: (r.height - height * zoom) / 2,
+    });
+  };
+  const zoomCommands: ZoomCommands = {
+    zoomIn: () => zoomBy(1.25),
+    zoomOut: () => zoomBy(0.8),
+    zoom11: reset,
+    zoomWidth: () => fit('width'),
+    zoomHeight: () => fit('height'),
+    zoomPage: () => fit('page'),
+  };
+
+  const canvas = (
     <div
       ref={wrapRef}
       data-testid="plot-canvas"
@@ -249,6 +286,10 @@ export function PlotCanvas({
       </div>
     </div>
   );
+
+  return renderWithContextMenu
+    ? <>{renderWithContextMenu(canvas, zoomCommands)}</>
+    : canvas;
 }
 
 function clamp(x: number, lo: number, hi: number) {

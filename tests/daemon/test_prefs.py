@@ -78,3 +78,23 @@ async def test_boolean_type(daemon):
     assert r['value'] is False
     with pytest.raises(RuntimeError, match='expected boolean'):
         await daemon.call('prefs.set', key='plot.live_preview', value=0)
+
+
+@pytest.mark.asyncio
+async def test_plot_antialias_default_and_set(daemon):
+    r = await daemon.call('prefs.get', key='plot.antialias')
+    assert r == {'key': 'plot.antialias', 'value': True}
+    await daemon.call('prefs.set', key='plot.antialias', value=False)
+    r = await daemon.call('prefs.get', key='plot.antialias')
+    assert r['value'] is False
+
+
+@pytest.mark.asyncio
+async def test_plot_update_policy_choices(daemon):
+    r = await daemon.call('prefs.get', key='plot.update_policy')
+    assert r['value'] == 'change'
+    await daemon.call('prefs.set', key='plot.update_policy', value='1')
+    r = await daemon.call('prefs.get', key='plot.update_policy')
+    assert r['value'] == '1'
+    with pytest.raises(RuntimeError, match='not in'):
+        await daemon.call('prefs.set', key='plot.update_policy', value='nope')

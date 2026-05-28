@@ -16,6 +16,7 @@ import { TreeContextMenu } from '../tree/TreeContextMenu';
 import { Inspector } from '../inspector/Inspector';
 import { DatasetPanel } from '../data/DatasetPanel';
 import { PlotCanvas } from '../plot/PlotCanvas';
+import { PlotContextMenu } from '../plot/PlotContextMenu';
 import { flattenTreePaths, computeSelection } from './selection';
 import { useKeyboardShortcuts } from '../../keys/shortcuts';
 
@@ -50,9 +51,12 @@ export function AppShell({
   const canRedo = store((s) => s.canRedo);
   const error = store((s) => s.error);
   const filename = store((s) => s.filename);
+  const currentPage = store((s) => s.currentPage);
+  const antialias = store((s) => s.antialias);
 
   const refreshAll = store((s) => s.refreshAll);
   const requestRender = store((s) => s.requestRender);
+  const loadPlotPrefs = store((s) => s.loadPlotPrefs);
   const select = store((s) => s.select);
   const setValue = store((s) => s.setValue);
   const setValues = store((s) => s.setValues);
@@ -105,20 +109,43 @@ export function AppShell({
     if (newName) void store.getState().renameWidget(path, newName);
   };
 
+  // Full screen: prefer the Tauri window API (native feel); fall back
+  // to the HTML5 Fullscreen API when running in a plain browser (dev
+  // server / vitest), where __TAURI_INTERNALS__ is absent.
+  const toggleFullScreen = () => {
+    if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+      void (async () => {
+        const mod = '@tauri-apps/api/window';
+        const { getCurrentWindow } = await import(/* @vite-ignore */ mod);
+        const win = getCurrentWindow();
+        const on = await win.isFullscreen();
+        await win.setFullscreen(!on);
+      })().catch(() => {});
+      return;
+    }
+    if (typeof document !== 'undefined') {
+      if (document.fullscreenElement) void document.exitFullscreen?.();
+      else void document.documentElement.requestFullscreen?.();
+    }
+  };
+
   useEffect(() => {
     void refreshAll();
+    void loadPlotPrefs();
     return subscribeToDaemon();
-  }, [refreshAll, subscribeToDaemon]);
+  }, [refreshAll, loadPlotPrefs, subscribeToDaemon]);
 
-  // Re-render whenever the doc tree mutates (selection, edits, undo).
-  // Goes through `requestRender` which coalesces inside a ~33 ms
-  // window so slider drags don't fire 60 renders per second.
+  // Re-render whenever the doc tree mutates (selection, edits, undo),
+  // the current page changes, or the antialias toggle flips. Goes
+  // through `requestRender` which coalesces inside a ~33 ms window so
+  // slider drags don't fire 60 renders per second.
   const treeChangeKey = JSON.stringify(tree);
   useEffect(() => {
     if (tree && tree.children.length > 0) {
-      requestRender(0, renderWidth, renderHeight);
+      requestRender(currentPage, renderWidth, renderHeight);
     }
-  }, [treeChangeKey, renderWidth, renderHeight, requestRender, values, tree]);
+  }, [treeChangeKey, renderWidth, renderHeight, requestRender, values, tree,
+      currentPage, antialias]);
 
   const handleImport = async () => {
     if (!onPickCsv) return;
@@ -209,6 +236,17 @@ export function AppShell({
               bounds={render.bounds}
               selected={selected}
               onSelect={(p) => select(p === null ? [] : [p])}
+              renderWithContextMenu={(canvas, zoom) => (
+                <PlotContextMenu
+                  store={store}
+                  zoom={zoom}
+                  renderWidth={renderWidth}
+                  renderHeight={renderHeight}
+                  onToggleFullScreen={toggleFullScreen}
+                >
+                  {canvas}
+                </PlotContextMenu>
+              )}
             />
           ) : (
             <p data-testid="app-plot-empty">No plot yet — import a CSV.</p>
