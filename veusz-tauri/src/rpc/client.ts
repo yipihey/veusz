@@ -38,6 +38,14 @@ export function createRpc(transport: Transport) {
       widgetTypes: () => t('doc.widget_types') as Promise<string[]>,
       add: (parent: string, type: string, name?: string) =>
         t('doc.add', { parent, type, name }) as Promise<{ path: string }>,
+      insertTargets: (path: string) =>
+        t('doc.insert_targets', { path }) as Promise<{ targets: Record<string, string> }>,
+      new: (mode = 'graph') =>
+        t('doc.new', { mode }) as Promise<{ ok: true; changeset: number }>,
+      getCustoms: () =>
+        t('doc.get_customs') as Promise<Record<string, [string, unknown][]>>,
+      setCustoms: (ctype: string, entries: [string, unknown][]) =>
+        t('doc.set_customs', { ctype, entries }) as Promise<{ ok: true; changeset: number }>,
       set: (ops: DocSetOp[]) =>
         t('doc.set', { ops }) as Promise<{
           changeset: number;
@@ -159,6 +167,25 @@ export function createRpc(transport: Transport) {
           ok: true;
           len: number;
         }>,
+      create: (params: {
+        name: string; mode: 'expression' | 'range' | 'parametric';
+        expr?: string; nsteps?: number; min?: number; max?: number;
+        symerr?: string; linked?: boolean;
+      }) => t('data.create', params as Record<string, unknown>) as Promise<{ created: string[] }>,
+      create2d: (params: {
+        name: string; mode: 'expr' | 'xyz' | 'xyfunc';
+        expr?: string; xexpr?: string; yexpr?: string; zexpr?: string;
+        xstep?: number[]; ystep?: number[]; linked?: boolean;
+      }) => t('data.create_2d', params as Record<string, unknown>) as Promise<{ created: string[] }>,
+      filter: (params: {
+        filter: string; datasets: string[]; prefix?: string; suffix?: string;
+        invert?: boolean; replaceblanks?: boolean;
+      }) => t('data.filter', params as Record<string, unknown>) as Promise<{ created: string[] }>,
+      histogram: (params: {
+        expr: string; outbins: string; outvals: string; bins?: number;
+        min?: number | null; max?: number | null; islog?: boolean;
+        method?: string; cumulative?: string; errors?: boolean;
+      }) => t('data.histogram', params as Record<string, unknown>) as Promise<{ created: string[] }>,
       import: (kind: string, filename: string, options: Record<string, unknown> = {}) =>
         t('data.import', { kind, filename, options }) as Promise<{
           imported: string[];
@@ -286,6 +313,13 @@ export function createRpc(transport: Transport) {
           max?: number;
           choices?: string[];
         }>>,
+    },
+
+    eval: {
+      python: (code: string, capture_stdout = true) =>
+        t('eval.python', { code, capture_stdout }) as Promise<{
+          result: unknown; stdout: string; stderr: string;
+        }>,
     },
 
     fit: {

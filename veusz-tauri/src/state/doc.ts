@@ -47,6 +47,10 @@ export interface DocState {
   selected: string[];
   schema: WidgetSchema | null;
   values: Record<string, unknown>;
+  /** For the current selection, {widgetType: parentPath} of insertable
+   *  widgets (from doc.insert_targets). Drives Insert menu/toolbar
+   *  enablement + correct placement. */
+  insertTargets: Record<string, string>;
   render: RenderResult | null;
   canUndo: boolean;
   canRedo: boolean;
@@ -76,11 +80,16 @@ export interface DocState {
   /** Update policy: 'disable' | 'change' | seconds-as-string.
    *  Mirrors prefs.plot.update_policy. */
   updatePolicy: string;
+  /** Visibility of the dockable panels (View menu toggles). */
+  panels: { tree: boolean; inspector: boolean; datasets: boolean };
+  togglePanel: (p: 'tree' | 'inspector' | 'datasets') => void;
 
   // --- lifecycle ---
   refreshTree: () => Promise<void>;
   refreshDatasets: () => Promise<void>;
   refreshUndoState: () => Promise<void>;
+  /** Refresh insertTargets for the current selection (or root). */
+  refreshInsertTargets: () => Promise<void>;
   refreshAll: () => Promise<void>;
   clearError: () => void;
 
@@ -144,10 +153,15 @@ export interface DocState {
 
   // --- file ---
   filename: string | null;
+  /** Recent files (path + existence), for the File → Open Recent menu. */
+  recentFiles: { path: string; exists: boolean }[];
+  loadRecentFiles: () => Promise<void>;
+  clearRecentFiles: () => Promise<void>;
+  newDocument: (mode?: string) => Promise<void>;
   openFile: (path: string) => Promise<void>;
   saveFile: () => Promise<string | null>;
   saveFileAs: (path: string) => Promise<void>;
-  exportFile: (path: string, pages?: number[]) => Promise<string | null>;
+  exportFile: (path: string, pages?: number[], options?: Record<string, unknown>) => Promise<string | null>;
   refreshFileInfo: () => Promise<void>;
 
   // --- plot view (context-menu driven) ---
@@ -235,11 +249,13 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       selected: [],
       schema: null,
       values: {},
+      insertTargets: {},
       render: null,
       canUndo: false,
       canRedo: false,
       error: null,
       filename: null,
+      recentFiles: [],
       cutPaths: [],
       selectedDatasets: [],
       currentPage: 0,
@@ -248,6 +264,8 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       webgpuAvailable: null,
       gpuNativeAvailable: null,
       updatePolicy: 'change',
+      panels: { tree: true, inspector: true, datasets: true },
+      togglePanel: (p) => set((st) => ({ panels: { ...st.panels, [p]: !st.panels[p] } })),
 
       refreshTree: async () => {
         const tree = await guard(() => rpc.doc.tree());
@@ -264,6 +282,12 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         if (s) set({ canUndo: s.can_undo, canRedo: s.can_redo });
       },
 
+      refreshInsertTargets: async () => {
+        const sel = get().selected[0] ?? '/';
+        const r = await guard(() => rpc.doc.insertTargets(sel));
+        if (r) set({ insertTargets: r.targets });
+      },
+
       refreshAll: async () => {
         set({ error: null });
         await Promise.all([
@@ -271,6 +295,8 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
           get().refreshDatasets(),
           get().refreshUndoState(),
           get().refreshFileInfo(),
+          get().refreshInsertTargets(),
+          get().loadRecentFiles(),
         ]);
       },
 
@@ -281,11 +307,32 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         if (info) set({ filename: info.path });
       },
 
+      loadRecentFiles: async () => {
+        const r = await guard(() => rpc.file.recentList());
+        if (r) set({ recentFiles: r.paths });
+      },
+
+      clearRecentFiles: async () => {
+        await guard(() => rpc.file.recentClear());
+        set({ recentFiles: [] });
+      },
+
+      newDocument: async (mode = 'graph') => {
+        const r = await guard(() => rpc.doc.new(mode));
+        if (!r) return;
+        set({ filename: null, selected: [], schema: null, values: {} });
+        await get().refreshAll();
+      },
+
       openFile: async (path) => {
         const r = await guard(() => rpc.file.open(path));
         if (!r) return;
         set({ filename: r.path, selected: [], schema: null, values: {} });
-        await Promise.all([get().refreshTree(), get().refreshDatasets(), get().refreshUndoState()]);
+        await Promise.all([
+          get().refreshTree(), get().refreshDatasets(),
+          get().refreshUndoState(), get().refreshInsertTargets(),
+          get().loadRecentFiles(),
+        ]);
       },
 
       saveFile: async () => {
@@ -301,18 +348,25 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
 
       saveFileAs: async (path) => {
         const r = await guard(() => rpc.file.saveAs(path));
-        if (r) set({ filename: r.path });
+        if (r) {
+          set({ filename: r.path });
+          void get().loadRecentFiles();
+        }
       },
 
-      exportFile: async (path, pages) => {
-        const r = await guard(() => rpc.file.export(path, pages));
+      exportFile: async (path, pages, options) => {
+        const r = await guard(() => rpc.file.export(path, pages, options));
         return r?.path ?? null;
       },
 
       select: async (paths) => {
+        // Set the selection synchronously so the Insert targets + UI update
+        // together, then load the inspector schema/values asynchronously.
+        set({ selected: paths });
+        void get().refreshInsertTargets();
         // Empty selection: clear inspector schema + values.
         if (paths.length === 0) {
-          set({ selected: [], schema: null, values: {} });
+          set({ schema: null, values: {} });
           return;
         }
         // Single selection: load that widget's schema + current values.
@@ -320,18 +374,18 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
           const path = paths[0];
           const widgetType = findWidgetType(get().tree, path);
           if (!widgetType) {
-            set({ selected: [path], schema: null, values: {} });
+            set({ schema: null, values: {} });
             return;
           }
           const schema = await guard(() => rpc.doc.schema(widgetType));
           if (!schema) {
-            set({ selected: [path] });
+            set({ schema: null, values: {} });
             return;
           }
           const settingPaths = collectSettingPaths(schema, path);
           const values =
             (await guard(() => rpc.doc.get(settingPaths))) ?? {};
-          set({ selected: [path], schema, values });
+          set({ schema, values });
           return;
         }
         // Multi-selection: ask the daemon for the intersection schema
@@ -339,7 +393,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         // from a single doc.get over the union of common paths.
         const common = await guard(() => rpc.doc.commonSchema(paths));
         if (!common) {
-          set({ selected: paths });
+          set({ schema: null, values: {} });
           return;
         }
         // For multi-edit, the "value" presented for any leaf is the
@@ -351,7 +405,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         const settingPaths = collectSettingPaths(common, paths[0]);
         const values =
           (await guard(() => rpc.doc.get(settingPaths))) ?? {};
-        set({ selected: paths, schema: common, values });
+        set({ schema: common, values });
       },
 
       setValue: async (path, value) => {
@@ -768,6 +822,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
           // call shows up in the inspector.
           void get().refreshTree();
           void get().refreshUndoState();
+          void get().refreshInsertTargets();
           const sel = get().selected;
           if (sel.length) void get().select(sel);
         });

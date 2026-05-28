@@ -78,6 +78,35 @@ def register(ctx):
         })
         return {'path': full}
 
+    def insert_targets(path: str = '/', **_):
+        """For the (selected) widget at ``path``, return ``{typename:
+        parent_path}`` giving, for every widget type, the nearest ancestor
+        (self first, then walking up to the root) that will accept it as a
+        child. Mirrors the Qt GUI's enablement: add under the selection when
+        it fits, else as a sibling. Types with no valid target are omitted —
+        the frontend greys out their Insert action."""
+        from ...document.widgetfactory import thefactory
+        try:
+            sel = (_resolve_widget(path)
+                   if path and path != '/' else ctx.document.basewidget)
+        except RpcError:
+            sel = ctx.document.basewidget
+        chain = []
+        w = sel
+        while w is not None:
+            chain.append(w)
+            w = w.parent
+        out = {}
+        for tname, cls in thefactory.regwidgets.items():
+            for anc in chain:
+                try:
+                    if cls.willAllowParent(anc):
+                        out[tname] = anc.path
+                        break
+                except Exception:
+                    continue
+        return {'targets': out}
+
     def remove(path: str, **_):
         ci = _ci(ctx)
         ci.Remove(path)
@@ -446,13 +475,60 @@ def register(ctx):
         widgets = [_resolve_widget(p) for p in paths]
         return _schema.extract_common_schema(widgets)
 
+    def new(mode: str = 'graph', **_):
+        """Reset to a fresh document. mode ∈ {graph, polar, ternary, graph3d}."""
+        ctx.document.wipe()
+        if mode in ('graph', 'polar', 'ternary', 'graph3d'):
+            ctx.document.makeDefaultDoc(mode)
+        # Drop the cached CommandInterface; its currentwidget is now stale.
+        if getattr(ctx, '_ci_cache', None) is not None:
+            ctx._ci_cache = None
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset, 'paths': ['/'], 'kind': 'new',
+        })
+        ctx.notifier.publish('data.changed', {'names': [], 'kind': 'wipe'})
+        return {'ok': True, 'changeset': ctx.document.changeset}
+
+    def get_customs(**_):
+        """Return the document's custom definitions grouped by type."""
+        ev = ctx.document.evaluate
+
+        def jsonable(v):
+            try:
+                return [list(t) for t in v]
+            except TypeError:
+                return v
+        return {
+            'definition': [[str(n), val] for n, val in ev.def_definitions],
+            'import': [[str(n), val] for n, val in ev.def_imports],
+            'color': [[str(n), val] for n, val in ev.def_colors],
+            'colormap': [[str(n), jsonable(val)] for n, val in ev.def_colormaps],
+        }
+
+    def set_customs(ctype: str, entries: list, **_):
+        """Replace the custom definitions of one type with `entries`
+        (a list of [name, value] pairs)."""
+        from ...document import operations
+        if ctype not in operations.OperationSetCustom.type_to_attr:
+            raise RpcError(INVALID_PARAMS, f'unknown custom type: {ctype!r}')
+        vals = [[str(e[0]), e[1]] for e in (entries or [])]
+        ctx.document.applyOperation(operations.OperationSetCustom(ctype, vals))
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset, 'paths': ['/'], 'kind': 'customs',
+        })
+        return {'ok': True, 'changeset': ctx.document.changeset}
+
     return {
         'doc.tree': tree,
+        'doc.new': new,
+        'doc.get_customs': get_customs,
+        'doc.set_customs': set_customs,
         'doc.schema': schema,
         'doc.schema_at': schema_at,
         'doc.schema_all': schema_all,
         'doc.widget_types': widget_types,
         'doc.add': add,
+        'doc.insert_targets': insert_targets,
         'doc.remove': remove,
         'doc.set': set_,
         'doc.get': get,

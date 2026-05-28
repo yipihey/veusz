@@ -12,6 +12,30 @@ async def test_empty_tree(daemon):
 
 
 @pytest.mark.asyncio
+async def test_insert_targets_resolves_parents(daemon):
+    await daemon.call('doc.add', parent='/', type='page')
+    await daemon.call('doc.add', parent='/page1', type='graph')
+    await daemon.call('doc.add', parent='/page1/graph1', type='xy')
+
+    # Root: only a page can be inserted, under the document root.
+    root = (await daemon.call('doc.insert_targets', path='/'))['targets']
+    assert root.get('page') == '/'
+    assert 'xy' not in root
+
+    # On a graph: xy/axis/key go under the graph; graph goes under the page;
+    # page still resolves to root.
+    g = (await daemon.call('doc.insert_targets', path='/page1/graph1'))['targets']
+    assert g.get('xy') == '/page1/graph1'
+    assert g.get('graph') == '/page1'
+    assert g.get('page') == '/'
+
+    # On a leaf (xy): inserting an xy resolves to a SIBLING under the parent
+    # graph, mirroring the Qt GUI's add-as-sibling behaviour.
+    leaf = (await daemon.call('doc.insert_targets', path='/page1/graph1/xy1'))['targets']
+    assert leaf.get('xy') == '/page1/graph1'
+
+
+@pytest.mark.asyncio
 async def test_add_widgets_and_walk_tree(daemon):
     await daemon.call('doc.add', parent='/', type='page')
     await daemon.call('doc.add', parent='/page1', type='graph')

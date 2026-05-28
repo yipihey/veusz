@@ -52,6 +52,12 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       { name: 'y', type: 'Dataset', len: 5, shape: [5] },
     ],
     'doc.can_undo': () => ({ can_undo: canUndo, can_redo: canRedo }),
+    'doc.insert_targets': () => ({ targets: {
+      page: '/', graph: '/page1', xy: '/page1/graph1',
+      axis: '/page1/graph1', function: '/page1/graph1',
+      bar: '/page1/graph1', histo: '/page1/graph1', image: '/page1/graph1',
+      contour: '/page1/graph1', key: '/page1/graph1', label: '/page1',
+    } }),
     'doc.schema': () => XY_SCHEMA,
     'doc.get': () => ({ '/page1/graph1/xy1/marker': 'circle' }),
     'doc.set': (params) => {
@@ -72,6 +78,27 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       return { changeset: 0, can_undo: false, can_redo: true };
     },
     'file.info': () => ({ path: null, changeset: 0, modified: false }),
+    'file.recent_list': () => ({ paths: [{ path: '/docs/recent-a.vsz', exists: true }] }),
+    'doc.schema_at': () => ({
+      name: 'StyleSheet', mode: 'instance', usertext: '', descr: '',
+      setnsmode: 'widgetsettings', settings: [], subgroups: [],
+    }),
+    'prefs.list': () => [
+      { key: 'plot.antialias', value: true, default: true, type: 'boolean' },
+      { key: 'render.default_dpi', value: 96, default: 96, type: 'number', min: 36, max: 600 },
+      { key: 'ui.theme', value: 'system', default: 'system', type: 'string', choices: ['system', 'light', 'dark'] },
+    ],
+    'file.formats': () => [
+      { extensions: ['pdf'], description: 'PDF' },
+      { extensions: ['png'], description: 'PNG' },
+    ],
+    'data.peek': () => ({ values: [1, 2, 3], start: 0, total: 3 }),
+    'data.set': (p) => ({ ok: true, len: (p as { values: number[] }).values.length }),
+    'data.create': (p) => ({ created: [(p as { name: string }).name] }),
+    'doc.new': () => ({ ok: true, changeset: 0 }),
+    'doc.get_customs': () => ({ definition: [['pi', '3.14159']], import: [], color: [], colormap: [] }),
+    'doc.set_customs': () => ({ ok: true, changeset: 1 }),
+    'eval.python': (p) => ({ result: 42, stdout: `ran: ${(p as { code: string }).code}\n`, stderr: '' }),
     'file.export': (params) => ({
       ok: true,
       path: (params as { path: string }).path,
@@ -243,6 +270,182 @@ describe('AppShell (mock RPC)', () => {
     fireEvent.click(screen.getByTestId('toolbar-export'));
     await waitFor(() => expect(exports.length).toBe(1));
     expect((exports[0] as { path: string }).path).toBe('/tmp/out.pdf');
+  });
+
+  it('renders the top menu bar (File/Edit/Insert/…)', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menubar'));
+    expect(screen.getByTestId('menu-File')).toBeInTheDocument();
+    expect(screen.getByTestId('menu-Edit')).toBeInTheDocument();
+    expect(screen.getByTestId('menu-Insert')).toBeInTheDocument();
+    expect(screen.getByTestId('menu-Data')).toBeInTheDocument();
+    // Insert toolbar exposes the common widgets.
+    expect(screen.getByTestId('tool-add.graph')).toBeInTheDocument();
+  });
+
+  it('toolbar insert button adds a widget via the registry → doc.add', async () => {
+    const added: Array<Record<string, unknown>> = [];
+    const { store } = rig({
+      'doc.add': (p) => { added.push(p); return { path: '/page1/graph2' }; },
+    });
+    render(<AppShell store={store} />);
+    // Enabled once insert targets load for the current selection.
+    await waitFor(() => expect(screen.getByTestId('tool-add.graph')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('tool-add.graph'));
+    await waitFor(() => expect(added.some((a) => a.type === 'graph')).toBe(true));
+  });
+
+  it('opening the File menu reveals Open, then clicking it invokes the picker', async () => {
+    const onPickVsz = vi.fn().mockResolvedValue('/tmp/x.vsz');
+    const opens: string[] = [];
+    const { store } = rig({
+      'file.open': (p) => { opens.push((p as { path: string }).path); return { ok: true, path: (p as { path: string }).path, changeset: 0 }; },
+    });
+    render(<AppShell store={store} onPickVsz={onPickVsz} />);
+    await waitFor(() => screen.getByTestId('menu-File'));
+    fireEvent.click(screen.getByTestId('menu-File'));
+    fireEvent.click(screen.getByTestId('menu-item-file.open'));
+    await waitFor(() => expect(opens).toEqual(['/tmp/x.vsz']));
+  });
+
+  it('Edit → Default styles opens the stylesheet dialog', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Edit'));
+    fireEvent.click(screen.getByTestId('menu-Edit'));
+    fireEvent.click(screen.getByTestId('menu-item-edit.stylesheet'));
+    await waitFor(() => expect(screen.getByTestId('dialog-stylesheet')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('dialog-close'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('dialog-stylesheet')).not.toBeInTheDocument());
+  });
+
+  it('File → Open Recent lists recent files and opens one', async () => {
+    const opens: string[] = [];
+    const { store } = rig({
+      'file.open': (p) => { opens.push((p as { path: string }).path); return { ok: true, path: (p as { path: string }).path, changeset: 0 }; },
+    });
+    render(<AppShell store={store} />);
+    // Wait until the recent list has loaded into the store.
+    await waitFor(() => expect(store.getState().recentFiles.length).toBe(1));
+    fireEvent.click(screen.getByTestId('menu-File'));
+    fireEvent.mouseEnter(screen.getByTestId('submenu-Open Recent'));
+    await waitFor(() => screen.getByTestId('recent-recent-a.vsz'));
+    fireEvent.click(screen.getByTestId('recent-recent-a.vsz'));
+    await waitFor(() => expect(opens).toEqual(['/docs/recent-a.vsz']));
+  });
+
+  it('Edit → Preferences opens a schema-driven dialog and writes via prefs.set', async () => {
+    const sets: Array<Record<string, unknown>> = [];
+    const { store } = rig({
+      'prefs.set': (p) => { sets.push(p); return { ok: true, ...(p as Record<string, unknown>) }; },
+    });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Edit'));
+    fireEvent.click(screen.getByTestId('menu-Edit'));
+    fireEvent.click(screen.getByTestId('menu-item-edit.prefs'));
+    await waitFor(() => screen.getByTestId('pref-ui.theme'));
+    fireEvent.change(screen.getByTestId('pref-ui.theme'), { target: { value: 'dark' } });
+    await waitFor(() => expect(sets.some((x) => x.key === 'ui.theme' && x.value === 'dark')).toBe(true));
+  });
+
+  it('File → Export opens the dialog and exports with DPI + options', async () => {
+    const onPickExportPath = vi.fn().mockResolvedValue('/tmp/out.png');
+    const exports: Array<Record<string, unknown>> = [];
+    const { store } = rig({
+      'file.export': (p) => { exports.push(p); return { ok: true, path: (p as { path: string }).path, pages: [0] }; },
+    });
+    render(<AppShell store={store} onPickExportPath={onPickExportPath} />);
+    await waitFor(() => screen.getByTestId('menu-File'));
+    fireEvent.click(screen.getByTestId('menu-File'));
+    fireEvent.click(screen.getByTestId('menu-item-file.export'));
+    await waitFor(() => screen.getByTestId('export-run'));
+    fireEvent.change(screen.getByTestId('export-dpi'), { target: { value: '200' } });
+    fireEvent.click(screen.getByTestId('export-run'));
+    await waitFor(() => expect(exports.length).toBe(1));
+    const opts = exports[0].options as Record<string, unknown>;
+    expect(opts.bitmapdpi).toBe(200);
+  });
+
+  it('Data → Editor opens the tabular data editor', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-item-data.edit'));
+    await waitFor(() => screen.getByTestId('dataedit'));
+    await waitFor(() => expect(screen.getByTestId('dataedit-values')).toHaveValue('1\n2\n3'));
+  });
+
+  it('Data → Create opens the dataset-create dialog and creates', async () => {
+    const created: string[] = [];
+    const { store } = rig({
+      'data.create': (p) => { created.push((p as { name: string }).name); return { created: [(p as { name: string }).name] }; },
+    });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-Data'));
+    fireEvent.click(screen.getByTestId('menu-item-data.create'));
+    await waitFor(() => screen.getByTestId('datadlg-create1d'));
+    fireEvent.change(screen.getByTestId('dc-name'), { target: { value: 'mydata' } });
+    fireEvent.change(screen.getByTestId('dc-expr'), { target: { value: 'x*2' } });
+    fireEvent.click(screen.getByTestId('dc-create'));
+    await waitFor(() => expect(created).toContain('mydata'));
+  });
+
+  it('Tools → Python console runs code via eval.python', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Tools'));
+    fireEvent.click(screen.getByTestId('menu-Tools'));
+    fireEvent.click(screen.getByTestId('menu-item-tools.console'));
+    await waitFor(() => screen.getByTestId('console-input'));
+    fireEvent.change(screen.getByTestId('console-input'), { target: { value: '1+1' } });
+    fireEvent.click(screen.getByTestId('console-run'));
+    await waitFor(() => expect(screen.getByTestId('console-log').textContent).toContain('ran: 1+1'));
+  });
+
+  it('Edit → Custom definitions loads the current definitions', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-Edit'));
+    fireEvent.click(screen.getByTestId('menu-Edit'));
+    fireEvent.click(screen.getByTestId('menu-item-edit.custom'));
+    await waitFor(() => screen.getByTestId('custom'));
+    await waitFor(() => expect(screen.getByTestId('custom-name-0')).toHaveValue('pi'));
+  });
+
+  it('View → Document tree toggles the tree panel', async () => {
+    const { store } = rig();
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('app-tree'));
+    fireEvent.click(screen.getByTestId('menu-View'));
+    fireEvent.click(screen.getByTestId('menu-item-view.tree'));
+    await waitFor(() => expect(screen.queryByTestId('app-tree')).not.toBeInTheDocument());
+  });
+
+  it('File → New resets the document via doc.new', async () => {
+    const news: number[] = [];
+    const { store } = rig({ 'doc.new': () => { news.push(1); return { ok: true, changeset: 0 }; } });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('menu-File'));
+    fireEvent.click(screen.getByTestId('menu-File'));
+    fireEvent.click(screen.getByTestId('menu-item-file.new'));
+    await waitFor(() => expect(news.length).toBe(1));
+  });
+
+  it('shows a page bar for multi-page documents', async () => {
+    const twoPages = {
+      name: '', path: '/', type: 'document', children: [
+        { name: 'page1', path: '/page1', type: 'page', children: [] },
+        { name: 'page2', path: '/page2', type: 'page', children: [] },
+      ],
+    };
+    const { store } = rig({ 'doc.tree': () => twoPages });
+    render(<AppShell store={store} />);
+    await waitFor(() => screen.getByTestId('page-bar'));
+    expect(screen.getByTestId('page-label')).toHaveTextContent('Page 1 / 2');
   });
 
   it('defaults to the qt backend in the selector', async () => {

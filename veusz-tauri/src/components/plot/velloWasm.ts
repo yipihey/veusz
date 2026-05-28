@@ -32,20 +32,27 @@ interface VelloModule {
   ) => Promise<void>;
 }
 
-const WASM_BASE = '/wasm';
-const WASM_GLUE = `${WASM_BASE}/veusz_paint_wasm.js`;
-const WASM_BINARY = `${WASM_BASE}/veusz_paint_wasm_bg.wasm`;
+/** Base URL for the runtime assets. Defaults to the locally-synced copy
+ *  (good for the offline Tauri desktop app). Embeds on the web override it
+ *  to the CORS-enabled, versioned GitHub Pages host, e.g.:
+ *    globalThis.__VEUSZ_WASM_BASE__ =
+ *      'https://yipihey.github.io/veusz/figure-runtime/v0.1.0'
+ *  (Pages serves .wasm as application/wasm with access-control-allow-origin: *). */
+function wasmBase(): string {
+  const g = globalThis as unknown as { __VEUSZ_WASM_BASE__?: string };
+  return (g.__VEUSZ_WASM_BASE__ ?? '/wasm').replace(/\/+$/, '');
+}
 
 let modulePromise: Promise<VelloModule> | null = null;
 
 function loadModule(): Promise<VelloModule> {
   if (!modulePromise) {
     modulePromise = (async () => {
-      const glue = WASM_GLUE;
-      const mod = (await import(/* @vite-ignore */ glue)) as VelloModule;
+      const base = wasmBase();
+      const mod = (await import(/* @vite-ignore */ `${base}/veusz_paint_wasm.js`)) as VelloModule;
       // Pass the wasm URL explicitly rather than relying on import.meta.url
-      // resolution of the glue served from public/.
-      await mod.default({ module_or_path: WASM_BINARY });
+      // resolution of the glue.
+      await mod.default({ module_or_path: `${base}/veusz_paint_wasm_bg.wasm` });
       return mod;
     })().catch((e) => {
       // Reset so a later attempt can retry (e.g. after a fix/reload).

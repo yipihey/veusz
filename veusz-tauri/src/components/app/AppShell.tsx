@@ -23,6 +23,16 @@ import { PlotCanvas } from '../plot/PlotCanvas';
 import { PlotContextMenu } from '../plot/PlotContextMenu';
 import { flattenTreePaths, computeSelection } from './selection';
 import { useKeyboardShortcuts } from '../../keys/shortcuts';
+import { MenuBar } from '../menu/MenuBar';
+import { Toolbars } from '../menu/Toolbars';
+import { StylesheetEditor } from '../stylesheet/StylesheetEditor';
+import { PreferencesDialog } from '../preferences/PreferencesDialog';
+import { ExportDialog } from '../file/ExportDialog';
+import { DataEditDialog } from '../data/DataEditDialog';
+import { DataDialog, type DataMode } from '../data/DataDialog';
+import { CustomDialog } from '../data/CustomDialog';
+import { ConsolePanel } from '../tools/ConsolePanel';
+import type { ActionCtx, DialogId } from '../../actions/types';
 
 export interface AppShellProps {
   store: UseBoundStore<StoreApi<DocState>>;
@@ -56,6 +66,10 @@ export function AppShell({
   const error = store((s) => s.error);
   const filename = store((s) => s.filename);
   const currentPage = store((s) => s.currentPage);
+  const panels = store((s) => s.panels);
+  const setPage = store((s) => s.setPage);
+  const nextPage = store((s) => s.nextPage);
+  const prevPage = store((s) => s.prevPage);
   const antialias = store((s) => s.antialias);
   const backend = store((s) => s.backend);
   const setBackend = store((s) => s.setBackend);
@@ -86,6 +100,8 @@ export function AppShell({
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   // Transient notice (e.g. the Edit-data stub message).
   const [notice, setNotice] = useState<string | null>(null);
+  // Active modal dialog (null = none).
+  const [dialog, setDialog] = useState<DialogId | null>(null);
   // Anchor for dataset Shift-range selection.
   const dsAnchorRef = useRef<string | null>(null);
 
@@ -222,8 +238,34 @@ export function AppShell({
     if (path) await exportFile(path);
   };
 
+  // Context handed to the menu bar / toolbars. Dialog launchers route to
+  // existing flows where they exist (CSV import) and notify a "later phase"
+  // message otherwise — tracked against the parity checklist.
+  const actionCtx: ActionCtx = {
+    store,
+    openDialog: (id: DialogId) => {
+      if (id === 'importCsv') { void handleImport(); return; }
+      if (id !== 'fit') { setDialog(id); return; }
+      notify(`"${id}" dialog is coming in a later phase.`);
+    },
+    pick: {
+      vsz: onPickVsz,
+      savePath: onPickSavePath,
+      exportPath: onPickExportPath,
+      csv: onPickCsv,
+    },
+    toggleFullScreen,
+    notify,
+    openUrl: (url: string) => {
+      try { window.open(url, '_blank', 'noopener'); }
+      catch { notify('Cannot open links here.'); }
+    },
+  };
+
   return (
     <div data-testid="app-shell" style={layout.root}>
+      <MenuBar store={store} ctx={actionCtx} />
+      <Toolbars store={store} ctx={actionCtx} />
       <Toolbar
         canUndo={canUndo}
         canRedo={canRedo}
@@ -242,7 +284,27 @@ export function AppShell({
         onExport={onPickExportPath ? handleExport : undefined}
       />
 
+      {(tree?.children.length ?? 0) > 1 && (
+        <div data-testid="page-bar" style={layout.pagebar}>
+          <button type="button" data-testid="page-prev" disabled={currentPage <= 0}
+            onClick={() => prevPage()}>◀</button>
+          <span data-testid="page-label">
+            Page {currentPage + 1} / {tree?.children.length ?? 1}
+          </span>
+          <button type="button" data-testid="page-next"
+            disabled={currentPage >= ((tree?.children.length ?? 1) - 1)}
+            onClick={() => nextPage()}>▶</button>
+          <select data-testid="page-select" value={currentPage}
+            onChange={(e) => setPage(Number(e.target.value))}>
+            {(tree?.children ?? []).map((c, i) => (
+              <option key={c.path} value={i}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div style={layout.body}>
+        {panels.tree && (
         <aside data-testid="app-tree" style={layout.sidebar}>
           <h4>Document</h4>
           {tree ? (
@@ -269,6 +331,7 @@ export function AppShell({
             <p data-testid="app-tree-loading">Loading…</p>
           )}
         </aside>
+        )}
 
         <main data-testid="app-plot" style={layout.center}>
           {render ? (
@@ -297,6 +360,7 @@ export function AppShell({
           )}
         </main>
 
+        {panels.inspector && (
         <aside data-testid="app-inspector" style={layout.sidebar}>
           {schema && selected.length > 0 ? (
             <Inspector
@@ -327,6 +391,7 @@ export function AppShell({
             <p data-testid="app-inspector-empty">Select a widget.</p>
           )}
         </aside>
+        )}
       </div>
 
       <footer data-testid="app-datasets" style={layout.footer}>
@@ -335,6 +400,7 @@ export function AppShell({
             {notice}
           </span>
         )}
+        {panels.datasets && (
         <DatasetPanel
           datasets={datasets}
           selected={selectedDatasets}
@@ -356,7 +422,74 @@ export function AppShell({
             </DatasetFileContextMenu>
           )}
         />
+        )}
       </footer>
+
+      {dialog && (
+        <div
+          data-testid="modal-backdrop"
+          onClick={() => setDialog(null)}
+          style={layout.backdrop}
+        >
+          <div
+            data-testid={`dialog-${dialog}`}
+            onClick={(e) => e.stopPropagation()}
+            style={layout.dialog}
+          >
+            <div style={layout.dialogHeader}>
+              <strong>{DIALOG_TITLES[dialog] ?? dialog}</strong>
+              <button type="button" data-testid="dialog-close" onClick={() => setDialog(null)}>
+                Close
+              </button>
+            </div>
+            <div style={{ padding: 12 }}>
+              {dialog === 'stylesheet' && (
+                <StylesheetEditor
+                  rpc={store.getState().rpc}
+                  onChange={(p, v) => { void store.getState().setValue(p, v); }}
+                />
+              )}
+              {dialog === 'preferences' && (
+                <PreferencesDialog rpc={store.getState().rpc} />
+              )}
+              {dialog === 'export' && (
+                <ExportDialog
+                  store={store}
+                  onPickPath={onPickExportPath}
+                  onClose={() => setDialog(null)}
+                  notify={notify}
+                />
+              )}
+              {dialog === 'dataEdit' && (
+                <DataEditDialog store={store} notify={notify} />
+              )}
+              {dialog === 'custom' && (
+                <CustomDialog store={store} notify={notify} />
+              )}
+              {dialog === 'console' && (
+                <ConsolePanel store={store} />
+              )}
+              {DATA_MODE[dialog] && (
+                <DataDialog
+                  store={store} mode={DATA_MODE[dialog]!}
+                  onClose={() => setDialog(null)} notify={notify}
+                />
+              )}
+              {dialog === 'about' && (
+                <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                  <p><strong>Veusz</strong> — scientific plotting.</p>
+                  <p>Web frontend (Tauri + React) over the veuszd daemon.</p>
+                  <p>
+                    <a href="https://veusz.github.io/" target="_blank" rel="noreferrer">
+                      veusz.github.io
+                    </a>
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -498,6 +631,27 @@ function Toolbar({
   );
 }
 
+const DIALOG_TITLES: Partial<Record<DialogId, string>> = {
+  stylesheet: 'Default styles',
+  preferences: 'Preferences',
+  export: 'Export',
+  dataEdit: 'Data editor',
+  dataCreate: 'Create dataset',
+  dataCreate2d: 'Create 2D dataset',
+  filter: 'Filter data',
+  histogram: 'Histogram',
+  custom: 'Custom definitions',
+  console: 'Python console',
+  about: 'About Veusz',
+};
+
+const DATA_MODE: Partial<Record<DialogId, DataMode>> = {
+  dataCreate: 'create1d',
+  dataCreate2d: 'create2d',
+  filter: 'filter',
+  histogram: 'histogram',
+};
+
 function lastSegment(path: string): string {
   const parts = path.split('/').filter(Boolean);
   return parts.length ? parts[parts.length - 1] : '';
@@ -526,4 +680,20 @@ const layout = {
   center: { flex: 1, padding: 8, overflow: 'auto', display: 'flex',
             alignItems: 'flex-start', justifyContent: 'center' },
   footer: { padding: 8, borderTop: '1px solid #ddd', maxHeight: 200, overflow: 'auto' },
+  pagebar: {
+    display: 'flex', alignItems: 'center', gap: 8, padding: '3px 8px',
+    borderBottom: '1px solid #eee', background: '#fafafa', font: '12px system-ui, sans-serif',
+  },
+  backdrop: {
+    position: 'fixed' as const, inset: 0, background: 'rgba(0,0,0,0.35)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000,
+  },
+  dialog: {
+    background: '#fff', borderRadius: 6, minWidth: 420, maxWidth: '90vw',
+    maxHeight: '85vh', overflow: 'auto', boxShadow: '0 8px 40px rgba(0,0,0,0.3)',
+  },
+  dialogHeader: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '8px 12px', borderBottom: '1px solid #eee',
+  },
 };

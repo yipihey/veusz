@@ -414,11 +414,95 @@ def register(ctx):
         })
         return {'pasted': new_names}
 
+    def _created(before):
+        after = set(ctx.document.data.keys())
+        names = sorted(after - before)
+        ctx.notifier.publish('data.changed', {'names': names, 'kind': 'create'})
+        return names
+
+    def create(name: str, mode: str = 'expression', expr: str = '',
+               nsteps: int = 100, min: float = 0.0, max: float = 1.0,
+               symerr: str = None, linked: bool = True, **_):
+        """Create a 1-D dataset. mode ∈ {expression, range, parametric}."""
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        before = set(ctx.document.data.keys())
+        se = symerr or None
+        try:
+            if mode == 'range':
+                ci.SetDataRange(name, int(nsteps), (float(min), float(max)),
+                                symerr=(float(symerr) if symerr else None),
+                                linked=linked)
+            elif mode == 'parametric':
+                ci.SetDataExpression(name, expr, symerr=se, linked=linked,
+                                     parametric=(float(min), float(max), int(nsteps)))
+            else:  # expression
+                ci.SetDataExpression(name, expr, symerr=se, linked=linked)
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'create failed: {e}') from e
+        return {'created': _created(before)}
+
+    def create_2d(name: str, mode: str = 'expr', expr: str = '',
+                  xexpr: str = '', yexpr: str = '', zexpr: str = '',
+                  xstep: list = None, ystep: list = None, linked: bool = True, **_):
+        """Create a 2-D dataset. mode ∈ {expr, xyz, xyfunc}."""
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        before = set(ctx.document.data.keys())
+        try:
+            if mode == 'xyz':
+                ci.SetData2DExpressionXYZ(name, xexpr, yexpr, zexpr, linked=linked)
+            elif mode == 'xyfunc':
+                ci.SetData2DXYFunc(name, tuple(xstep), tuple(ystep), expr, linked=linked)
+            else:  # expr
+                ci.SetData2DExpression(name, expr, linked=linked)
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'create_2d failed: {e}') from e
+        return {'created': _created(before)}
+
+    def filter_(filter: str, datasets: list, prefix: str = '', suffix: str = '',
+                invert: bool = False, replaceblanks: bool = False, **_):
+        """Filter datasets by a boolean expression (needs prefix or suffix)."""
+        if not prefix and not suffix:
+            raise RpcError(INVALID_PARAMS, 'filter needs a prefix or suffix')
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        before = set(ctx.document.data.keys())
+        try:
+            ci.FilterDatasets(filter, list(datasets), prefix=prefix, suffix=suffix,
+                              invert=invert, replaceblanks=replaceblanks)
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'filter failed: {e}') from e
+        return {'created': _created(before)}
+
+    def histogram(expr: str, outbins: str, outvals: str,
+                  bins: int = 10, min=None, max=None, islog: bool = False,
+                  manual: list = None, method: str = 'counts',
+                  cumulative: str = 'none', errors: bool = False, **_):
+        """Create a histogram (bin-positions + values datasets)."""
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        before = set(ctx.document.data.keys())
+        binparams = None if manual else (
+            int(bins), 'Auto' if min is None else float(min),
+            'Auto' if max is None else float(max), bool(islog))
+        try:
+            ci.CreateHistogram(expr, outbins, outvals, binparams=binparams,
+                               binmanual=manual, method=method,
+                               cumulative=cumulative, errors=errors)
+        except Exception as e:
+            raise RpcError(INVALID_PARAMS, f'histogram failed: {e}') from e
+        return {'created': _created(before)}
+
     return {
         'data.list': list_,
         'data.peek': peek,
         'data.stats': stats,
         'data.set': set_,
+        'data.create': create,
+        'data.create_2d': create_2d,
+        'data.filter': filter_,
+        'data.histogram': histogram,
         'data.import': import_,
         'data.preview_csv': preview_csv,
         'data.delete': delete,
