@@ -15,6 +15,8 @@ import { Tree, type SelectMode } from '../tree/Tree';
 import { TreeContextMenu } from '../tree/TreeContextMenu';
 import { Inspector } from '../inspector/Inspector';
 import { DatasetPanel } from '../data/DatasetPanel';
+import { DatasetContextMenu } from '../data/DatasetContextMenu';
+import { DatasetFileContextMenu } from '../data/DatasetFileContextMenu';
 import { PlotCanvas } from '../plot/PlotCanvas';
 import { PlotContextMenu } from '../plot/PlotContextMenu';
 import { flattenTreePaths, computeSelection } from './selection';
@@ -53,6 +55,7 @@ export function AppShell({
   const filename = store((s) => s.filename);
   const currentPage = store((s) => s.currentPage);
   const antialias = store((s) => s.antialias);
+  const selectedDatasets = store((s) => s.selectedDatasets);
 
   const refreshAll = store((s) => s.refreshAll);
   const requestRender = store((s) => s.requestRender);
@@ -75,6 +78,10 @@ export function AppShell({
   // Right-click target + inline-rename target for the tree context menu.
   const [ctxPath, setCtxPath] = useState<string | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  // Transient notice (e.g. the Edit-data stub message).
+  const [notice, setNotice] = useState<string | null>(null);
+  // Anchor for dataset Shift-range selection.
+  const dsAnchorRef = useRef<string | null>(null);
 
   // Install global keyboard shortcuts (cut/copy/paste/undo/redo/etc.).
   // F2 routes up here to flip the selected tree row into rename mode.
@@ -107,6 +114,31 @@ export function AppShell({
   const handleRenameCommit = (path: string, newName: string | null) => {
     setRenamingPath(null);
     if (newName) void store.getState().renameWidget(path, newName);
+  };
+
+  // Dataset-panel multi-select (replace/toggle/range over the flat
+  // dataset order). Mirrors the tree's gesture model.
+  const applyDatasetSelection = (name: string, mode: SelectMode = 'replace') => {
+    const order = store.getState().datasets.map((d) => d.name);
+    const { selection, anchor } = computeSelection(
+      store.getState().selectedDatasets, name, mode, order, dsAnchorRef.current,
+    );
+    dsAnchorRef.current = anchor;
+    store.getState().selectDatasets(selection);
+    // Single-select also drives the details pane via the existing
+    // onSelect contract used by the host below.
+  };
+
+  const handleDatasetContextMenu = (name: string) => {
+    if (!store.getState().selectedDatasets.includes(name)) {
+      dsAnchorRef.current = name;
+      store.getState().selectDatasets([name]);
+    }
+  };
+
+  const notify = (message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(null), 3000);
   };
 
   // Full screen: prefer the Tauri window API (native feel); fall back
@@ -270,10 +302,31 @@ export function AppShell({
       </div>
 
       <footer data-testid="app-datasets" style={layout.footer}>
+        {notice && (
+          <span data-testid="app-notice" role="status" style={{ color: '#555' }}>
+            {notice}
+          </span>
+        )}
         <DatasetPanel
           datasets={datasets}
-          onSelect={() => {}}
+          selected={selectedDatasets}
+          onSelect={applyDatasetSelection}
           onImport={onPickCsv ? handleImport : undefined}
+          renderRowMenu={(name, node) => (
+            <DatasetContextMenu
+              store={store}
+              targetName={name}
+              onOpen={() => handleDatasetContextMenu(name)}
+              onNotify={notify}
+            >
+              {node}
+            </DatasetContextMenu>
+          )}
+          renderFileMenu={(filename, header) => (
+            <DatasetFileContextMenu store={store} filename={filename}>
+              {header}
+            </DatasetFileContextMenu>
+          )}
         />
       </footer>
     </div>

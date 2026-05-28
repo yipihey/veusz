@@ -91,7 +91,7 @@ describe('live daemon: full Phase-1 loop', () => {
       // 4. Pull dataset list and render it through DatasetPanel
       const datasets = await client.call<DataInfo[]>('data.list');
       cleanup();
-      render(<DatasetPanel datasets={datasets} selected="x" onSelect={() => {}} />);
+      render(<DatasetPanel datasets={datasets} selected={['x']} onSelect={() => {}} />);
       expect(screen.getByTestId('dataset-row-x')).toBeInTheDocument();
       expect(screen.getByTestId('dataset-row-y')).toBeInTheDocument();
 

@@ -18,6 +18,16 @@ async def three_datasets(daemon):
 
 
 @pytest.mark.asyncio
+async def test_list_reports_linked_and_tags(daemon, three_datasets):
+    """In-memory datasets report linked=None; tags reflect data.tag."""
+    await daemon.call('data.tag', names=['a'], tag='keep')
+    listing = {d['name']: d for d in await daemon.call('data.list')}
+    assert listing['a']['linked'] is None
+    assert listing['a']['tags'] == ['keep']
+    assert listing['b']['tags'] == []
+
+
+@pytest.mark.asyncio
 async def test_delete_single(daemon, three_datasets):
     r = await daemon.call('data.delete', names=['b'])
     assert r['deleted'] == ['b']

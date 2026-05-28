@@ -31,7 +31,56 @@ describe('DatasetPanel', () => {
       />,
     );
     fireEvent.click(screen.getByTestId('dataset-row-x'));
-    expect(onSelect).toHaveBeenCalledWith('x');
+    expect(onSelect).toHaveBeenCalledWith('x', 'replace');
+  });
+
+  it('marks every dataset in a multi-selection', () => {
+    render(
+      <DatasetPanel
+        datasets={[
+          { name: 'x', type: 'Dataset', len: 10 },
+          { name: 'y', type: 'Dataset', len: 10 },
+        ]}
+        selected={['x', 'y']}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('dataset-row-x').dataset.selected).toBe('true');
+    expect(screen.getByTestId('dataset-row-y').dataset.selected).toBe('true');
+  });
+
+  it('emits toggle/range modes on modifier-click', () => {
+    const onSelect = vi.fn();
+    render(
+      <DatasetPanel
+        datasets={[
+          { name: 'x', type: 'Dataset', len: 10 },
+          { name: 'y', type: 'Dataset', len: 10 },
+        ]}
+        onSelect={onSelect}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('dataset-row-x'), { ctrlKey: true });
+    expect(onSelect).toHaveBeenLastCalledWith('x', 'toggle');
+    fireEvent.click(screen.getByTestId('dataset-row-y'), { shiftKey: true });
+    expect(onSelect).toHaveBeenLastCalledWith('y', 'range');
+  });
+
+  it('groups file-linked datasets under a file header', () => {
+    render(
+      <DatasetPanel
+        datasets={[
+          { name: 'm', type: 'Dataset', len: 10 },
+          { name: 'x', type: 'Dataset', len: 10, linked: '/data/in.csv' },
+          { name: 'y', type: 'Dataset', len: 10, linked: '/data/in.csv' },
+        ]}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('dataset-file-/data/in.csv')).toHaveTextContent('in.csv');
+    // In-memory dataset 'm' and linked 'x'/'y' all render.
+    expect(screen.getByTestId('dataset-row-m')).toBeInTheDocument();
+    expect(screen.getByTestId('dataset-row-x')).toBeInTheDocument();
   });
 
   it('marks selected dataset', () => {
@@ -41,7 +90,7 @@ describe('DatasetPanel', () => {
           { name: 'x', type: 'Dataset', len: 10 },
           { name: 'y', type: 'Dataset', len: 10 },
         ]}
-        selected="y"
+        selected={['y']}
         onSelect={() => {}}
       />,
     );

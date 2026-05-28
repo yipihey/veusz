@@ -91,6 +91,10 @@ export interface DataInfo {
   type: string;
   len: number;
   shape?: number[];
+  /** Filename this dataset is linked to, or null if in-memory. */
+  linked?: string | null;
+  /** Tags applied to this dataset. */
+  tags?: string[];
 }
 
 export interface DocSetOp {

@@ -28,6 +28,13 @@ def register(ctx):
             }
             if hasattr(ds, 'data') and hasattr(ds.data, 'shape'):
                 entry['shape'] = list(ds.data.shape)
+            # Link provenance powers the dataset menu: "Unlink file"
+            # only appears for file-linked datasets, and the panel
+            # groups linked datasets under their filename for the
+            # Reload / Unlink-all / Delete-all file actions.
+            linked = getattr(ds, 'linked', None)
+            entry['linked'] = getattr(linked, 'filename', None) if linked else None
+            entry['tags'] = sorted(getattr(ds, 'tags', set()) or set())
             out.append(entry)
         return out
 

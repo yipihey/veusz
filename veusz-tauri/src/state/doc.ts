@@ -54,6 +54,8 @@ export interface DocState {
    *  immediate-remove + undo (Qt parity), so this is purely
    *  informational — set then cleared after the next paste. */
   cutPaths: string[];
+  /** Selected dataset names (dataset panel multi-select). */
+  selectedDatasets: string[];
   /** Plot-view state driven by the plot canvas context menu. */
   currentPage: number;
   /** Antialias flag passed to render.png; mirrors prefs.plot.antialias. */
@@ -111,6 +113,8 @@ export interface DocState {
   unlinkSetting: (path: string) => Promise<void>;
 
   // --- data ---
+  /** Replace the dataset-panel selection. */
+  selectDatasets: (names: string[]) => void;
   importCsv: (filename: string) => Promise<string[]>;
   deleteDatasets: (names: string[]) => Promise<void>;
   renameDataset: (oldName: string, newName: string) => Promise<void>;
@@ -215,6 +219,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       error: null,
       filename: null,
       cutPaths: [],
+      selectedDatasets: [],
       currentPage: 0,
       antialias: true,
       updatePolicy: 'change',
@@ -491,6 +496,8 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         const sel = get().selected;
         if (sel.length) await get().select(sel);
       },
+
+      selectDatasets: (names) => set({ selectedDatasets: names }),
 
       importCsv: async (filename) => {
         const r = await guard(() => rpc.data.import('csv', filename));
