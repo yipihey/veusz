@@ -14,6 +14,7 @@ import type { DocState } from '../../state/doc';
 import { Tree, type SelectMode } from '../tree/Tree';
 import { TreeContextMenu } from '../tree/TreeContextMenu';
 import { Inspector } from '../inspector/Inspector';
+import { SettingContextMenu } from '../inspector/SettingContextMenu';
 import { DatasetPanel } from '../data/DatasetPanel';
 import { DatasetContextMenu } from '../data/DatasetContextMenu';
 import { DatasetFileContextMenu } from '../data/DatasetFileContextMenu';
@@ -294,6 +295,21 @@ export function AppShell({
               datasets={datasets.map((d) => d.name)}
               onChange={setValue}
               onChangeMany={setValues}
+              settingMenu={(ctx, label) => (
+                <SettingContextMenu
+                  store={store}
+                  info={{
+                    path: ctx.path,
+                    isReference: ctx.isReference,
+                    isStylesheet: ctx.isStylesheet,
+                    // Copy-to labels use the owning widget's type/name.
+                    widgetType: schema.typename ?? schema.typenames?.[0] ?? '',
+                    widgetName: lastSegment(selected[0] ?? ''),
+                  }}
+                >
+                  {label}
+                </SettingContextMenu>
+              )}
             />
           ) : (
             <p data-testid="app-inspector-empty">Select a widget.</p>
@@ -404,6 +420,11 @@ function Toolbar({
       )}
     </header>
   );
+}
+
+function lastSegment(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
 }
 
 const layout = {

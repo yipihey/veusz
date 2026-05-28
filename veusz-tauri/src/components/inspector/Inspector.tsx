@@ -1,6 +1,14 @@
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import type { SettingsGroup, SettingSchema, WidgetSchema } from '../../rpc/types';
 import { resolve } from '../settings';
+
+/** Context passed to the optional per-setting right-click menu. */
+export interface SettingMenuContext {
+  path: string;
+  name: string;
+  isReference: boolean;
+  isStylesheet: boolean;
+}
 
 export interface InspectorProps {
   schema: WidgetSchema;
@@ -20,6 +28,9 @@ export interface InspectorProps {
   /** Multi-widget batched edit hook — one op per selected widget,
    *  applied in a single undo step. Required when widgetPaths > 1. */
   onChangeMany?: (ops: Array<{ path: string; value: unknown }>) => void;
+  /** Optional wrapper that injects a right-click menu around a
+   *  setting's *label*. Omitted in unit tests / the stylesheet editor. */
+  settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
 }
 
 export function Inspector(props: InspectorProps) {
@@ -57,6 +68,7 @@ export function Inspector(props: InspectorProps) {
         values={props.values}
         datasets={props.datasets}
         onChange={handleChange}
+        settingMenu={props.settingMenu}
       />
     </div>
   );
@@ -68,9 +80,10 @@ interface GroupBodyProps {
   values: Record<string, unknown>;
   datasets?: string[];
   onChange: (path: string, value: unknown) => void;
+  settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
 }
 
-function GroupBody({ group, basePath, values, datasets, onChange }: GroupBodyProps) {
+function GroupBody({ group, basePath, values, datasets, onChange, settingMenu }: GroupBodyProps) {
   return (
     <Fragment>
       {group.settings.map((s) =>
@@ -82,6 +95,7 @@ function GroupBody({ group, basePath, values, datasets, onChange }: GroupBodyPro
             value={values[joinPath(basePath, s.name)]}
             datasets={datasets}
             onChange={onChange}
+            settingMenu={settingMenu}
           />
         ),
       )}
@@ -94,6 +108,7 @@ function GroupBody({ group, basePath, values, datasets, onChange }: GroupBodyPro
             values={values}
             datasets={datasets}
             onChange={onChange}
+            settingMenu={settingMenu}
           />
         </details>
       ))}
@@ -107,12 +122,14 @@ function SettingRow({
   value,
   datasets,
   onChange,
+  settingMenu,
 }: {
   schema: SettingSchema;
   basePath: string;
   value: unknown;
   datasets?: string[];
   onChange: (path: string, value: unknown) => void;
+  settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
 }) {
   const Leaf = resolve(schema.typename);
   const path = joinPath(basePath, schema.name);
@@ -121,12 +138,27 @@ function SettingRow({
   // with a marker the leaf controls can read (and the row dims its
   // label) — matches Qt's italic "differing values" affordance.
   const mixed = schema.mixed_value === true;
+
+  // Wrap a label element with the optional right-click menu.
+  const wrapLabel = (labelEl: ReactNode): ReactNode =>
+    settingMenu
+      ? settingMenu(
+          {
+            path,
+            name: schema.name,
+            isReference: schema.is_reference === true,
+            isStylesheet: path.startsWith('/StyleSheet/'),
+          },
+          labelEl,
+        )
+      : labelEl;
+
   if (!Leaf) {
     // Registry fallback for typenames we haven't covered yet —
     // show the raw value so the user at least sees it.
     return (
       <div data-testid={`row-${schema.name}`} data-mixed={mixed || undefined}>
-        <label>{schema.usertext || schema.name}</label>
+        {wrapLabel(<label>{schema.usertext || schema.name}</label>)}
         <code data-testid={`fallback-${schema.name}`}>
           {value === undefined ? '(unset)' : JSON.stringify(value)}
         </code>
@@ -139,10 +171,12 @@ function SettingRow({
       data-testid={`row-${schema.name}`}
       data-mixed={mixed || undefined}
     >
-      <label style={mixed ? { fontStyle: 'italic', color: '#888' } : undefined}>
-        {schema.usertext || schema.name}
-        {mixed ? ' (mixed)' : ''}
-      </label>
+      {wrapLabel(
+        <label style={mixed ? { fontStyle: 'italic', color: '#888' } : undefined}>
+          {schema.usertext || schema.name}
+          {mixed ? ' (mixed)' : ''}
+        </label>,
+      )}
       <Leaf
         schema={schema}
         value={mixed ? undefined : value}
