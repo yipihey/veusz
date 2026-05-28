@@ -8,6 +8,7 @@
     "dev": "node scripts/sync-wasm.mjs && vite",
     "build": "node scripts/sync-wasm.mjs && tsc && vite build",
     "preview": "vite preview",
+    "build:embed": "node scripts/sync-wasm.mjs && vite build --config vite.embed.config.ts",
     "tauri": "tauri",
     "test": "vitest",
     "e2e": "playwright test"
