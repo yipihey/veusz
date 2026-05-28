@@ -1,0 +1,17 @@
+# macOS-specific linker flags for the PyO3 cdylib (`veusz-paint-py`).
+#
+# On macOS, building a Python extension module (`crate-type = ["cdylib"]`)
+# leaves Python C API symbols (Py_None, Py_DecRef, ...) undefined until
+# the .so is loaded into a Python process. The Mach-O linker rejects
+# that by default; we tell it to defer those symbols to dyld via
+# `-undefined dynamic_lookup`. PyO3's `extension-module` feature is
+# supposed to emit this automatically, but the directive does not
+# survive `cargo build --workspace` invocations against the lib alone,
+# so we set it here at the workspace level. The flag is a no-op for
+# fully-linked binaries (the Tauri shell, integration test bins, etc).
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
