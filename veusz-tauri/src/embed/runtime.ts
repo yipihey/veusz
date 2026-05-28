@@ -50,55 +50,68 @@ interface PyodideLike {
   FS: { writeFile(path: string, data: string): void };
 }
 
-const VSZ_PATH = '/veusz/figure.vsz';
+// The heavy runtime (Pyodide + numpy + veusz + fonttools) is loaded once and
+// shared across every figure on the page; each figure gets its own Bridge
+// (its own document) below.
+let _sharedPyodide: Promise<PyodideLike> | null = null;
 
-export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<VeuszRuntime> {
+async function ensurePyodide(opts: RuntimeOptions): Promise<PyodideLike> {
+  if (_sharedPyodide) return _sharedPyodide;
   const indexUrl = opts.pyodideIndexUrl ?? DEFAULT_PYODIDE_INDEX;
   const progress = opts.onProgress ?? (() => {});
+  _sharedPyodide = (async () => {
+    progress('Loading Pyodide…');
+    const pyMod = (await import(/* @vite-ignore */ `${indexUrl}pyodide.mjs`)) as {
+      loadPyodide(cfg: { indexURL: string }): Promise<PyodideLike>;
+    };
+    const py = await pyMod.loadPyodide({ indexURL: indexUrl });
+    progress('Loading numpy…');
+    await py.loadPackage(['numpy', 'micropip']);
+    progress('Installing Veusz…');
+    const micropip = py.pyimport('micropip') as {
+      install(reqs: string | string[]): Promise<void>;
+    };
+    // fonttools is pure-Python (font metrics for the qtshim); scipy is left
+    // out of the base boot — only the fit handler needs it (install lazily).
+    await micropip.install('fonttools');
+    if (opts.extraWheels?.length) await micropip.install(opts.extraWheels);
+    if (opts.veuszWheelUrl) await micropip.install(opts.veuszWheelUrl);
+    return py;
+  })().catch((e) => { _sharedPyodide = null; throw e; });
+  return _sharedPyodide;
+}
 
+let _vszSeq = 0;
+
+export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<VeuszRuntime> {
+  const progress = opts.onProgress ?? (() => {});
   if (opts.wasmBase) {
     (globalThis as unknown as { __VEUSZ_WASM_BASE__?: string }).__VEUSZ_WASM_BASE__ =
       opts.wasmBase;
   }
 
-  progress('Loading Pyodide…');
-  const pyMod = (await import(/* @vite-ignore */ `${indexUrl}pyodide.mjs`)) as {
-    loadPyodide(cfg: { indexURL: string }): Promise<PyodideLike>;
-  };
-  const py = await pyMod.loadPyodide({ indexURL: indexUrl });
-
-  progress('Loading numpy…');
-  await py.loadPackage(['numpy', 'micropip']);
-
-  progress('Installing Veusz…');
-  const micropip = py.pyimport('micropip') as {
-    install(reqs: string | string[]): Promise<void>;
-  };
-  // fonttools is pure-Python (font metrics for the qtshim); scipy is left out
-  // of the base boot — only the fit handler needs it (install lazily later).
-  await micropip.install('fonttools');
-  if (opts.extraWheels?.length) await micropip.install(opts.extraWheels);
-  if (opts.veuszWheelUrl) await micropip.install(opts.veuszWheelUrl);
+  const py = await ensurePyodide(opts);
 
   progress('Starting renderer…');
-  // Build the bridge (registers widgets + creates the document under qtshim).
+  // Each figure gets its own bridge (registers widgets + a fresh document
+  // under qtshim), so multiple embeds on a page are independent.
   const bridgeMod = py.pyimport('veusz.daemon.pyodide_bridge') as {
     Bridge: new () => PyodideBridge;
   };
   const bridge = new bridgeMod.Bridge();
   const transport = pyodideTransport(bridge);
 
+  const vszPath = `/veusz/figure_${_vszSeq++}.vsz`;
   const loadVsz = async (text: string) => {
     // Write into Pyodide's in-memory FS and reuse the file.open handler so
     // recent-files + change notifications fire exactly like the desktop.
     try {
-      py.FS.writeFile(VSZ_PATH, text);
+      py.FS.writeFile(vszPath, text);
     } catch {
-      await py.runPythonAsync(
-        `import os; os.makedirs('/veusz', exist_ok=True)`);
-      py.FS.writeFile(VSZ_PATH, text);
+      await py.runPythonAsync(`import os; os.makedirs('/veusz', exist_ok=True)`);
+      py.FS.writeFile(vszPath, text);
     }
-    return transport.call('file.open', { path: VSZ_PATH });
+    return transport.call('file.open', { path: vszPath });
   };
 
   progress('Ready');

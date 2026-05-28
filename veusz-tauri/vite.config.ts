@@ -22,10 +22,12 @@ export default defineConfig({
     target: 'esnext',
     sourcemap: true,
     rollupOptions: {
-      // Multi-page: the main app + the standalone WASM/Vello figure harness.
+      // Multi-page: the main app, the standalone WASM/Vello figure harness,
+      // and the interactive Pyodide embed dev page.
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         figure: fileURLToPath(new URL('./figure.html', import.meta.url)),
+        embed: fileURLToPath(new URL('./embed.html', import.meta.url)),
       },
     },
   },

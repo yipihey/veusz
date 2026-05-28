@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Veusz interactive embed (dev)</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #1c1e21; }
+    h1 { font-size: 1.4rem; }
+    .lede { color: #555; }
+    code { background: #eef0f3; padding: .1rem .35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Veusz interactive embed</h1>
+  <p class="lede">
+    A live Veusz figure running entirely in your browser (Pyodide + Vello/WebGPU).
+    Drag a rectangle to zoom, shift-drag to pan, hover for data values,
+    double-click to reset, and <strong>Edit</strong> to change settings.
+    Requires WebGPU (Chrome or Safari 26+) and the headless veusz wheel
+    (built in W5; set via the <code>veusz-wheel</code> attribute or a CDN default).
+  </p>
+
+  <veusz-figure src="/samples/fit.vsz" width="640" height="480"></veusz-figure>
+
+  <script type="module" src="/src/embed/main.tsx"></script>
+</body>
+</html>

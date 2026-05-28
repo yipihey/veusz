@@ -275,6 +275,14 @@ export function createRpc(transport: Transport) {
           width: number;
           height: number;
         }>,
+      pixelToData: (x: number, y: number) =>
+        t('render.pixel_to_data', { x, y }) as Promise<{
+          axes: Array<{
+            path: string;
+            direction: 'horizontal' | 'vertical';
+            value: number;
+          }>;
+        }>,
       copyImage: (
         page = 0,
         w = 800,
