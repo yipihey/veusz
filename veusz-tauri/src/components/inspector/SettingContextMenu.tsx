@@ -17,10 +17,17 @@ import { type ReactNode } from 'react';
 import * as ContextMenu from '@radix-ui/react-context-menu';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../../state/doc';
+import { widgetsOfType } from '../tree/treeselect';
+
+// Cap the individual-widget Copy-to list so a document with hundreds
+// of widgets of one type doesn't produce an unusable menu.
+const MAX_INDIVIDUAL_WIDGETS = 30;
 
 export interface SettingMenuInfo {
   /** Absolute setting path, e.g. /page1/graph1/xy1/marker. */
   path: string;
+  /** Owning widget path, e.g. /page1/graph1/xy1. */
+  widgetPath: string;
   /** Owning widget type (for the Copy-to labels). */
   widgetType: string;
   /** Owning widget name (for the type+name label). */
@@ -49,8 +56,15 @@ const contentStyle: React.CSSProperties = {
 const sep: React.CSSProperties = { height: 1, background: '#eee', margin: 4 };
 
 export function SettingContextMenu({ store, info, children }: SettingContextMenuProps) {
+  const tree = store((s) => s.tree);
   const act = store.getState();
-  const { path, widgetType, widgetName, isReference, isStylesheet } = info;
+  const { path, widgetPath, widgetType, widgetName, isReference, isStylesheet } = info;
+
+  // Individual same-type widgets, excluding the owning one, for the
+  // per-widget Copy-to targets (mirrors Qt's addCopyToWidgets).
+  const individuals = widgetsOfType(tree, widgetType)
+    .filter((w) => w.path !== widgetPath)
+    .slice(0, MAX_INDIVIDUAL_WIDGETS);
 
   return (
     <ContextMenu.Root>
@@ -94,6 +108,22 @@ export function SettingContextMenu({ store, info, children }: SettingContextMenu
                     >
                       all '{widgetType}' widgets called '{widgetName}'
                     </ContextMenu.Item>
+                    {individuals.length > 0 && (
+                      <>
+                        <ContextMenu.Separator style={sep} />
+                        {individuals.map((w) => (
+                          <ContextMenu.Item
+                            key={w.path}
+                            style={itemStyle}
+                            data-testid={`setting-copy-widget-${w.path}`}
+                            onSelect={() =>
+                              void act.propagateSetting(path, 'widgets', [w.path])}
+                          >
+                            {w.path}
+                          </ContextMenu.Item>
+                        ))}
+                      </>
+                    )}
                   </ContextMenu.SubContent>
                 </ContextMenu.Portal>
               </ContextMenu.Sub>

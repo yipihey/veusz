@@ -17,7 +17,19 @@ function makeStore() {
     return { changeset: 1, value: null, stylesheet_path: '/StyleSheet/xy/marker' };
   };
   const t = mockTransport({
-    'doc.tree': () => ({ name: '', path: '/', type: 'document', children: [] }),
+    'doc.tree': () => ({
+      name: '', path: '/', type: 'document',
+      children: [{
+        name: 'page1', path: '/page1', type: 'page',
+        children: [{
+          name: 'graph1', path: '/page1/graph1', type: 'graph',
+          children: [
+            { name: 'xy1', path: '/page1/graph1/xy1', type: 'xy', children: [] },
+            { name: 'xy2', path: '/page1/graph1/xy2', type: 'xy', children: [] },
+          ],
+        }],
+      }],
+    }),
     'data.list': () => [],
     'doc.can_undo': () => ({ can_undo: false, can_redo: false }),
     'file.info': () => ({ path: null, changeset: 0, modified: false }),
@@ -33,8 +45,10 @@ function makeStore() {
 
 async function open(info: Partial<SettingMenuInfo> = {}) {
   const { store, calls } = makeStore();
+  await store.getState().refreshAll(); // populate the tree
   const full: SettingMenuInfo = {
     path: '/page1/graph1/xy1/marker',
+    widgetPath: '/page1/graph1/xy1',
     widgetType: 'xy',
     widgetName: 'xy1',
     isReference: false,
@@ -69,6 +83,22 @@ describe('SettingContextMenu', () => {
     const call = calls.find((c) => c[0] === 'doc.propagate_setting');
     expect(call).toBeDefined();
     expect((call![1] as { scope: string }).scope).toBe('all_of_type');
+  });
+
+  it('Copy-to lists individual same-type widgets (excluding the owner)', async () => {
+    const { calls } = await open();
+    fireEvent.click(screen.getByTestId('setting-copy-to'));
+    // xy2 is the other xy widget; xy1 (owner) must not be listed.
+    expect(screen.queryByTestId('setting-copy-widget-/page1/graph1/xy1'))
+      .not.toBeInTheDocument();
+    const item = await screen.findByTestId('setting-copy-widget-/page1/graph1/xy2');
+    fireEvent.click(item);
+    await new Promise((r) => setTimeout(r, 5));
+    const call = calls.find((c) => c[0] === 'doc.propagate_setting');
+    expect(call).toBeDefined();
+    expect((call![1] as { scope: string }).scope).toBe('widgets');
+    expect((call![1] as { widget_paths: string[] }).widget_paths)
+      .toEqual(['/page1/graph1/xy2']);
   });
 
   it('Use as default style dispatches doc.set_setting_default', async () => {

@@ -37,6 +37,22 @@ function findParent(
   return null;
 }
 
+/** Every widget of a given type, as {path, name}, document order.
+ *  Powers the setting menu's "Copy to → <individual widget>" list. */
+export function widgetsOfType(
+  root: WidgetTreeNode | null,
+  wtype: string,
+): Array<{ path: string; name: string }> {
+  const out: Array<{ path: string; name: string }> = [];
+  if (!root) return out;
+  const walk = (n: WidgetTreeNode) => {
+    if (n.type === wtype) out.push({ path: n.path, name: n.name });
+    for (const c of n.children) walk(c);
+  };
+  for (const c of root.children) walk(c);
+  return out;
+}
+
 /** Walk a subtree, collecting paths of every widget matching type
  *  and/or name. Pass null to ignore a criterion. */
 function walkMatching(

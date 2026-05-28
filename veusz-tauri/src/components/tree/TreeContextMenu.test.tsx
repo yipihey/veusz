@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { createRpc } from '../../rpc/client';
 import { mockTransport } from '../../rpc/transport';
 import { createDocStore } from '../../state/doc';
@@ -51,6 +51,7 @@ function makeStore(extra: Record<string, (p: Record<string, unknown>) => unknown
       return { changeset: 1, diffs: ops.map((o) => ({ path: o.path, old: false, new: o.value })) };
     },
     'doc.move': record('doc.move'),
+    'doc.can_paste_mime': () => ({ ok: true }),
     'render.copy_image': () => ({
       format: 'png', mime_type: 'image/png', payload_b64: 'X',
       width: 100, height: 100,
@@ -149,5 +150,26 @@ describe('TreeContextMenu', () => {
     await openMenuFor(store, '/');
     const cut = await screen.findByTestId('ctx-cut');
     expect(cut.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('Paste is disabled when the clipboard is empty', async () => {
+    const { store } = makeStore();
+    await store.getState().refreshAll();
+    await openMenuFor(store, '/page1/graph1/xy1');
+    const paste = await screen.findByTestId('ctx-paste');
+    // Empty clipboard → canPasteWidgets() resolves false → stays disabled.
+    await waitFor(() =>
+      expect(paste.getAttribute('aria-disabled')).toBe('true'));
+  });
+
+  it('Paste enables after a widget is copied', async () => {
+    const { store } = makeStore();
+    await store.getState().refreshAll();
+    // Seed the clipboard, then open the menu.
+    await store.getState().copyWidgets(['/page1/graph1/xy1']);
+    await openMenuFor(store, '/page1/graph1/xy1');
+    const paste = await screen.findByTestId('ctx-paste');
+    await waitFor(() =>
+      expect(paste.getAttribute('aria-disabled')).not.toBe('true'));
   });
 });

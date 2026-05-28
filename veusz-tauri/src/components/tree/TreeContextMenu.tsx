@@ -17,7 +17,7 @@
  *   Show / Hide
  */
 
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import * as ContextMenu from '@radix-ui/react-context-menu';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../../state/doc';
@@ -79,8 +79,20 @@ export function TreeContextMenu({
 
   const act = store.getState();
 
+  // Paste is enabled only when the clipboard actually holds a widget
+  // payload pastable under the target. Checked when the menu opens
+  // (async — NSPasteboard read), so it defaults disabled and flips on.
+  const [canPaste, setCanPaste] = useState(false);
+  const refreshCanPaste = () => {
+    if (!single) {
+      setCanPaste(false);
+      return;
+    }
+    void act.canPasteWidgets(single).then(setCanPaste);
+  };
+
   return (
-    <ContextMenu.Root>
+    <ContextMenu.Root onOpenChange={(open) => open && refreshCanPaste()}>
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content style={contentStyle} data-testid="tree-context-menu">
@@ -135,6 +147,7 @@ export function TreeContextMenu({
           <ContextMenu.Item
             style={itemStyle}
             data-testid="ctx-paste"
+            disabled={!single || !canPaste}
             onSelect={() => single && void act.pasteWidgets(single)}
           >
             Paste

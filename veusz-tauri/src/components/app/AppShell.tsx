@@ -300,11 +300,12 @@ export function AppShell({
                   store={store}
                   info={{
                     path: ctx.path,
+                    widgetPath: ctx.widgetPath,
                     isReference: ctx.isReference,
                     isStylesheet: ctx.isStylesheet,
                     // Copy-to labels use the owning widget's type/name.
                     widgetType: schema.typename ?? schema.typenames?.[0] ?? '',
-                    widgetName: lastSegment(selected[0] ?? ''),
+                    widgetName: lastSegment(ctx.widgetPath),
                   }}
                 >
                   {label}

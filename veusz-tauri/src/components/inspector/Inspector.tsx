@@ -6,6 +6,8 @@ import { resolve } from '../settings';
 export interface SettingMenuContext {
   path: string;
   name: string;
+  /** Absolute path of the owning widget (the Inspector's base). */
+  widgetPath: string;
   isReference: boolean;
   isStylesheet: boolean;
 }
@@ -65,6 +67,7 @@ export function Inspector(props: InspectorProps) {
       <GroupBody
         group={props.schema}
         basePath={base}
+        widgetPath={base}
         values={props.values}
         datasets={props.datasets}
         onChange={handleChange}
@@ -77,13 +80,15 @@ export function Inspector(props: InspectorProps) {
 interface GroupBodyProps {
   group: SettingsGroup;
   basePath: string;
+  /** The owning widget path — constant through subgroup recursion. */
+  widgetPath: string;
   values: Record<string, unknown>;
   datasets?: string[];
   onChange: (path: string, value: unknown) => void;
   settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
 }
 
-function GroupBody({ group, basePath, values, datasets, onChange, settingMenu }: GroupBodyProps) {
+function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu }: GroupBodyProps) {
   return (
     <Fragment>
       {group.settings.map((s) =>
@@ -92,6 +97,7 @@ function GroupBody({ group, basePath, values, datasets, onChange, settingMenu }:
             key={s.name}
             schema={s}
             basePath={basePath}
+            widgetPath={widgetPath}
             value={values[joinPath(basePath, s.name)]}
             datasets={datasets}
             onChange={onChange}
@@ -105,6 +111,7 @@ function GroupBody({ group, basePath, values, datasets, onChange, settingMenu }:
           <GroupBody
             group={sub}
             basePath={joinPath(basePath, sub.name)}
+            widgetPath={widgetPath}
             values={values}
             datasets={datasets}
             onChange={onChange}
@@ -119,6 +126,7 @@ function GroupBody({ group, basePath, values, datasets, onChange, settingMenu }:
 function SettingRow({
   schema,
   basePath,
+  widgetPath,
   value,
   datasets,
   onChange,
@@ -126,6 +134,7 @@ function SettingRow({
 }: {
   schema: SettingSchema;
   basePath: string;
+  widgetPath: string;
   value: unknown;
   datasets?: string[];
   onChange: (path: string, value: unknown) => void;
@@ -146,6 +155,7 @@ function SettingRow({
           {
             path,
             name: schema.name,
+            widgetPath,
             isReference: schema.is_reference === true,
             isStylesheet: path.startsWith('/StyleSheet/'),
           },
