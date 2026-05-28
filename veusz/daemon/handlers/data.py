@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import base64
 import os
 
 import numpy as np
 
 from ..errors import RpcError, INVALID_PARAMS
+
+# Dataset MIME type — wire-identical to what the legacy Qt GUI puts on
+# the system clipboard via `veusz.document.mime.datamime`. The dataset
+# clipboard is purely an array of `datasetAsText()` chunks; the paste
+# operation reconstructs each dataset.
+DATA_MIME = 'text/x-vnd.veusz-data-1'
 
 
 def register(ctx):
@@ -137,6 +144,269 @@ def register(ctx):
         })
         return {'imported': imported, 'errors': []}
 
+    # --- Dataset CRUD (delete / rename / duplicate) ---------------------
+
+    def _require(names):
+        if not isinstance(names, list) or not names:
+            raise RpcError(INVALID_PARAMS, 'names must be a non-empty list')
+        for n in names:
+            if n not in ctx.document.data:
+                raise RpcError(INVALID_PARAMS, f'no such dataset: {n}')
+        return names
+
+    def delete(names: list, **_):
+        """Delete one or more datasets in a single undo step."""
+        from ...document import operations
+        names = _require(names)
+        if len(names) == 1:
+            ctx.document.applyOperation(
+                operations.OperationDatasetDelete(names[0]))
+        else:
+            ctx.document.applyOperation(operations.OperationMultiple(
+                [operations.OperationDatasetDelete(n) for n in names],
+                descr='delete datasets'))
+        ctx.notifier.publish('data.changed', {
+            'names': names, 'kind': 'delete',
+        })
+        return {'deleted': names}
+
+    def rename(old: str, new: str, **_):
+        from ...document import operations
+        if old not in ctx.document.data:
+            raise RpcError(INVALID_PARAMS, f'no such dataset: {old}')
+        if not isinstance(new, str) or not new:
+            raise RpcError(INVALID_PARAMS, 'new name must be a non-empty string')
+        if new in ctx.document.data:
+            raise RpcError(INVALID_PARAMS, f'dataset already exists: {new}')
+        ctx.document.applyOperation(
+            operations.OperationDatasetRename(old, new))
+        ctx.notifier.publish('data.changed', {
+            'names': [old, new], 'kind': 'rename',
+        })
+        return {'name': new}
+
+    def duplicate(name: str, new_name: str | None = None, **_):
+        from ...document import operations
+        if name not in ctx.document.data:
+            raise RpcError(INVALID_PARAMS, f'no such dataset: {name}')
+        if new_name is None:
+            base = f'{name}_copy'
+            new_name = base
+            i = 2
+            while new_name in ctx.document.data:
+                new_name = f'{base}{i}'
+                i += 1
+        elif new_name in ctx.document.data:
+            raise RpcError(INVALID_PARAMS,
+                           f'dataset already exists: {new_name}')
+        ctx.document.applyOperation(
+            operations.OperationDatasetDuplicate(name, new_name))
+        ctx.notifier.publish('data.changed', {
+            'names': [new_name], 'kind': 'duplicate',
+        })
+        return {'name': new_name}
+
+    # --- Unlink (file or relation) --------------------------------------
+
+    def unlink_file(names: list, **_):
+        from ...document import operations
+        names = _require(names)
+        ops = [operations.OperationDatasetUnlinkFile(n) for n in names]
+        if len(ops) == 1:
+            ctx.document.applyOperation(ops[0])
+        else:
+            ctx.document.applyOperation(
+                operations.OperationMultiple(ops, descr='unlink files'))
+        ctx.notifier.publish('data.changed', {
+            'names': names, 'kind': 'unlink_file',
+        })
+        return {'unlinked': names}
+
+    def unlink_relation(names: list, **_):
+        from ...document import operations
+        names = _require(names)
+        ops = [operations.OperationDatasetUnlinkRelation(n) for n in names]
+        if len(ops) == 1:
+            ctx.document.applyOperation(ops[0])
+        else:
+            ctx.document.applyOperation(
+                operations.OperationMultiple(ops, descr='unlink relations'))
+        ctx.notifier.publish('data.changed', {
+            'names': names, 'kind': 'unlink_relation',
+        })
+        return {'unlinked': names}
+
+    # --- Tags -----------------------------------------------------------
+
+    def tag(names: list, tag: str, **_):
+        from ...document import operations
+        names = _require(names)
+        if not isinstance(tag, str) or not tag:
+            raise RpcError(INVALID_PARAMS, 'tag must be a non-empty string')
+        ctx.document.applyOperation(
+            operations.OperationDataTag(tag, names))
+        ctx.notifier.publish('data.changed', {
+            'names': names, 'kind': 'tag',
+        })
+        return {'tagged': names, 'tag': tag}
+
+    def untag(names: list, tag: str, **_):
+        from ...document import operations
+        names = _require(names)
+        if not isinstance(tag, str) or not tag:
+            raise RpcError(INVALID_PARAMS, 'tag must be a non-empty string')
+        ctx.document.applyOperation(
+            operations.OperationDataUntag(tag, names))
+        ctx.notifier.publish('data.changed', {
+            'names': names, 'kind': 'untag',
+        })
+        return {'untagged': names, 'tag': tag}
+
+    def tags_list(**_):
+        """Return ``{tag: [dataset_names]}`` for every tag in use."""
+        out: dict = {}
+        for name, ds in ctx.document.data.items():
+            for t in getattr(ds, 'tags', ()):
+                out.setdefault(t, []).append(name)
+        for t in out:
+            out[t].sort()
+        return out
+
+    # --- File-scoped operations ----------------------------------------
+
+    def reload_file(filename: str | None = None, **_):
+        """Reload linked datasets. ``filename`` is currently advisory
+        (Veusz reloads all linked datasets in one call) — kept on the
+        wire so the menu's "Reload" on a filename header can pass the
+        path, and a future per-file reload can be added without an RPC
+        signature change."""
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        datasets, errors = ci.ReloadData()
+        ctx.notifier.publish('data.changed', {
+            'names': list(datasets) if datasets else [],
+            'kind': 'reload',
+        })
+        return {
+            'reloaded': sorted(datasets) if datasets else [],
+            'errors': {n: int(e) for n, e in (errors or {}).items()},
+        }
+
+    def unlink_all_file(filename: str, **_):
+        from ...document import operations
+        if not isinstance(filename, str) or not filename:
+            raise RpcError(INVALID_PARAMS, 'filename must be a non-empty string')
+        affected = [
+            n for n, ds in ctx.document.data.items()
+            if ds.linked is not None and ds.linked.filename == filename
+        ]
+        ctx.document.applyOperation(
+            operations.OperationDatasetUnlinkByFile(filename))
+        ctx.notifier.publish('data.changed', {
+            'names': affected, 'kind': 'unlink_file',
+        })
+        return {'unlinked': sorted(affected)}
+
+    def delete_all_file(filename: str, **_):
+        from ...document import operations
+        if not isinstance(filename, str) or not filename:
+            raise RpcError(INVALID_PARAMS, 'filename must be a non-empty string')
+        affected = [
+            n for n, ds in ctx.document.data.items()
+            if ds.linked is not None and ds.linked.filename == filename
+        ]
+        ctx.document.applyOperation(
+            operations.OperationDatasetDeleteByFile(filename))
+        ctx.notifier.publish('data.changed', {
+            'names': affected, 'kind': 'delete',
+        })
+        return {'deleted': sorted(affected)}
+
+    # --- Use-as (binding sites for a dataset) ---------------------------
+
+    _DATASET_SETTING_TYPENAMES = (
+        'dataset', 'dataset-multi', 'dataset-extended', 'dataset-or-str',
+    )
+
+    def use_as_targets(name: str, **_):
+        """Walk the widget tree and return setting paths whose typename
+        accepts a dataset, e.g. ``/page1/graph1/xy1/xData``. The
+        frontend builds a "Use as" submenu from these.
+        """
+        if name not in ctx.document.data:
+            raise RpcError(INVALID_PARAMS, f'no such dataset: {name}')
+        targets: list = []
+        from ...setting.setting import Setting
+
+        def walk_settings(group, widget):
+            for item in group.getList():
+                if isinstance(item, Setting):
+                    if item.typename in _DATASET_SETTING_TYPENAMES:
+                        targets.append({
+                            'path': item.path,
+                            'typename': item.typename,
+                            'widget': widget.path,
+                        })
+                else:
+                    walk_settings(item, widget)
+
+        def walk_widgets(widget):
+            walk_settings(widget.settings, widget)
+            for child in widget.children:
+                walk_widgets(child)
+
+        walk_widgets(ctx.document.basewidget)
+        return {'targets': targets}
+
+    # --- Clipboard (dataset MIME marshal/unmarshal) ---------------------
+
+    def serialize(names: list, **_):
+        """Return Veusz dataset-MIME bytes for the listed datasets.
+
+        Bytes are wire-identical to ``generateDatasetsMime`` so the
+        legacy Qt GUI can paste them and vice versa.
+        """
+        from ...document import mime as _mime
+        names = _require(names)
+        mimedata = _mime.generateDatasetsMime(names, ctx.document)
+        raw = bytes(mimedata.data(_mime.datamime).data())
+        return {
+            'mime_type': DATA_MIME,
+            'payload_b64': base64.b64encode(raw).decode('ascii'),
+            'count': len(names),
+        }
+
+    def _decode_data_mime(mime_type: str, payload_b64: str) -> bytes:
+        if mime_type != DATA_MIME:
+            raise RpcError(INVALID_PARAMS,
+                           f'unsupported mime_type {mime_type!r}; '
+                           f'expected {DATA_MIME!r}')
+        try:
+            return base64.b64decode(payload_b64, validate=True)
+        except (TypeError, ValueError) as e:
+            raise RpcError(INVALID_PARAMS, f'payload_b64 not valid base64: {e}') from e
+
+    def paste_mime(mime_type: str, payload_b64: str, **_):
+        """Paste datasets from MIME bytes. Datasets are added to the
+        document; names collide via the same auto-rename strategy as
+        ``OperationDataPaste``.
+        """
+        from ...document import mime as _mime
+        from ... import qtall as qt
+        raw = _decode_data_mime(mime_type, payload_b64)
+        # OperationDataPaste expects a QMimeData; build one with the right
+        # MIME slot so the operation reads it back out.
+        md = qt.QMimeData()
+        md.setData(_mime.datamime, qt.QByteArray(raw))
+        before = set(ctx.document.data.keys())
+        ctx.document.applyOperation(_mime.OperationDataPaste(md))
+        after = set(ctx.document.data.keys())
+        new_names = sorted(after - before)
+        ctx.notifier.publish('data.changed', {
+            'names': new_names, 'kind': 'paste',
+        })
+        return {'pasted': new_names}
+
     return {
         'data.list': list_,
         'data.peek': peek,
@@ -144,4 +414,18 @@ def register(ctx):
         'data.set': set_,
         'data.import': import_,
         'data.preview_csv': preview_csv,
+        'data.delete': delete,
+        'data.rename': rename,
+        'data.duplicate': duplicate,
+        'data.unlink_file': unlink_file,
+        'data.unlink_relation': unlink_relation,
+        'data.tag': tag,
+        'data.untag': untag,
+        'data.tags_list': tags_list,
+        'data.reload_file': reload_file,
+        'data.unlink_all_file': unlink_all_file,
+        'data.delete_all_file': delete_all_file,
+        'data.use_as_targets': use_as_targets,
+        'data.serialize': serialize,
+        'data.paste_mime': paste_mime,
     }

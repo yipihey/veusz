@@ -101,7 +101,39 @@ def register(ctx):
             'height': int(h),
         }
 
+    def copy_image(page: int = 0, w: int = 800, h: int = 600,
+                   dpi: int = 96, format: str = 'png', **_):
+        """Render the page to bytes for the frontend to put on the OS
+        clipboard. Mirrors the legacy "Copy as Image" action.
+
+        ``format`` ∈ {"png", "svg"}. Returns ``{format, mime_type,
+        payload_b64}`` regardless of format — base64 keeps the wire
+        format uniform.
+        """
+        if format == 'png':
+            r = png(page=page, w=w, h=h, dpi=dpi, antialias=True)
+            return {
+                'format': 'png',
+                'mime_type': 'image/png',
+                'payload_b64': r['png'],
+                'width': r['width'],
+                'height': r['height'],
+            }
+        if format == 'svg':
+            r = svg(page=page, w=w, h=h, dpi=dpi)
+            svg_bytes = r['svg'].encode('utf-8')
+            return {
+                'format': 'svg',
+                'mime_type': 'image/svg+xml',
+                'payload_b64': base64.b64encode(svg_bytes).decode('ascii'),
+                'width': r['width'],
+                'height': r['height'],
+            }
+        raise RpcError(INVALID_PARAMS,
+                       f'unsupported format {format!r}; expected png|svg')
+
     return {
         'render.png': png,
         'render.svg': svg,
+        'render.copy_image': copy_image,
     }
