@@ -94,11 +94,16 @@ impl TextEngine {
         };
         let mut out = Vec::new();
         let (origin_x, origin_y) = baseline_xy;
+        // `(x, y)` is the baseline of the *first* line — the contract of
+        // Qt's `drawText(QPointF, …)`, which `qt_capture` records, and which
+        // the WASM renderer also assumes. Parley reports each line's baseline
+        // as an offset from the top of the layout box, so anchor the first
+        // line's baseline at `origin_y` and offset later lines by their delta.
+        let mut first_baseline: Option<f64> = None;
 
         for line in parley_layout.lines() {
-            // baseline-relative y for this line
-            let line_metrics = line.metrics();
-            let baseline_y = line_metrics.baseline as f64;
+            let baseline_y = line.metrics().baseline as f64;
+            let line_dy = baseline_y - *first_baseline.get_or_insert(baseline_y);
             for item in line.items() {
                 let glyph_run = match item {
                     PositionedLayoutItem::GlyphRun(g) => g,
@@ -118,7 +123,7 @@ impl TextEngine {
                 let mut x_cursor = glyph_run.offset() as f64;
                 for glyph in glyph_run.glyphs() {
                     let gx = origin_x + x_cursor + glyph.x as f64;
-                    let gy = origin_y + baseline_y + glyph.y as f64;
+                    let gy = origin_y + line_dy + glyph.y as f64;
                     let glyph_id = GlyphId::from(glyph.id);
                     if let Some(outline) = outlines.get(glyph_id) {
                         let mut pen = OutlineToPath::default();
@@ -190,9 +195,9 @@ pub struct GlyphInstance {
 /// Convenience helper: draw `layout` at `(x, y)` against any
 /// [`Painter`], using `engine` for layout.
 ///
-/// `(x, y)` is the **top-left** of the layout box, NOT the baseline. This
-/// matches the convention the abstract `draw_text(layout, x, y)` uses in
-/// [`veusz_paint_core::Painter`].
+/// `(x, y)` is the **baseline** of the first line — the convention the
+/// abstract `draw_text(layout, x, y)` uses in [`veusz_paint_core::Painter`]
+/// (it mirrors Qt's `drawText(QPointF, …)`, captured verbatim by qt_capture).
 pub fn draw_text_into_painter<P: veusz_paint_core::Painter>(
     engine: &TextEngine,
     painter: &mut P,
@@ -313,6 +318,31 @@ mod tests {
         for w in xs.windows(2) {
             assert!(w[1] >= w[0],
                     "glyph x positions must increase: {} -> {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn first_line_baseline_anchored_at_origin_y() {
+        if !require_fonts() {
+            eprintln!("no fonts available; skipping");
+            return;
+        }
+        let engine = TextEngine::new();
+        let layout = TextLayout {
+            text: "Agy".into(),
+            style: TextStyle { size_pt: 20.0, ..TextStyle::default() },
+        };
+        let origin_y = 100.0;
+        let glyphs = engine.layout_to_glyph_paths(&layout, (0.0, origin_y));
+        assert!(!glyphs.is_empty());
+        // `(x, y)` is the baseline of the first line, so each glyph's translate
+        // y must sit at origin_y — not origin_y + ascent. The old top-left bug
+        // shifted text down by a full ascent (~0.8*size); guard against it.
+        for g in &glyphs {
+            let dy = (g.position.f - origin_y).abs();
+            assert!(dy < 2.0,
+                "glyph baseline y {} should be ~{origin_y}, off by {dy}",
+                g.position.f);
         }
     }
 
