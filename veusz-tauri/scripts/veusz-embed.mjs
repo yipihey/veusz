@@ -15,6 +15,15 @@
  *                  with no external deps except the Pyodide core (loaded from
  *                  jsDelivr unless --pyodide points at a vendored copy).
  *
+ * Poster (static fallback): by default we render a PNG of the figure next to
+ * the .vsz and wire it as the <veusz-figure poster="…">. The element shows it
+ * immediately, keeps it (instead of a blank box) on browsers without WebGPU,
+ * and — when a poster is present — defers the heavy Pyodide runtime until the
+ * reader clicks the figure, so a page of figures pays only its posters until
+ * one is used. Use --poster <img> to supply your own, --no-poster to skip, or
+ * --eager to load the runtime immediately. Auto-generation needs a Python with
+ * veusz importable (override with --python <path> or $VEUSZ_PYTHON).
+ *
  * Build the artifacts first:
  *   pnpm build:embed                                  # dist-embed/veusz-embed.js
  *   .venv/bin/python ../scripts/build_embed_wheel.py  # dist/veusz-*.whl
@@ -22,18 +31,23 @@
  */
 
 import { readFileSync, mkdirSync, copyFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, basename, join } from 'node:path';
+import { dirname, resolve, basename, extname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TAURI = resolve(HERE, '..');
 const REPO = resolve(TAURI, '..');
 const VERSION = readFileSync(`${REPO}/VERSION`, 'utf-8').trim();
 const WHEEL = `veusz-${VERSION}-py3-none-any.whl`;
-const DEFAULT_CDN = 'https://veusz.github.io/veusz-embed';
+// Versioned Pages path published by .github/workflows/deploy-embed.yml. Pinning
+// the version means a page generated today keeps working when newer runtimes
+// ship. Override with --cdn for a different host (e.g. the upstream org).
+const DEFAULT_CDN = `https://yipihey.github.io/veusz/embed/v${VERSION}`;
 
 function parseArgs(argv) {
-  const a = { _: [], bundle: false, out: 'dist', cdn: DEFAULT_CDN, width: 700, height: 500, pyodide: '' };
+  const a = { _: [], bundle: false, out: 'dist', cdn: DEFAULT_CDN, width: 700, height: 500,
+    pyodide: '', poster: '', noPoster: false, python: '', eager: false };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--bundle') a.bundle = true;
@@ -42,13 +56,19 @@ function parseArgs(argv) {
     else if (t === '--width') a.width = Number(argv[++i]);
     else if (t === '--height') a.height = Number(argv[++i]);
     else if (t === '--pyodide') a.pyodide = argv[++i].replace(/\/+$/, '');
+    else if (t === '--poster') a.poster = argv[++i];
+    else if (t === '--no-poster') a.noPoster = true;
+    else if (t === '--eager') a.eager = true;
+    else if (t === '--python') a.python = argv[++i];
     else a._.push(t);
   }
   return a;
 }
 
-function html({ vszName, width, height, scriptSrc, wasmBase, wheelUrl, pyodideIndex }) {
+function html({ vszName, width, height, scriptSrc, wasmBase, wheelUrl, pyodideIndex, posterName, eager }) {
   const pyAttr = pyodideIndex ? `\n    pyodide-index="${pyodideIndex}"` : '';
+  const posterAttr = posterName ? `\n    poster="./${posterName}"` : '';
+  const eagerAttr = eager ? '\n    eager="true"' : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -61,12 +81,57 @@ function html({ vszName, width, height, scriptSrc, wasmBase, wheelUrl, pyodideIn
 <body>
   <veusz-figure
     src="./${vszName}"
-    width="${width}" height="${height}"
+    width="${width}" height="${height}"${posterAttr}${eagerAttr}
     wasm-base="${wasmBase}"
     veusz-wheel="${wheelUrl}"${pyAttr}></veusz-figure>
 </body>
 </html>
 `;
+}
+
+// Resolve a Python interpreter that can import veusz: explicit --python, then
+// $VEUSZ_PYTHON, then the repo's .venv, then PATH python3.
+function resolvePython(explicit) {
+  const candidates = [
+    explicit, process.env.VEUSZ_PYTHON,
+    join(REPO, '.venv', 'bin', 'python'), 'python3',
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (p === 'python3' || existsSync(p)) return p;
+  }
+  return 'python3';
+}
+
+// Produce a static PNG poster next to the .vsz. Returns the poster filename, or
+// '' if generation was skipped or failed (the page still works — it just shows
+// a text fallback instead of an image when WebGPU is absent).
+function makePoster(args, vsz, stem, out) {
+  if (args.noPoster) return '';
+  // Author-supplied image: copy it verbatim.
+  if (args.poster) {
+    if (!existsSync(args.poster)) {
+      console.warn(`--poster: no such file ${args.poster}; emitting page without a poster`);
+      return '';
+    }
+    const name = `${stem}.poster${extname(args.poster) || '.png'}`;
+    copyFileSync(args.poster, join(out, name));
+    return name;
+  }
+  // Auto-generate via the headless renderer (needs a Python with veusz).
+  const name = `${stem}.poster.png`;
+  const python = resolvePython(args.python);
+  const script = join(REPO, 'scripts', 'render_poster.py');
+  try {
+    execFileSync(python, [script, vsz, '-o', join(out, name),
+      '--width', String(args.width), '--height', String(args.height)],
+      { stdio: 'pipe', timeout: 120000 });
+    return name;
+  } catch (e) {
+    const why = (e && e.stderr ? String(e.stderr).trim().split('\n').pop() : e?.message) || 'unknown error';
+    console.warn(`poster generation skipped (${python}): ${why}`);
+    console.warn('  supply one with --poster <img>, or pass --no-poster to silence this.');
+    return '';
+  }
 }
 
 function copyTree(srcDir, dstDir, filter = () => true) {
@@ -82,8 +147,11 @@ function build(args) {
   if (!existsSync(vsz)) { console.error(`no such file: ${vsz}`); process.exit(2); }
   const out = resolve(args.out);
   const vszName = basename(vsz);
+  const stem = vszName.replace(/\.vsz$/i, '');
   mkdirSync(out, { recursive: true });
   copyFileSync(vsz, join(out, vszName));
+
+  const posterName = makePoster(args, vsz, stem, out);
 
   if (args.bundle) {
     const embedDir = `${TAURI}/dist-embed`;
@@ -97,14 +165,14 @@ function build(args) {
     copyTree(wasmDir, join(out, 'wasm'));
     copyFileSync(wheelPath, join(out, WHEEL));
     writeFileSync(join(out, 'index.html'), html({
-      vszName, width: args.width, height: args.height,
+      vszName, width: args.width, height: args.height, posterName, eager: args.eager,
       scriptSrc: './veusz-embed.js', wasmBase: './wasm', wheelUrl: `./${WHEEL}`,
       pyodideIndex: args.pyodide || '',
     }));
     console.log(`bundle written to ${out}/ (self-contained; Pyodide core ${args.pyodide ? 'vendored' : 'from jsDelivr'})`);
   } else {
     writeFileSync(join(out, 'index.html'), html({
-      vszName, width: args.width, height: args.height,
+      vszName, width: args.width, height: args.height, posterName, eager: args.eager,
       scriptSrc: `${args.cdn}/veusz-embed.js`, wasmBase: `${args.cdn}/wasm`,
       wheelUrl: `${args.cdn}/${WHEEL}`, pyodideIndex: args.pyodide || '',
     }));
@@ -114,7 +182,7 @@ function build(args) {
 
 const args = parseArgs(process.argv.slice(2));
 if (args._[0] !== 'build') {
-  console.error('usage: veusz-embed build <file.vsz> -o <dir> [--bundle] [--cdn <base>]');
+  console.error('usage: veusz-embed build <file.vsz> -o <dir> [--bundle] [--cdn <base>] [--poster <img>|--no-poster]');
   process.exit(2);
 }
 build(args);

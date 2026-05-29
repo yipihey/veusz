@@ -1,0 +1,96 @@
+# Build the in-browser embed runtime and publish it to GitHub Pages under a
+# *versioned* path, so author pages pinned to a version never break when a
+# newer one ships.
+#
+# Layout published (VERSION comes from the repo's VERSION file):
+#   https://yipihey.github.io/veusz/embed/v<VERSION>/veusz-embed.js   (+ chunks)
+#   https://yipihey.github.io/veusz/embed/v<VERSION>/wasm/...          (Vello wasm)
+#   https://yipihey.github.io/veusz/embed/v<VERSION>/veusz-<VERSION>-py3-none-any.whl
+#
+# That base URL is exactly what `veusz-embed build` (default, CDN mode) bakes
+# into the page it generates. Authors then host only their .vsz + index.html.
+#
+# Deploy goes to the `gh-pages` branch with keep_files: true, so each version
+# accumulates instead of replacing the previous ones. Enable Pages for this
+# repo (Settings → Pages → Deploy from branch → gh-pages) once.
+name: Deploy embed runtime to Pages
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # peaceiris/actions-gh-pages pushes to gh-pages
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read VERSION
+        id: ver
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Build headless veusz wheel
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          # Pure-Python wheel: no PyQt6 / numpy / C-extensions needed to build.
+          python scripts/build_embed_wheel.py
+
+      - name: Set up Rust (with wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: veusz-tauri
+      - name: Install wasm-bindgen CLI (pinned to the crate version)
+        run: |
+          # Keep the CLI in lock-step with the wasm-bindgen crate in Cargo.lock,
+          # or wasm-bindgen will refuse to process the .wasm.
+          WBV=$(grep -A1 '^name = "wasm-bindgen"$' veusz-tauri/Cargo.lock \
+                | grep '^version' | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "wasm-bindgen-cli $WBV"
+          cargo install wasm-bindgen-cli --version "$WBV" --locked
+      - name: Build Vello WASM
+        run: scripts/build_paint_wasm.sh
+
+      - name: Set up Node + pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: veusz-tauri/pnpm-lock.yaml
+      - name: Build embed library
+        working-directory: veusz-tauri
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm sync-wasm        # crates/.../pkg -> public/wasm
+          pnpm build:embed      # -> dist-embed/veusz-embed.js (+ chunks)
+
+      - name: Assemble versioned site
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          DEST="site/embed/v${V}"
+          mkdir -p "$DEST/wasm"
+          # The ES module + its code-split chunks (skip .map source maps).
+          find veusz-tauri/dist-embed -maxdepth 1 -name '*.js' -exec cp {} "$DEST/" \;
+          cp veusz-tauri/public/wasm/* "$DEST/wasm/"
+          cp "dist/veusz-${V}-py3-none-any.whl" "$DEST/"
+          ls -R "$DEST"
+
+      - name: Deploy to gh-pages (versioned, accumulating)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          keep_files: true   # preserve other versions already published

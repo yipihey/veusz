@@ -34,9 +34,10 @@ interface VelloModule {
 
 /** Base URL for the runtime assets. Defaults to the locally-synced copy
  *  (good for the offline Tauri desktop app). Embeds on the web override it
- *  to the CORS-enabled, versioned GitHub Pages host, e.g.:
+ *  to the CORS-enabled, versioned GitHub Pages host published by
+ *  .github/workflows/deploy-embed.yml, e.g.:
  *    globalThis.__VEUSZ_WASM_BASE__ =
- *      'https://yipihey.github.io/veusz/figure-runtime/v0.1.0'
+ *      'https://yipihey.github.io/veusz/embed/v4.2.1/wasm'
  *  (Pages serves .wasm as application/wasm with access-control-allow-origin: *). */
 function wasmBase(): string {
   const g = globalThis as unknown as { __VEUSZ_WASM_BASE__?: string };
