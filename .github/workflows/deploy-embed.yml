@@ -90,17 +90,16 @@ jobs:
       - name: Build embed library
         working-directory: veusz-tauri
         run: |
-          # pnpm 11 exits non-zero on a fresh install when dependencies have
-          # build scripts (esbuild/msw) — the allowlist in pnpm-workspace.yaml
-          # isn't applied here, so it's only a notice. Tolerate it, then verify
-          # the install actually populated node_modules so a real failure still
-          # stops the build. esbuild's native binary ships as an optional dep;
-          # rebuild it defensively in case the platform binary needs linking.
+          # pnpm 11 exits non-zero on the esbuild/msw build-script notice (the
+          # allowlist in pnpm-workspace.yaml isn't applied here), and `pnpm run`
+          # re-triggers it via its pre-run deps check. So: tolerate the install
+          # notice, confirm node_modules was populated, then invoke the build
+          # tools directly (bypassing `pnpm run`). esbuild's native binary ships
+          # as an optional dependency, so vite builds without its postinstall.
           pnpm install --frozen-lockfile || true
           test -d node_modules/vite || { echo "::error::pnpm install failed"; exit 1; }
-          pnpm rebuild esbuild || true
-          pnpm sync-wasm        # crates/.../pkg -> public/wasm
-          pnpm build:embed      # -> dist-embed/veusz-embed.js (+ chunks)
+          node scripts/sync-wasm.mjs                              # -> public/wasm
+          node_modules/.bin/vite build --config vite.embed.config.ts  # -> dist-embed/
 
       - name: Restore previously published versions
         env:
