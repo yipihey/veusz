@@ -2,17 +2,21 @@
 # *versioned* path, so author pages pinned to a version never break when a
 # newer one ships.
 #
+# Deploys via GitHub's native Pages pipeline (actions/deploy-pages), so the
+# only repo setting is Settings → Pages → Source → "GitHub Actions" (visible by
+# default — no branch to create or select). Because deploy-pages replaces the
+# whole site each run, we keep previously published versions on a generated
+# `embed-dist` branch, restore them before each deploy, and re-publish the
+# union. (`embed-dist` is a build artifact store, force-pushed each run — it is
+# NOT source history.)
+#
 # Layout published (VERSION comes from the repo's VERSION file):
 #   https://yipihey.github.io/veusz/embed/v<VERSION>/veusz-embed.js   (+ chunks)
 #   https://yipihey.github.io/veusz/embed/v<VERSION>/wasm/...          (Vello wasm)
 #   https://yipihey.github.io/veusz/embed/v<VERSION>/veusz-<VERSION>-py3-none-any.whl
 #
 # That base URL is exactly what `veusz-embed build` (default, CDN mode) bakes
-# into the page it generates. Authors then host only their .vsz + index.html.
-#
-# Deploy goes to the `gh-pages` branch with keep_files: true, so each version
-# accumulates instead of replacing the previous ones. Enable Pages for this
-# repo (Settings → Pages → Deploy from branch → gh-pages) once.
+# into the page it generates.
 name: Deploy embed runtime to Pages
 
 on:
@@ -21,11 +25,21 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write   # peaceiris/actions-gh-pages pushes to gh-pages
+  contents: write   # push the embed-dist artifact-store branch
+  pages: write      # deploy to Pages
+  id-token: write   # OIDC for deploy-pages
+
+# Never run two Pages deploys at once; don't cancel an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
 
@@ -77,20 +91,55 @@ jobs:
           pnpm sync-wasm        # crates/.../pkg -> public/wasm
           pnpm build:embed      # -> dist-embed/veusz-embed.js (+ chunks)
 
-      - name: Assemble versioned site
+      - name: Restore previously published versions
+        env:
+          REPO_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          mkdir -p site
+          if git ls-remote --exit-code --heads "$REPO_URL" embed-dist >/dev/null 2>&1; then
+            git clone --depth 1 --branch embed-dist "$REPO_URL" site
+            echo "restored existing embed-dist"
+          else
+            echo "no embed-dist yet — first publish"
+          fi
+
+      - name: Stage this version
         run: |
           V="${{ steps.ver.outputs.version }}"
           DEST="site/embed/v${V}"
-          mkdir -p "$DEST/wasm"
+          rm -rf "$DEST"; mkdir -p "$DEST/wasm"
           # The ES module + its code-split chunks (skip .map source maps).
           find veusz-tauri/dist-embed -maxdepth 1 -name '*.js' -exec cp {} "$DEST/" \;
           cp veusz-tauri/public/wasm/* "$DEST/wasm/"
           cp "dist/veusz-${V}-py3-none-any.whl" "$DEST/"
+          touch site/.nojekyll
+          [ -f site/index.html ] || printf '%s\n' \
+            '<!doctype html><meta charset=utf-8><title>Veusz embed runtime</title>' \
+            '<h1>Veusz embed runtime</h1>' \
+            '<p>Versioned assets live under <code>/embed/v&lt;version&gt;/</code>.</p>' \
+            > site/index.html
           ls -R "$DEST"
 
-      - name: Deploy to gh-pages (versioned, accumulating)
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Persist embed-dist store branch
+        working-directory: site
+        env:
+          REPO_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          # Force-push the union (restored + this version) as a fresh single
+          # commit. This branch is a generated store, not source history.
+          rm -rf .git
+          git init -q
+          git checkout -q -b embed-dist
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "embed v${{ steps.ver.outputs.version }}"
+          git push -f "$REPO_URL" embed-dist
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
-          keep_files: true   # preserve other versions already published
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
