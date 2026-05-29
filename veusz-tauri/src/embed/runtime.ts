@@ -94,11 +94,13 @@ export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<Veusz
 
   progress('Starting renderer…');
   // Each figure gets its own bridge (registers widgets + a fresh document
-  // under qtshim), so multiple embeds on a page are independent.
+  // under qtshim), so multiple embeds on a page are independent. NB: Pyodide
+  // Python classes are instantiated by *calling* them, not with `new` (which
+  // returns a bare JS object lacking the Python methods).
   const bridgeMod = py.pyimport('veusz.daemon.pyodide_bridge') as {
-    Bridge: new () => PyodideBridge;
+    Bridge: () => PyodideBridge;
   };
-  const bridge = new bridgeMod.Bridge();
+  const bridge = bridgeMod.Bridge();
   const transport = pyodideTransport(bridge);
 
   const vszPath = `/veusz/figure_${_vszSeq++}.vsz`;

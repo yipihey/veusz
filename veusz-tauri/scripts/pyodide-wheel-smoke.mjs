@@ -33,29 +33,39 @@ py.FS.mkdir('/whl');
 py.FS.mount(py.FS.filesystems.NODEFS, { root: DIST }, '/whl');
 await micropip.install(`emfs:/whl/${wheel}`);
 
+// Exercise the EXACT JS-side path runtime.ts + pyodideTransport use: construct
+// the bridge by CALLING it (not `new` — that returns a bare JS object lacking
+// the Python methods), register the notify callback, and dispatch via JSON.
+const mod = py.pyimport('veusz.daemon.pyodide_bridge');
+const bridge = mod.Bridge();
+if (typeof bridge.set_notify !== 'function' || typeof bridge.dispatch_json !== 'function') {
+  console.error('bridge methods missing — Pyodide construction regressed'); process.exit(1);
+}
+const events = [];
+bridge.set_notify((m) => events.push(JSON.parse(m).method));
+const call = (method, params = {}) => {
+  const r = JSON.parse(bridge.dispatch_json(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })));
+  if (r.error) throw new Error(`${method}: ${r.error.message}`);
+  return r.result;
+};
+
 py.FS.mkdir('/veusz');
 py.FS.writeFile('/veusz/fit.vsz', VSZ);
+call('file.open', { path: '/veusz/fit.vsz' });
+const scene = call('render.scene', { page: 0, w: 566, h: 566, dpi: 96 });
+const p2d = call('render.pixel_to_data', { x: 283, y: 283 });
+const fontPath = py.runPython('from veusz import qtshim; qtshim._DEFAULT_TTF');
 
-const out = await py.runPythonAsync(`
-import json, os
-import veusz.daemon.pyodide_bridge as B
-from veusz import qtall as qt, qtshim
-br = B.Bridge()
-assert 'result' in br.dispatch('file.open', {'path': '/veusz/fit.vsz'})
-resp = json.loads(br.dispatch_json(json.dumps(
-    {'id': 1, 'method': 'render.scene',
-     'params': {'page': 0, 'w': 566, 'h': 566, 'dpi': 96}})))
-res = resp['result']
-json.dumps({
-  'backend': 'shim' if 'qtshim' in str(qt.QColor) else 'pyqt',
-  'font_in_wheel': 'site-packages/veusz/embed_data' in qtshim._DEFAULT_TTF and os.path.exists(qtshim._DEFAULT_TTF),
-  'has_scene': bool(res.get('scene_b64')),
-  'nbounds': len(res.get('bounds') or {}),
-})
-`);
-const info = JSON.parse(out);
+const info = {
+  has_scene: !!scene.scene_b64,
+  nbounds: Object.keys(scene.bounds || {}).length,
+  events,
+  p2d_dirs: [...new Set(p2d.axes.map((a) => a.direction))].sort(),
+  font_in_wheel: String(fontPath).includes('site-packages/veusz/embed_data'),
+};
 console.log('wheel smoke:', info, '(wheel:', wheel + ')');
-if (info.backend !== 'shim' || !info.font_in_wheel || !info.has_scene || info.nbounds < 1) {
+if (!info.has_scene || info.nbounds < 1 || !info.events.includes('doc.changed')
+    || info.p2d_dirs.join() !== 'horizontal,vertical' || !info.font_in_wheel) {
   console.error('WHEEL SMOKE FAILED'); process.exit(1);
 }
-console.log('OK — headless wheel imports under Pyodide and renders with the packaged font.');
+console.log('OK — wheel imports under Pyodide; JS-side bridge + transport flow renders a scene.');
