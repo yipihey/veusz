@@ -86,9 +86,13 @@ interface GroupBodyProps {
   datasets?: string[];
   onChange: (path: string, value: unknown) => void;
   settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
+  /** Enclosing subgroup's display label (undefined at the top level). Used
+   *  by `SettingRow` to disambiguate identically-named leaves like `color`
+   *  across PlotLine / MarkerFill / MarkerLine etc. */
+  groupLabel?: string;
 }
 
-function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu }: GroupBodyProps) {
+function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu, groupLabel }: GroupBodyProps) {
   return (
     <Fragment>
       {group.settings.map((s) =>
@@ -102,23 +106,28 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
             datasets={datasets}
             onChange={onChange}
             settingMenu={settingMenu}
+            groupLabel={groupLabel}
           />
         ),
       )}
-      {group.subgroups.map((sub) => (
-        <details key={sub.name} data-testid={`subgroup-${sub.name}`} open>
-          <summary>{sub.usertext || sub.name}</summary>
-          <GroupBody
-            group={sub}
-            basePath={joinPath(basePath, sub.name)}
-            widgetPath={widgetPath}
-            values={values}
-            datasets={datasets}
-            onChange={onChange}
-            settingMenu={settingMenu}
-          />
-        </details>
-      ))}
+      {group.subgroups.map((sub) => {
+        const label = sub.usertext || humanize(sub.name);
+        return (
+          <details key={sub.name} data-testid={`subgroup-${sub.name}`} open>
+            <summary>{label}</summary>
+            <GroupBody
+              group={sub}
+              basePath={joinPath(basePath, sub.name)}
+              widgetPath={widgetPath}
+              values={values}
+              datasets={datasets}
+              onChange={onChange}
+              settingMenu={settingMenu}
+              groupLabel={label}
+            />
+          </details>
+        );
+      })}
     </Fragment>
   );
 }
@@ -131,6 +140,7 @@ function SettingRow({
   datasets,
   onChange,
   settingMenu,
+  groupLabel,
 }: {
   schema: SettingSchema;
   basePath: string;
@@ -139,9 +149,11 @@ function SettingRow({
   datasets?: string[];
   onChange: (path: string, value: unknown) => void;
   settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
+  groupLabel?: string;
 }) {
   const Leaf = resolve(schema.typename);
   const path = joinPath(basePath, schema.name);
+  const label = labelFor(schema, groupLabel);
   // Multi-edit: when the selected widgets disagree on this setting,
   // the daemon flags `mixed_value` and nulls `value`. Reflect that
   // with a marker the leaf controls can read (and the row dims its
@@ -168,7 +180,7 @@ function SettingRow({
     // show the raw value so the user at least sees it.
     return (
       <div data-testid={`row-${schema.name}`} data-mixed={mixed || undefined}>
-        {wrapLabel(<label>{schema.usertext || schema.name}</label>)}
+        {wrapLabel(<label>{label}</label>)}
         <code data-testid={`fallback-${schema.name}`}>
           {value === undefined ? '(unset)' : JSON.stringify(value)}
         </code>
@@ -183,7 +195,7 @@ function SettingRow({
     >
       {wrapLabel(
         <label style={mixed ? { fontStyle: 'italic', color: '#888' } : undefined}>
-          {schema.usertext || schema.name}
+          {label}
           {mixed ? ' (mixed)' : ''}
         </label>,
       )}
@@ -200,4 +212,36 @@ function SettingRow({
 function joinPath(parent: string, name: string): string {
   if (parent === '/') return '/' + name;
   return parent + '/' + name;
+}
+
+/** Turn a CamelCase / PascalCase setting-group name into a readable label
+ *  ("MarkerFill" → "Marker fill"). Only used as a fallback when the schema
+ *  doesn't supply `usertext`. */
+function humanize(s: string): string {
+  if (!s) return s;
+  const spaced = s.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
+/** Leaves with these names appear in multiple subgroups (PlotLine, MarkerFill,
+ *  MarkerLine, …) on the same widget. The subgroup header alone is too easy to
+ *  miss — prefixing the row label with the group disambiguates them. */
+const AMBIGUOUS_SUBGROUP_LEAVES = new Set(['color', 'hide', 'width', 'style']);
+
+function labelFor(schema: SettingSchema, groupLabel: string | undefined): string {
+  const base = schema.usertext || schema.name;
+  if (!groupLabel) {
+    // Top-level: surface a more descriptive label when the schema provides one
+    // — notably the master `color` setting whose descr is "Master color" while
+    // its usertext is just "Color", which is impossible to tell apart from the
+    // PlotLine/MarkerFill/etc. colors below it.
+    if (schema.name === 'color' && schema.descr) return schema.descr;
+    return base;
+  }
+  // Inside a subgroup: prefix shared-name leaves with the group's label so
+  // "Color" under MarkerFill reads as "Marker fill color", not just "Color".
+  if (AMBIGUOUS_SUBGROUP_LEAVES.has(schema.name)) {
+    return `${groupLabel} ${base.toLowerCase()}`;
+  }
+  return base;
 }

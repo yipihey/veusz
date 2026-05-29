@@ -63,6 +63,34 @@ describe('Inspector', () => {
     expect(onChange).toHaveBeenCalledWith('/page1/graph1/xy1/PlotLine/style', 'dashed');
   });
 
+  it('disambiguates shared leaf names with the enclosing subgroup label', () => {
+    // The xy widget has a `color` leaf inside PlotLine (and MarkerFill,
+    // MarkerLine, …); rendering each just as "Color" makes them
+    // indistinguishable. The row should read "Plot line color" instead.
+    render(<Inspector {...baseProps} onChange={() => {}} />);
+    const sub = screen.getByTestId('subgroup-PlotLine');
+    expect(within(sub).getByText('Plot line color')).toBeInTheDocument();
+    expect(within(sub).getByText('Plot line hide')).toBeInTheDocument();
+    expect(within(sub).getByText('Plot line width')).toBeInTheDocument();
+    expect(within(sub).getByText('Plot line style')).toBeInTheDocument();
+  });
+
+  it('uses the descr for the top-level master color (when distinct)', () => {
+    // Real backend: the top-level `color` setting has usertext "Color"
+    // but descr "Master color" — surfacing descr disambiguates it from
+    // the per-subgroup colors below.
+    const schema = {
+      typename: 'xy', mode: 'class', name: 'xy', usertext: '', descr: '', setnsmode: '',
+      settings: [{
+        name: 'color', typename: 'color', default: 'auto',
+        usertext: 'Color', descr: 'Master color', hidden: false, formatting: false,
+      }],
+      subgroups: [],
+    } as never;
+    render(<Inspector schema={schema} widgetPaths={['/x']} values={{}} onChange={() => {}} />);
+    expect(screen.getByText('Master color')).toBeInTheDocument();
+  });
+
   it('hands the dataset list down to dataset pickers', () => {
     render(<Inspector {...baseProps} onChange={() => {}} />);
     const xRow = screen.getByTestId('row-xData');
