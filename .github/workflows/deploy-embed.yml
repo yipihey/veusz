@@ -113,7 +113,7 @@ jobs:
             echo "no embed-dist yet — first publish"
           fi
 
-      - name: Stage this version
+      - name: Stage this version + live example
         run: |
           V="${{ steps.ver.outputs.version }}"
           DEST="site/embed/v${V}"
@@ -122,13 +122,21 @@ jobs:
           find veusz-tauri/dist-embed -maxdepth 1 -name '*.js' -exec cp {} "$DEST/" \;
           cp veusz-tauri/public/wasm/* "$DEST/wasm/"
           cp "dist/veusz-${V}-py3-none-any.whl" "$DEST/"
+          # A live, self-contained example figure. CDN mode → it references the
+          # version assets staged above; poster is the committed Qt render so
+          # the static fallback (and non-WebGPU browsers) look right too.
+          rm -rf site/example
+          node veusz-tauri/scripts/veusz-embed.mjs build examples/fit.vsz \
+            -o site/example --poster veusz-tauri/example/fit.poster.png
           touch site/.nojekyll
-          [ -f site/index.html ] || printf '%s\n' \
+          printf '%s\n' \
             '<!doctype html><meta charset=utf-8><title>Veusz embed runtime</title>' \
+            '<style>body{font:15px/1.5 system-ui;max-width:680px;margin:3rem auto;padding:0 1rem}</style>' \
             '<h1>Veusz embed runtime</h1>' \
-            '<p>Versioned assets live under <code>/embed/v&lt;version&gt;/</code>.</p>' \
+            '<p>Live interactive example: <a href="./example/">/example/</a></p>' \
+            '<p>Versioned runtime assets live under <code>/embed/v&lt;version&gt;/</code>.</p>' \
             > site/index.html
-          ls -R "$DEST"
+          ls -R site/example "$DEST"
 
       - name: Persist embed-dist store branch
         working-directory: site
