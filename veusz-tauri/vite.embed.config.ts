@@ -9,6 +9,13 @@ import react from '@vitejs/plugin-react';
 // loaded at runtime from a CDN/bundle, not included here.
 export default defineConfig({
   plugins: [react()],
+  // Library mode (unlike an app build) does NOT replace process.env.NODE_ENV,
+  // so React/zustand's `process.env.NODE_ENV === "production"` checks reference
+  // the Node global `process`, which is undefined in a plain browser <script>
+  // and throws before customElements.define runs (blank embed). Inline it.
+  define: {
+    'process.env.NODE_ENV': JSON.stringify('production'),
+  },
   build: {
     outDir: 'dist-embed',
     emptyOutDir: true,
