@@ -48,10 +48,45 @@ function wasmBase(): string {
 }
 
 let modulePromise: Promise<VelloModule> | null = null;
+let _limitShimInstalled = false;
+
+/**
+ * Work around a wgpu/Chrome version mismatch: wgpu (22.x, bundled in the Vello
+ * WASM) requests the device with `requiredLimits` that include
+ * `maxInterStageShaderComponents`, a limit recent Chrome REMOVED from the
+ * WebGPU spec. Chrome then rejects `requestDevice` with an OperationError and
+ * the figure never paints. We patch `GPUAdapter.requestDevice` once to drop any
+ * limit key the adapter doesn't actually report, so unknown/removed limits are
+ * silently ignored while real ones pass through. Safe and idempotent; harmless
+ * on browsers that still recognise every limit.
+ */
+function installLimitShim(): void {
+  if (_limitShimInstalled) return;
+  const Adapter = (globalThis as { GPUAdapter?: { prototype: { requestDevice: unknown } } }).GPUAdapter;
+  if (!Adapter) return;
+  _limitShimInstalled = true;
+  const proto = Adapter.prototype as unknown as {
+    requestDevice: (desc?: { requiredLimits?: Record<string, number> }) => Promise<unknown>;
+    limits: Record<string, number | undefined>;
+  };
+  const orig = proto.requestDevice;
+  proto.requestDevice = function (desc?: { requiredLimits?: Record<string, number> }) {
+    if (desc?.requiredLimits) {
+      const supported = (this as unknown as { limits: Record<string, number | undefined> }).limits;
+      const cleaned: Record<string, number> = {};
+      for (const [k, v] of Object.entries(desc.requiredLimits)) {
+        if (supported && supported[k] !== undefined) cleaned[k] = v;
+      }
+      desc = { ...desc, requiredLimits: cleaned };
+    }
+    return orig.call(this, desc);
+  };
+}
 
 function loadModule(): Promise<VelloModule> {
   if (!modulePromise) {
     modulePromise = (async () => {
+      installLimitShim();
       const base = wasmBase();
       const mod = (await import(/* @vite-ignore */ `${base}/veusz_paint_wasm.js`)) as VelloModule;
       // Pass the wasm URL explicitly rather than relying on import.meta.url

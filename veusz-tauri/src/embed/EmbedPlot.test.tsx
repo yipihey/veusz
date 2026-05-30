@@ -52,9 +52,11 @@ describe('EmbedPlot pointer interactions', () => {
 
     await waitFor(() => expect(setValues).toHaveBeenCalled());
     const ops = setValues.mock.calls[0][0];
+    // Backing is 2× the 300×200 display (SUPERSAMPLE), so canvas px = 2× client
+    // px → the mocked data values (px/10) double vs. a 1:1 mapping.
     expect(ops).toEqual(expect.arrayContaining([
-      { path: `${X}/min`, value: 5 }, { path: `${X}/max`, value: 20 },
-      { path: `${Y}/min`, value: 5 }, { path: `${Y}/max`, value: 15 },
+      { path: `${X}/min`, value: 10 }, { path: `${X}/max`, value: 40 },
+      { path: `${Y}/min`, value: 10 }, { path: `${Y}/max`, value: 30 },
     ]));
   });
 

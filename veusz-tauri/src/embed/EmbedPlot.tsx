@@ -10,7 +10,7 @@
  * HiDPI screens. Input is unified on Pointer Events (mouse, touch, stylus).
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../state/doc';
 import {
@@ -22,6 +22,11 @@ type Store = UseBoundStore<StoreApi<DocState>>;
 
 const DRAG_THRESHOLD = 4;
 const MAX_RENDER_DIM = 2400;
+// Fixed supersample for the backing store. The canvas is rendered ONCE at this
+// resolution and then CSS-scaled to fit; we deliberately do NOT resize the
+// backing on container resize — mutating canvas.width/height clears the WebGPU
+// surface and blanks the figure (the bug this replaces).
+const SUPERSAMPLE = 2;
 
 type Pt = { clientX: number; clientY: number };
 
@@ -38,8 +43,16 @@ export function EmbedPlot({
   const wrapRef = useRef<HTMLDivElement>(null);
   const figRef = useRef<HTMLDivElement>(null);
 
-  // Backing-store (device px) and CSS display size of the fitted figure box.
-  const [renderSize, setRenderSize] = useState({ w: width, h: height });
+  // Fixed backing-store resolution (rendered once; never churned on resize).
+  const renderSize = useMemo(() => {
+    let w = Math.max(1, Math.round(width * SUPERSAMPLE));
+    let h = Math.max(1, Math.round(height * SUPERSAMPLE));
+    const m = Math.max(w, h);
+    if (m > MAX_RENDER_DIM) { const f = MAX_RENDER_DIM / m; w = Math.round(w * f); h = Math.round(h * f); }
+    return { w, h };
+  }, [width, height]);
+  // CSS display size of the fitted figure box (contain), updated on resize.
+  // Only changes the canvas's *style* size, not its backing store.
   const [disp, setDisp] = useState({ w: width, h: height });
   const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [tip, setTip] = useState<{ left?: number; right?: number; top: number; text: string } | null>(null);
@@ -59,11 +72,10 @@ export function EmbedPlot({
   const pointers = useRef<Map<number, Pt>>(new Map());
   const lastHover = useRef(0);
 
-  // Contain-fit the figure into its container and render at device resolution.
+  // Contain-fit the figure's *display* size into its container (CSS only).
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
-    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     const aspect = width > 0 ? height / width : 0.7143;
     const compute = () => {
       const cw = wrap.clientWidth, ch = wrap.clientHeight;
@@ -76,12 +88,7 @@ export function EmbedPlot({
       } else {
         dw = width; dh = height;
       }
-      let bw = Math.max(1, Math.round(dw * dpr));
-      let bh = Math.max(1, Math.round(dh * dpr));
-      const m = Math.max(bw, bh);
-      if (m > MAX_RENDER_DIM) { const f = MAX_RENDER_DIM / m; bw = Math.round(bw * f); bh = Math.round(bh * f); }
       setDisp((p) => (Math.abs(p.w - dw) < 0.5 && Math.abs(p.h - dh) < 0.5 ? p : { w: dw, h: dh }));
-      setRenderSize((p) => (p.w === bw && p.h === bh ? p : { w: bw, h: bh }));
     };
     compute();
     if (typeof ResizeObserver === 'undefined') return;
@@ -94,8 +101,7 @@ export function EmbedPlot({
     if (tree && tree.children.length > 0) requestRender(currentPage, renderSize.w, renderSize.h);
   }, [tree, values, currentPage, renderSize.w, renderSize.h, requestRender]);
 
-  // Paint the current scene; repaints on size change too (resizing the canvas
-  // backing store clears it, so we must re-blit even if the scene is unchanged).
+  // Paint the current scene to the (fixed-size) canvas whenever it changes.
   useEffect(() => {
     const sb = render?.sceneB64;
     const cv = canvasRef.current;
@@ -110,7 +116,7 @@ export function EmbedPlot({
       }
     })();
     return () => { cancelled = true; };
-  }, [render?.sceneB64, renderSize.w, renderSize.h]);
+  }, [render?.sceneB64]);
 
   const rpc = () => store.getState().rpc;
 
