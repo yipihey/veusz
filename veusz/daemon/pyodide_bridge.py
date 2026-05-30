@@ -71,10 +71,13 @@ class Bridge:
     def __init__(self, deterministic: bool = False):
         self.ctx = Context(deterministic=deterministic)
         self.ctx.startup()                         # QApplication + widgets + doc
-        # The browser can't make sync network calls from Python; the JS side
-        # fetches URL data and feeds bytes in via `data.url_ingest`.
-        from ..dataimport import url_fetch
-        url_fetch.set_fetcher(url_fetch._pyodide_cache_only_fetcher)
+        # In the browser, Python can't make sync network calls — JS fetches URL
+        # data and feeds bytes in via `data.url_ingest`. In CPython (desktop,
+        # render_poster, etc.) keep the urllib default so `ImportFileURL` works.
+        import sys
+        if sys.platform == 'emscripten':
+            from ..dataimport import url_fetch
+            url_fetch.set_fetcher(url_fetch._pyodide_cache_only_fetcher)
         self.notifier = BrowserNotifier()
         self.ctx.notifier = self.notifier
         self.methods = all_handlers(self.ctx)
