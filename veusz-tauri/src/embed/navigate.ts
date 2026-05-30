@@ -70,6 +70,54 @@ export function computePanOps(
   return ops;
 }
 
+/**
+ * Two-finger pinch: produce the doc.set ops so the data points under each
+ * finger at gesture *start* end up under each finger at gesture *end* (the
+ * standard "content sticks to your fingers" behavior), per shared axis.
+ *
+ * Inputs are the per-axis data values from `render.pixel_to_data` at four
+ * sample points — finger 1 & 2 at the start, and finger 1 & 2 at the end —
+ * plus the axis ranges captured at the start. We never need the axis pixel
+ * extent: for a linear axis with `data(p) = a·p + b`, writing the start data
+ * (d1,d2) and the end data measured under the *old* range (e1,e2) gives the
+ * scale `k = (d2−d1)/(e2−e1)`, and the new range is
+ *   min' = d1 + k·(min₀ − e1),  max' = d1 + k·(max₀ − e1).
+ * (For log axes this is approximate, the same simplification the pan/zoom
+ * helpers already make.)
+ */
+export function computePinchOps(
+  start1: AxisHit[],
+  start2: AxisHit[],
+  end1: AxisHit[],
+  end2: AxisHit[],
+  ranges: Map<string, { min: number; max: number }>,
+): SetOp[] {
+  const s2 = new Map(start2.map((a) => [a.path, a]));
+  const e1m = new Map(end1.map((a) => [a.path, a]));
+  const e2m = new Map(end2.map((a) => [a.path, a]));
+  const ops: SetOp[] = [];
+  for (const f of start1) {
+    const b = s2.get(f.path);
+    const g1 = e1m.get(f.path);
+    const g2 = e2m.get(f.path);
+    const r = ranges.get(f.path);
+    if (!b || !g1 || !g2 || !r) continue;
+    const d1 = f.value, d2 = b.value, e1 = g1.value, e2 = g2.value;
+    const den = e2 - e1;
+    if (!Number.isFinite(den) || den === 0) continue;
+    const k = (d2 - d1) / den;
+    if (!Number.isFinite(k) || k <= 0) continue; // crossed/degenerate fingers
+    const a = d1 + k * (r.min - e1);
+    const c = d1 + k * (r.max - e1);
+    if (!Number.isFinite(a) || !Number.isFinite(c)) continue;
+    const lo = Math.min(a, c), hi = Math.max(a, c);
+    if (!(hi > lo)) continue;
+    ops.push({ path: `${f.path}/min`, value: lo });
+    ops.push({ path: `${f.path}/max`, value: hi });
+  }
+  return ops;
+}
+
 /** A short, human-readable readout for a hover tooltip, e.g. "x: 1.23   y: 4.5".
  *  Uses the first horizontal + first vertical axis under the point. */
 export function formatTooltip(axes: AxisHit[]): string {

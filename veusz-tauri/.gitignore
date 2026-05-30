@@ -21,3 +21,7 @@ sidecar/*
 
 # Standalone embed library build (vite.embed.config.ts)
 dist-embed/
+
+# Generated examples gallery (scripts/build_examples_gallery.mjs); posters are
+# rendered build artifacts, the generator + examples/gallery.json are the source.
+dist-gallery/

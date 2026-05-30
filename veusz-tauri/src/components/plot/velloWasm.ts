@@ -30,6 +30,9 @@ interface VelloModule {
     b: number,
     a: number,
   ) => Promise<void>;
+  /** Pure-Rust Scene-IR -> SVG (no GPU). Present in builds that include the
+   *  veusz-paint-svg binding; guarded at the call site for older runtimes. */
+  scene_to_svg?: (scene: Uint8Array, width: number, height: number) => string;
 }
 
 /** Base URL for the runtime assets. Defaults to the locally-synced copy
@@ -105,4 +108,28 @@ export async function renderSceneToCanvas(
   bg: [number, number, number, number] = [0, 0, 0, 0],
 ): Promise<void> {
   await renderSceneBytesToCanvas(canvas, base64ToBytes(sceneB64), bg);
+}
+
+/** True if the loaded runtime can emit vector SVG (the `veusz-paint-svg`
+ *  binding shipped). False on older published runtimes. */
+export async function svgExportAvailable(): Promise<boolean> {
+  try {
+    return typeof (await loadModule()).scene_to_svg === 'function';
+  } catch {
+    return false;
+  }
+}
+
+/** Convert a base64 Scene IR to a standalone SVG string, entirely client-side
+ *  (pure Rust, no Qt/GPU). Rejects if the runtime lacks the SVG binding. */
+export async function sceneToSvg(
+  sceneB64: string,
+  width: number,
+  height: number,
+): Promise<string> {
+  const mod = await loadModule();
+  if (typeof mod.scene_to_svg !== 'function') {
+    throw new Error('this runtime does not include the SVG exporter');
+  }
+  return mod.scene_to_svg(base64ToBytes(sceneB64), width, height);
 }

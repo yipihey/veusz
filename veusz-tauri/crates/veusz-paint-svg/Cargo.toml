@@ -1,0 +1,13 @@
+[package]
+name = "veusz-paint-svg"
+version = "0.0.0"
+edition = "2021"
+description = "Scene -> SVG emitter for Veusz's parallel paint backends. Consumes the abstract Scene IR from veusz-paint-core and writes a standalone, resolution-independent SVG — the vector counterpart of veusz-paint-pdf, usable from native and (via veusz-paint-wasm) the browser with no Qt."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+base64 = "0.22"
+png = "0.17"
+
+[dev-dependencies]
+serde_json = "1"

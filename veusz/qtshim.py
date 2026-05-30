@@ -389,6 +389,19 @@ class QPolygonF:
     def __len__(self): return len(self._pts)
     def __getitem__(self, i): return self._pts[i]
     def __iter__(self): return iter(self._pts)
+    def __iadd__(self, other):
+        # Mirror QPolygonF: `+=` concatenates another polygon's points, or
+        # appends a single point. Needed by plotters that build filled regions
+        # by joining polygons (else the browser qtshim raises a TypeError).
+        if isinstance(other, QPolygonF):
+            self._pts.extend(other._pts)
+        else:
+            self._pts.append(other)
+        return self
+    def __add__(self, other):
+        result = QPolygonF(self._pts)
+        result += other
+        return result
 
 
 QPolygon = QPolygonF

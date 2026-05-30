@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  computeZoomOps, computeResetOps, computePanOps, formatTooltip, type AxisHit,
+  computeZoomOps, computeResetOps, computePanOps, computePinchOps,
+  formatTooltip, type AxisHit,
 } from './navigate';
 
 const X = '/page1/graph1/x';
@@ -50,6 +51,39 @@ describe('computePanOps', () => {
     expect(computePanOps(from, to, ranges)).toEqual([
       { path: `${X}/min`, value: -2 }, { path: `${X}/max`, value: 8 },
     ]);
+  });
+});
+
+describe('computePinchOps', () => {
+  const h = (path: string, value: number): AxisHit => ({ path, direction: 'horizontal', value });
+
+  it('zooms in when the fingers spread, keeping content under each finger', () => {
+    // Linear axis data(p)=0.1p over [0,10]. Fingers start at px 20,80 (data
+    // 2,8) and spread to px 10,90 (old-range data 1,9).
+    const start1 = [h(X, 2)], start2 = [h(X, 8)];
+    const end1 = [h(X, 1)], end2 = [h(X, 9)];
+    const ranges = new Map([[X, { min: 0, max: 10 }]]);
+    expect(computePinchOps(start1, start2, end1, end2, ranges)).toEqual([
+      { path: `${X}/min`, value: 1.25 }, { path: `${X}/max`, value: 8.75 },
+    ]);
+  });
+
+  it('zooms out when the fingers come together', () => {
+    // Inverse of the above: fingers start wide (data 1,9) and pinch to 2,8.
+    const start1 = [h(X, 1)], start2 = [h(X, 9)];
+    const end1 = [h(X, 2)], end2 = [h(X, 8)];
+    const ranges = new Map([[X, { min: 0, max: 10 }]]);
+    const ops = computePinchOps(start1, start2, end1, end2, ranges);
+    expect(ops[0].value as number).toBeCloseTo(-5 / 3, 6); // span grows past [0,10]
+    expect(ops[1].value as number).toBeCloseTo(35 / 3, 6);
+  });
+
+  it('skips axes where the fingers cross or collapse', () => {
+    const ranges = new Map([[X, { min: 0, max: 10 }]]);
+    // end fingers map to the same data → degenerate.
+    expect(computePinchOps([h(X, 2)], [h(X, 8)], [h(X, 5)], [h(X, 5)], ranges)).toEqual([]);
+    // crossed: k would be negative.
+    expect(computePinchOps([h(X, 2)], [h(X, 8)], [h(X, 9)], [h(X, 1)], ranges)).toEqual([]);
   });
 });
 

@@ -4903,6 +4903,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "veusz-paint-svg"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "png 0.17.16",
+ "serde_json",
+ "veusz-paint-core",
+]
+
+[[package]]
 name = "veusz-paint-text"
 version = "0.0.0"
 dependencies = [
@@ -4948,6 +4958,7 @@ dependencies = [
  "skrifa 0.42.1",
  "vello",
  "veusz-paint-core",
+ "veusz-paint-svg",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

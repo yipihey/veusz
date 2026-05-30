@@ -15,6 +15,13 @@ import type { DocState } from '../state/doc';
 import { Tree } from '../components/tree/Tree';
 import { Inspector } from '../components/inspector/Inspector';
 import { EmbedPlot } from './EmbedPlot';
+import { ensureEmbedStyles } from './embedStyles';
+import { svgExportAvailable } from '../components/plot/velloWasm';
+import { exportFigureAsSvg } from './exportSvg';
+
+// Inject the container-query stylesheet as soon as the figure module is used,
+// so it is present whether mounted via the custom element or directly.
+ensureEmbedStyles();
 
 type Store = UseBoundStore<StoreApi<DocState>>;
 
@@ -38,11 +45,15 @@ export function VeuszFigure({
   const datasets = store((s) => s.datasets);
   const error = store((s) => s.error);
   const webgpu = store((s) => s.webgpuAvailable);
+  const currentPage = store((s) => s.currentPage);
   const [editing, setEditing] = useState(false);
+  const [canSvg, setCanSvg] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   // Component-lifecycle setup, mirroring AppShell: subscribe to push events,
   // select the browser render path, probe WebGPU, and load the document state.
   useEffect(() => {
+    ensureEmbedStyles();
     const s = store.getState();
     void s.setBackend('vello-wasm');
     void s.probeWebgpu();
@@ -50,6 +61,28 @@ export function VeuszFigure({
     void s.refreshAll();
     return s.subscribeToDaemon();
   }, [store]);
+
+  // Offer SVG export only when the loaded runtime includes the vector binding
+  // (older published builds don't), so the button never dead-ends.
+  useEffect(() => {
+    let alive = true;
+    void svgExportAvailable().then((ok) => { if (alive) setCanSvg(ok); });
+    return () => { alive = false; };
+  }, []);
+
+  const onExportSvg = async () => {
+    setBusy(true);
+    try {
+      await exportFigureAsSvg(store, {
+        page: currentPage, width, height,
+        filename: `${(title ?? 'figure').replace(/\s+/g, '_')}.svg`,
+      });
+    } catch (e) {
+      store.setState({ error: `SVG export failed: ${(e as Error).message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (webgpu === false) {
     return (
@@ -62,11 +95,18 @@ export function VeuszFigure({
   }
 
   return (
-    <div data-testid="veusz-figure" style={card}>
+    <div data-testid="veusz-figure" className="vz-fig" style={card}>
       <div style={bar}>
         <strong style={{ fontSize: 13 }}>{title ?? 'Veusz figure'}</strong>
         <span style={{ flex: 1 }} />
         {error && <span data-testid="veusz-error" style={{ color: 'crimson', fontSize: 12 }}>{error}</span>}
+        {canSvg && (
+          <button type="button" data-testid="veusz-export-svg"
+            disabled={busy} onClick={() => { void onExportSvg(); }} style={btn(false)}
+            title="Download this figure as a vector SVG">
+            {busy ? '…' : 'SVG'}
+          </button>
+        )}
         {editable && (
           <button type="button" data-testid="veusz-edit-toggle"
             aria-pressed={editing} onClick={() => setEditing((v) => !v)} style={btn(editing)}>
@@ -75,13 +115,21 @@ export function VeuszFigure({
         )}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'stretch' }}>
-        <div style={{ flex: 1, minWidth: 0, padding: 8 }}>
+      <div className="vz-body">
+        <div className="vz-plot">
           <EmbedPlot store={store} width={width} height={height} />
         </div>
 
         {editing && (
-          <aside data-testid="veusz-edit-panel" style={panel}>
+          <aside data-testid="veusz-edit-panel" className="vz-panel">
+            {editable && (
+              <div style={drawerHeader}>
+                <span style={{ fontSize: 12, color: '#666' }}>Edit</span>
+                <button type="button" data-testid="veusz-edit-close"
+                  aria-label="Close edit panel" onClick={() => setEditing(false)}
+                  style={closeBtn}>×</button>
+              </div>
+            )}
             {tree ? (
               <Tree
                 root={tree}
@@ -115,9 +163,13 @@ const bar: React.CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
   borderBottom: '1px solid #eee', background: '#fafbfc',
 };
-const panel: React.CSSProperties = {
-  width: 300, flex: '0 0 300px', borderLeft: '1px solid #eee',
-  padding: 8, overflow: 'auto', maxHeight: 520,
+const drawerHeader: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  marginBottom: 4,
+};
+const closeBtn: React.CSSProperties = {
+  border: 0, background: 'transparent', cursor: 'pointer',
+  fontSize: 18, lineHeight: 1, color: '#888', padding: '0 4px',
 };
 function btn(active: boolean): React.CSSProperties {
   return {

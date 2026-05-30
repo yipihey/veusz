@@ -15,6 +15,7 @@
  */
 
 import { pyodideTransport, type PyodideBridge, type Transport } from '../rpc/transport';
+import type { LocalDataFile } from './localData';
 
 const PYODIDE_VERSION = '0.26.4';
 const DEFAULT_PYODIDE_INDEX =
@@ -37,8 +38,10 @@ export interface RuntimeOptions {
 export interface VeuszRuntime {
   transport: Transport;
   bridge: PyodideBridge;
-  /** Load a .vsz from its text; resolves once the document + datasets exist. */
-  loadVsz: (text: string) => Promise<unknown>;
+  /** Load a .vsz from its text; resolves once the document + datasets exist.
+   *  Sidecar data files (from `ImportFile`/`ImportFileCSV`/… relative paths)
+   *  are written next to the document first so those imports resolve. */
+  loadVsz: (text: string, dataFiles?: LocalDataFile[]) => Promise<unknown>;
   /** The raw Pyodide instance (escape hatch). */
   pyodide: PyodideLike;
 }
@@ -47,7 +50,7 @@ interface PyodideLike {
   loadPackage(names: string[]): Promise<void>;
   pyimport(name: string): unknown;
   runPythonAsync(code: string): Promise<unknown>;
-  FS: { writeFile(path: string, data: string): void };
+  FS: { writeFile(path: string, data: string | Uint8Array): void };
 }
 
 // The heavy runtime (Pyodide + numpy + veusz + fonttools) is loaded once and
@@ -103,16 +106,24 @@ export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<Veusz
   const bridge = bridgeMod.Bridge();
   const transport = pyodideTransport(bridge);
 
-  const vszPath = `/veusz/figure_${_vszSeq++}.vsz`;
-  const loadVsz = async (text: string) => {
+  // Each figure gets its own directory so sidecar data files (written by
+  // basename) from different figures never collide, and relative imports in
+  // the .vsz resolve against the document's own directory.
+  const figDir = `/veusz/fig_${_vszSeq++}`;
+  const vszPath = `${figDir}/figure.vsz`;
+  const loadVsz = async (text: string, dataFiles: LocalDataFile[] = []) => {
     // Write into Pyodide's in-memory FS and reuse the file.open handler so
     // recent-files + change notifications fire exactly like the desktop.
-    try {
-      py.FS.writeFile(vszPath, text);
-    } catch {
-      await py.runPythonAsync(`import os; os.makedirs('/veusz', exist_ok=True)`);
-      py.FS.writeFile(vszPath, text);
+    await py.runPythonAsync(`import os; os.makedirs(${JSON.stringify(figDir)}, exist_ok=True)`);
+    for (const f of dataFiles) {
+      const path = `${figDir}/${f.name}`;
+      const dir = path.slice(0, path.lastIndexOf('/'));
+      if (dir && dir !== figDir) {
+        await py.runPythonAsync(`import os; os.makedirs(${JSON.stringify(dir)}, exist_ok=True)`);
+      }
+      py.FS.writeFile(path, f.bytes);
     }
+    py.FS.writeFile(vszPath, text);
     return transport.call('file.open', { path: vszPath });
   };
 

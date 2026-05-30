@@ -79,6 +79,17 @@ pub async fn render_scene_to_canvas(
     r.render(scene_json, background_r, background_g, background_b, background_a).await
 }
 
+/// Convert a Scene-JSON blob to a standalone SVG string — true client-side
+/// vector export, no Qt and no GPU. `scene_json` is the same payload
+/// `render_scene_to_canvas` takes (base64-decode `render.scene`'s `scene_b64`).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn scene_to_svg(scene_json: &[u8], width: f64, height: f64) -> Result<String, JsValue> {
+    let scene: VScene = serde_json::from_slice(scene_json)
+        .map_err(|e| JsValue::from_str(&format!("scene JSON decode: {e}")))?;
+    Ok(veusz_paint_svg::render_scene_to_svg(&scene, width, height, (1.0, 1.0, 1.0, 1.0)))
+}
+
 /// Persistent renderer over a single `<canvas>`. Reuse across frames so we
 /// don't tear down the wgpu device and re-compile Vello's pipelines.
 #[cfg(target_arch = "wasm32")]

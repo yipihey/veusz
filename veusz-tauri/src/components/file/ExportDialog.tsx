@@ -8,6 +8,8 @@
 
 import { useEffect, useState } from 'react';
 import type { DocStore } from '../../keys/shortcuts';
+import { svgExportAvailable } from '../plot/velloWasm';
+import { exportFigureAsSvg } from '../../embed/exportSvg';
 
 export interface ExportDialogProps {
   store: DocStore;
@@ -29,12 +31,14 @@ export function ExportDialog({ store, onPickPath, onClose, notify }: ExportDialo
   const [antialias, setAntialias] = useState(true);
   const [formats, setFormats] = useState<{ extensions: string[]; description: string }[]>([]);
   const [busy, setBusy] = useState(false);
+  const [canSvg, setCanSvg] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     s.rpc.file.formats()
       .then((f) => { if (!cancelled) setFormats(f); })
       .catch(() => {});
+    void svgExportAvailable().then((ok) => { if (!cancelled) setCanSvg(ok); });
     return () => { cancelled = true; };
   }, [s.rpc]);
 
@@ -59,6 +63,25 @@ export function ExportDialog({ store, onPickPath, onClose, notify }: ExportDialo
     });
     setBusy(false);
     if (out) { notify(`Exported to ${out}`); onClose(); }
+  };
+
+  // Client-side vector SVG: works in the browser with no Qt and no save
+  // picker (downloads directly). SVG is single-page, so it uses the current
+  // page (or the first page of a custom range).
+  const doExportSvg = async () => {
+    const page = resolvePages()?.[0] ?? s.currentPage;
+    setBusy(true);
+    try {
+      await exportFigureAsSvg(store, {
+        page, width: 800, height: 600, dpi,
+        filename: `page${page + 1}.svg`,
+      });
+      notify('Downloaded SVG'); onClose();
+    } catch (e) {
+      notify(`SVG export failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -110,7 +133,14 @@ export function ExportDialog({ store, onPickPath, onClose, notify }: ExportDialo
         {formats.flatMap((f) => f.extensions).join(', ') || '…'}
       </p>
 
-      <div style={{ textAlign: 'right' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        {canSvg && (
+          <button type="button" data-testid="export-svg" disabled={busy}
+            onClick={() => void doExportSvg()}
+            title="Vector SVG, rendered in the browser (no server)">
+            Download SVG
+          </button>
+        )}
         <button type="button" data-testid="export-run" disabled={busy} onClick={() => void doExport()}>
           {busy ? 'Exporting…' : 'Export…'}
         </button>

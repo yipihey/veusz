@@ -46,6 +46,42 @@ describe('Inspector', () => {
     }
   });
 
+  it('collapses formatting subgroups by default but keeps their content mounted', () => {
+    render(<Inspector {...baseProps} onChange={() => {}} />);
+    // PlotLine has setnsmode 'formatting' → collapsed by default to keep the
+    // panel short on small screens, but its leaves stay in the DOM.
+    const sub = screen.getByTestId('subgroup-PlotLine');
+    expect(sub.hasAttribute('open')).toBe(false);
+    expect(within(sub).getByTestId('row-color')).toBeInTheDocument();
+  });
+
+  it('keeps non-formatting (data) subgroups open by default', () => {
+    // A groupedsetting subgroup carries data, not just styling → stays open.
+    const schema = {
+      ...baseProps.schema,
+      subgroups: [{
+        name: 'Range', usertext: 'Range', descr: '', setnsmode: 'groupedsetting',
+        settings: [{
+          name: 'min', typename: 'float', default: 0,
+          usertext: 'Min', descr: '', hidden: false, formatting: false,
+        }],
+        subgroups: [],
+      }],
+    } as never;
+    render(<Inspector schema={schema} widgetPaths={['/x']} values={{}} onChange={() => {}} />);
+    expect(screen.getByTestId('subgroup-Range').hasAttribute('open')).toBe(true);
+  });
+
+  it('remembers a user expand of a subgroup across re-renders', () => {
+    const { rerender } = render(<Inspector {...baseProps} onChange={() => {}} />);
+    const sub = screen.getByTestId('subgroup-PlotLine');
+    // Simulate the native <details> expand: set the attribute and fire toggle.
+    sub.setAttribute('open', '');
+    fireEvent(sub, new Event('toggle', { bubbles: true }));
+    rerender(<Inspector {...baseProps} onChange={() => {}} />);
+    expect(screen.getByTestId('subgroup-PlotLine').hasAttribute('open')).toBe(true);
+  });
+
   it('emits onChange with the full setting path when a leaf changes', () => {
     const onChange = vi.fn();
     render(<Inspector {...baseProps} onChange={onChange} />);

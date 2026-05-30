@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import type { SettingsGroup, SettingSchema, WidgetSchema } from '../../rpc/types';
 import { resolve } from '../settings';
 
@@ -39,6 +39,18 @@ export function Inspector(props: InspectorProps) {
   const base = props.widgetPaths[0];
   const multi = props.widgetPaths.length > 1;
 
+  // Per-subgroup expand/collapse state. Formatting-only subgroups (PlotLine,
+  // MarkerFill, …) collapse by default so a complex widget isn't a 2000px
+  // scroll — critical on small screens — while data-bearing groups stay open.
+  // We only store *user overrides*; the default is derived per group so newly
+  // appearing groups follow the rule without seeding state. Keyed by relative
+  // subgroup path so it survives re-renders while the same widget is selected.
+  const [openOverrides, setOpenOverrides] = useState<Record<string, boolean>>({});
+  const groupOpen = (relPath: string, group: SettingsGroup): boolean =>
+    openOverrides[relPath] ?? !groupIsFormatting(group);
+  const setGroupOpen = (relPath: string, open: boolean) =>
+    setOpenOverrides((prev) => ({ ...prev, [relPath]: open }));
+
   // For multi-edit, an edit on the leaf at absolute path
   // `${base}${rel}` must be applied to every selected widget at
   // `${widgetPath}${rel}`. We compute the relative tail off `base`.
@@ -72,9 +84,25 @@ export function Inspector(props: InspectorProps) {
         datasets={props.datasets}
         onChange={handleChange}
         settingMenu={props.settingMenu}
+        groupOpen={groupOpen}
+        setGroupOpen={setGroupOpen}
       />
     </div>
   );
+}
+
+/** A subgroup collapses by default when it is a pure *formatting* collection
+ *  (`setnsmode === 'formatting'`, the daemon's canonical marker for groups like
+ *  PlotLine / MarkerFill / FillBelow). Data-bearing groups (`groupedsetting`,
+ *  `widgetsettings`) stay open. Driving this off the schema's own `setnsmode`
+ *  keeps the rule schema-driven rather than hand-listing group names. Falls
+ *  back to aggregating leaf `formatting` flags when `setnsmode` is absent. */
+function groupIsFormatting(g: SettingsGroup): boolean {
+  if (g.setnsmode) return g.setnsmode === 'formatting';
+  const leaves = g.settings.filter((s) => !s.hidden);
+  if (leaves.length > 0) return leaves.every((s) => s.formatting);
+  if (g.subgroups.length > 0) return g.subgroups.every(groupIsFormatting);
+  return false;
 }
 
 interface GroupBodyProps {
@@ -90,9 +118,13 @@ interface GroupBodyProps {
    *  by `SettingRow` to disambiguate identically-named leaves like `color`
    *  across PlotLine / MarkerFill / MarkerLine etc. */
   groupLabel?: string;
+  /** Effective open state for a subgroup (by its basePath). */
+  groupOpen: (relPath: string, group: SettingsGroup) => boolean;
+  /** Record a user expand/collapse for a subgroup (by its basePath). */
+  setGroupOpen: (relPath: string, open: boolean) => void;
 }
 
-function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu, groupLabel }: GroupBodyProps) {
+function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu, groupLabel, groupOpen, setGroupOpen }: GroupBodyProps) {
   return (
     <Fragment>
       {group.settings.map((s) =>
@@ -112,18 +144,33 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
       )}
       {group.subgroups.map((sub) => {
         const label = sub.usertext || humanize(sub.name);
+        const subPath = joinPath(basePath, sub.name);
+        const open = groupOpen(subPath, sub);
         return (
-          <details key={sub.name} data-testid={`subgroup-${sub.name}`} open>
+          <details
+            key={sub.name}
+            data-testid={`subgroup-${sub.name}`}
+            open={open}
+            onToggle={(e) => {
+              const el = e.currentTarget as HTMLDetailsElement;
+              // Prefer the IDL property; fall back to the attribute for DOM
+              // implementations (e.g. happy-dom) that don't reflect `.open`.
+              const isOpen = typeof el.open === 'boolean' ? el.open : el.hasAttribute('open');
+              if (isOpen !== open) setGroupOpen(subPath, isOpen);
+            }}
+          >
             <summary>{label}</summary>
             <GroupBody
               group={sub}
-              basePath={joinPath(basePath, sub.name)}
+              basePath={subPath}
               widgetPath={widgetPath}
               values={values}
               datasets={datasets}
               onChange={onChange}
               settingMenu={settingMenu}
               groupLabel={label}
+              groupOpen={groupOpen}
+              setGroupOpen={setGroupOpen}
             />
           </details>
         );

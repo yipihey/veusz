@@ -42,6 +42,7 @@ import { createDocStore } from '../state/doc';
 import { webgpuAvailable } from '../components/plot/velloWasm';
 import { bootVeuszRuntime } from './runtime';
 import { prefetchUrlsInVsz, wireUrlLinks, type UrlLinkController } from './urlLinks';
+import { fetchDataFiles } from './localData';
 import { VeuszFigure } from './VeuszFigure';
 
 const NEEDS_WEBGPU = 'This interactive figure needs WebGPU. '
@@ -185,7 +186,13 @@ class VeuszFigureElement extends HTMLElement {
       };
       await prefetchUrlsInVsz(vszText, runtime.transport, urlOpts);
 
-      await runtime.loadVsz(vszText);
+      // Sidecar data: a .vsz that does `ImportFile('data.dat')` needs that file
+      // present in Pyodide's FS. Fetch every referenced relative file (resolved
+      // like the .vsz itself, honouring the same data-url overrides) and write
+      // it alongside the document before loading.
+      const dataFiles = await fetchDataFiles(vszText, src, urlOpts);
+
+      await runtime.loadVsz(vszText, dataFiles);
 
       // Install per-URL polling intervals from the now-registered URL links.
       this.urlLinks = await wireUrlLinks(runtime.transport, urlOpts);

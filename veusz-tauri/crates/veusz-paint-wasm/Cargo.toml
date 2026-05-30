@@ -9,6 +9,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 veusz-paint-core = { path = "../veusz-paint-core" }
+# Pure-Rust Scene -> SVG (no Qt, no GPU): powers the `scene_to_svg` binding for
+# true client-side vector export in the browser.
+veusz-paint-svg = { path = "../veusz-paint-svg" }
 # We intentionally do not depend on veusz-paint-vello here: it pulls in
 # veusz-paint-text -> fontique, which uses fontconfig at runtime (no system
 # fontconfig in a browser). Instead, this crate re-implements the
