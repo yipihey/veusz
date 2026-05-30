@@ -1,18 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { VeuszFigure } from './VeuszFigure';
-import { EMBED_CSS, PANEL_DRAWER_MAX } from './embedStyles';
 import { createDocStore } from '../state/doc';
 import { createRpc } from '../rpc/client';
 import { mockTransport } from '../rpc/transport';
 
-// Force the WebGPU probe to succeed so the figure renders its interactive body
-// (the layout under test) instead of the no-WebGPU fallback message.
 vi.mock('../components/plot/velloWasm', () => ({
   webgpuAvailable: () => Promise.resolve(true),
   renderSceneToCanvas: () => Promise.resolve(),
-  svgExportAvailable: () => Promise.resolve(false),
+  svgExportAvailable: () => Promise.resolve(true),
   sceneToSvg: () => Promise.resolve('<svg/>'),
+  renderSceneToImageBlob: () => Promise.resolve(new Blob(['x'], { type: 'image/png' })),
 }));
 
 function makeStore() {
@@ -25,41 +23,48 @@ function makeStore() {
     'plugins.list': () => ({ tools: [], datasets: [] }),
     'prefs.get': (p) => ({ key: (p as { key: string }).key, value: 'change' }),
     'prefs.set': () => ({ ok: true }),
+    'render.scene': () => ({ scene_b64: 'QQ==', width: 700, height: 500, bounds: {} }),
   })));
 }
 
-describe('VeuszFigure responsive layout', () => {
-  beforeEach(() => {
-    document.getElementById('veusz-embed-styles')?.remove();
-  });
+beforeEach(() => { document.getElementById('veusz-embed-styles')?.remove(); URL.createObjectURL = () => 'blob:x'; URL.revokeObjectURL = () => {}; });
 
-  it('injects a scoped, named-container stylesheet', async () => {
-    render(<VeuszFigure store={makeStore()} />);
-    await waitFor(() => screen.getByTestId('veusz-figure'));
-    const sheet = document.getElementById('veusz-embed-styles');
-    expect(sheet).not.toBeNull();
-    // Named container + drawer breakpoint, all selectors namespaced under .vz-fig.
-    expect(EMBED_CSS).toContain('container-name: veuszfig');
-    expect(EMBED_CSS).toContain(`@container veuszfig (max-width: ${PANEL_DRAWER_MAX}px)`);
-    expect(EMBED_CSS).not.toMatch(/^\s*\.vz-panel/m); // never an unscoped global
-  });
-
-  it('marks the figure as a query container and the panel as a drawer target', async () => {
-    render(<VeuszFigure store={makeStore()} />);
+describe('VeuszFigure shell + editor modal', () => {
+  it('shows the inline poster and a top-right Download + Edit toolbar', async () => {
+    render(<VeuszFigure store={makeStore()} poster="p.png" vszUrl="f.vsz" title="My Plot" />);
     const fig = await screen.findByTestId('veusz-figure');
     expect(fig).toHaveClass('vz-fig');
-    expect(fig.querySelector('.vz-body')).not.toBeNull();
-    expect(fig.querySelector('.vz-plot')).not.toBeNull();
+    expect(screen.getByTestId('veusz-inline-poster')).toHaveAttribute('src', 'p.png');
+    expect(screen.getByTestId('veusz-download')).toBeInTheDocument();
+    expect(screen.getByTestId('veusz-edit-toggle')).toBeInTheDocument();
+    // No modal until Edit is clicked.
+    expect(screen.queryByTestId('veusz-modal')).toBeNull();
+  });
 
-    // The edit panel is hidden until toggled, then carries the drawer class.
-    expect(screen.queryByTestId('veusz-edit-panel')).toBeNull();
-    fireEvent.click(screen.getByTestId('veusz-edit-toggle'));
-    const panel = await screen.findByTestId('veusz-edit-panel');
-    expect(panel).toHaveClass('vz-panel');
+  it('opens a resizable modal with the live plot + inspector on Edit, and closes', async () => {
+    render(<VeuszFigure store={makeStore()} poster="p.png" vszUrl="f.vsz" title="My Plot" />);
+    fireEvent.click(await screen.findByTestId('veusz-edit-toggle'));
+    const modal = await screen.findByTestId('veusz-modal');
+    expect(modal).toBeInTheDocument();
+    expect(screen.getByTestId('embed-plot')).toBeInTheDocument();
+    expect(screen.getByTestId('veusz-modal-fullscreen')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('veusz-modal-close'));
+    await waitFor(() => expect(screen.queryByTestId('veusz-modal')).toBeNull());
+  });
 
-    // The in-drawer close affordance dismisses it (needed on small screens
-    // where the toggle in the bar may be scrolled away).
-    fireEvent.click(screen.getByTestId('veusz-edit-close'));
-    await waitFor(() => expect(screen.queryByTestId('veusz-edit-panel')).toBeNull());
+  it('Download menu offers .vsz, SVG, PNG and PDF', async () => {
+    render(<VeuszFigure store={makeStore()} poster="p.png" vszUrl="f.vsz" title="My Plot" />);
+    fireEvent.click(await screen.findByTestId('veusz-download'));
+    const menu = await screen.findByTestId('veusz-download-menu');
+    expect(menu).toBeInTheDocument();
+    expect(screen.getByTestId('download-veusz')).toHaveAttribute('href', 'f.vsz');
+    expect(screen.getByTestId('download-svg')).toBeInTheDocument();
+    expect(screen.getByTestId('download-png')).toBeInTheDocument();
+    expect(screen.getByTestId('download-pdf')).toBeInTheDocument();
+  });
+
+  it('opens the modal immediately when initialEditing is set', async () => {
+    render(<VeuszFigure store={makeStore()} poster="p.png" initialEditing title="X" />);
+    expect(await screen.findByTestId('veusz-modal')).toBeInTheDocument();
   });
 });

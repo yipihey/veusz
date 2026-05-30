@@ -96,15 +96,17 @@ class VeuszFigureElement extends HTMLElement {
     wrap.appendChild(img);
 
     if (opts.onActivate) {
+      // Discrete top-right "Edit" affordance (not a big centered overlay), so
+      // the poster reads as the figure with an unobtrusive way in.
       const activate = document.createElement('button');
       activate.type = 'button';
       activate.setAttribute('data-testid', 'veusz-figure-activate');
-      activate.setAttribute('aria-label', 'Load the interactive figure');
-      activate.textContent = '▶ Interact';
-      activate.style.cssText = 'position:absolute;left:50%;top:50%;'
-        + 'transform:translate(-50%,-50%);border:0;border-radius:999px;'
-        + 'padding:8px 16px;cursor:pointer;font:600 13px system-ui;color:#fff;'
-        + 'background:rgba(31,111,235,0.92);box-shadow:0 1px 6px rgba(0,0,0,0.25);';
+      activate.setAttribute('aria-label', 'Edit the interactive figure');
+      activate.textContent = '✎ Edit';
+      activate.style.cssText = 'position:absolute;right:8px;top:8px;'
+        + 'border:1px solid rgba(0,0,0,0.12);border-radius:6px;'
+        + 'padding:4px 10px;cursor:pointer;font:600 12px system-ui;color:#1a1d21;'
+        + 'background:rgba(255,255,255,0.92);box-shadow:0 1px 4px rgba(0,0,0,0.18);';
       activate.addEventListener('click', () => opts.onActivate!());
       wrap.appendChild(activate);
     }
@@ -149,17 +151,18 @@ class VeuszFigureElement extends HTMLElement {
     // Without a poster there's nothing to show, so boot eagerly.
     const eager = this.getAttribute('eager') === 'true' || !poster;
     if (eager) {
-      await this.bootInteractive(src, poster);
+      await this.bootInteractive(src, poster, false);
     } else {
       this.showPoster(poster!, {
-        onActivate: () => { void this.bootInteractive(src, poster); },
+        // Clicking the discrete Edit affordance boots and opens the editor.
+        onActivate: () => { void this.bootInteractive(src, poster, true); },
       });
     }
   }
 
   /** Load the Pyodide runtime + document and mount the live figure. Keeps the
    *  poster (with progress in its caption) until the figure is ready. */
-  private async bootInteractive(src: string, poster?: string) {
+  private async bootInteractive(src: string, poster?: string, openEditor = false) {
     if (poster) this.showPoster(poster, { note: 'Loading interactive figure…' });
     else this.status('Loading…');
     try {
@@ -210,6 +213,9 @@ class VeuszFigureElement extends HTMLElement {
         height: Number(this.getAttribute('height') ?? 400),
         editable: this.getAttribute('editable') !== 'false',
         title: this.getAttribute('title') ?? undefined,
+        poster,
+        vszUrl: src,
+        initialEditing: openEditor,
       }));
     } catch (e) {
       const msg = (e as Error).message;

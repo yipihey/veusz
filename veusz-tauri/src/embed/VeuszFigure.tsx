@@ -1,57 +1,54 @@
 /**
- * The embeddable figure component: a compact, interactive Veusz figure backed
- * by the in-browser (Pyodide) runtime. Shows the plot with navigate
- * interactions (EmbedPlot) and a collapsible edit panel that reuses the
- * desktop Tree + Inspector — so "edit" is the real inspector running against
- * the Pyodide transport, not a reimplementation.
+ * The embeddable figure shell. Inline it shows a static preview (the poster,
+ * refreshed from the live document after edits) with a discrete top-right
+ * toolbar: a Download menu (.vsz / SVG / PNG / PDF) and an Edit button. Edit
+ * opens a roomy, resizable, full-screen-capable modal (EditorModal) with the
+ * live plot + the desktop Tree + Inspector — so editing is comfortable even
+ * when the figure sits in a small gallery card.
  *
- * Requires WebGPU (Chrome / Safari 26+); shows a clear message otherwise,
- * since the browser render path has no server-side fallback.
+ * Requires WebGPU (Chrome / Safari 26+); shows a clear message otherwise.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../state/doc';
-import { Tree } from '../components/tree/Tree';
-import { Inspector } from '../components/inspector/Inspector';
 import { EmbedPlot } from './EmbedPlot';
+import { EditorModal } from './EditorModal';
+import { DownloadMenu, type DownloadItem } from './DownloadMenu';
 import { ensureEmbedStyles } from './embedStyles';
-import { svgExportAvailable } from '../components/plot/velloWasm';
-import { exportFigureAsSvg } from './exportSvg';
+import { svgExportAvailable, renderSceneToImageBlob } from '../components/plot/velloWasm';
+import { exportFigureAsSvg, exportFigureAsPng, exportFigureAsPdf } from './exportSvg';
 
-// Inject the container-query stylesheet as soon as the figure module is used,
-// so it is present whether mounted via the custom element or directly.
 ensureEmbedStyles();
 
 type Store = UseBoundStore<StoreApi<DocState>>;
 
 export interface VeuszFigureProps {
   store: Store;
-  /** Render resolution (canvas pixels); the canvas scales to fit its column. */
   width?: number;
   height?: number;
-  /** Show the edit affordances (panel toggle). Default true. */
   editable?: boolean;
   title?: string;
+  /** Static preview shown inline before/after editing. */
+  poster?: string;
+  /** URL of the source .vsz, offered in the Download menu. */
+  vszUrl?: string;
+  /** Open the editor modal immediately on mount (e.g. user clicked Edit). */
+  initialEditing?: boolean;
 }
 
 export function VeuszFigure({
-  store, width = 600, height = 400, editable = true, title,
+  store, width = 700, height = 500, editable = true, title, poster, vszUrl, initialEditing,
 }: VeuszFigureProps) {
-  const tree = store((s) => s.tree);
-  const selected = store((s) => s.selected);
-  const schema = store((s) => s.schema);
-  const values = store((s) => s.values);
-  const datasets = store((s) => s.datasets);
   const error = store((s) => s.error);
   const webgpu = store((s) => s.webgpuAvailable);
   const currentPage = store((s) => s.currentPage);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(!!initialEditing);
   const [canSvg, setCanSvg] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | undefined>(poster);
+  const objUrl = useRef<string | null>(null);
 
-  // Component-lifecycle setup, mirroring AppShell: subscribe to push events,
-  // select the browser render path, probe WebGPU, and load the document state.
   useEffect(() => {
     ensureEmbedStyles();
     const s = store.getState();
@@ -62,31 +59,50 @@ export function VeuszFigure({
     return s.subscribeToDaemon();
   }, [store]);
 
-  // Offer SVG export only when the loaded runtime includes the vector binding
-  // (older published builds don't), so the button never dead-ends.
   useEffect(() => {
     let alive = true;
     void svgExportAvailable().then((ok) => { if (alive) setCanSvg(ok); });
     return () => { alive = false; };
   }, []);
 
-  const onExportSvg = async () => {
+  useEffect(() => () => { if (objUrl.current) URL.revokeObjectURL(objUrl.current); }, []);
+
+  const fname = (ext: string) => `${(title ?? 'figure').replace(/\s+/g, '_')}.${ext}`;
+
+  const run = async (fn: () => Promise<void>, what: string) => {
     setBusy(true);
+    try { await fn(); }
+    catch (e) { store.setState({ error: `${what} failed: ${(e as Error).message}` }); }
+    finally { setBusy(false); }
+  };
+
+  // After editing, refresh the inline preview from the (possibly edited) doc so
+  // it isn't stale. Best-effort; failure just leaves the previous preview.
+  const refreshPreview = async () => {
     try {
-      await exportFigureAsSvg(store, {
-        page: currentPage, width, height,
-        filename: `${(title ?? 'figure').replace(/\s+/g, '_')}.svg`,
-      });
-    } catch (e) {
-      store.setState({ error: `SVG export failed: ${(e as Error).message}` });
-    } finally {
-      setBusy(false);
-    }
+      const r = await store.getState().rpc.render.scene(currentPage, width, height, 96);
+      const blob = await renderSceneToImageBlob(r.scene_b64, r.width, r.height, 'image/png');
+      const url = URL.createObjectURL(blob);
+      if (objUrl.current) URL.revokeObjectURL(objUrl.current);
+      objUrl.current = url;
+      setPreviewUrl(url);
+    } catch { /* keep previous preview */ }
+  };
+
+  const closeModal = () => { setEditing(false); if (previewUrl !== undefined) void refreshPreview(); };
+
+  const downloadItems = (): DownloadItem[] => {
+    const items: DownloadItem[] = [];
+    if (vszUrl) items.push({ label: 'Veusz', href: vszUrl, download: fname('vsz'), hint: '.vsz' });
+    if (canSvg) items.push({ label: 'SVG', hint: 'vector', onSelect: () => void run(() => exportFigureAsSvg(store, { page: currentPage, width, height, filename: fname('svg') }), 'SVG export') });
+    items.push({ label: 'PNG', hint: 'image', onSelect: () => void run(() => exportFigureAsPng(store, { page: currentPage, width, height, filename: fname('png') }), 'PNG export') });
+    items.push({ label: 'PDF', hint: 'page', onSelect: () => void run(() => exportFigureAsPdf(store, { page: currentPage, width, height, filename: fname('pdf') }), 'PDF export') });
+    return items;
   };
 
   if (webgpu === false) {
     return (
-      <div data-testid="veusz-figure" style={card}>
+      <div data-testid="veusz-figure" className="vz-fig" style={card}>
         <div data-testid="veusz-needs-webgpu" style={{ padding: 16, color: '#b06000' }}>
           This interactive figure needs WebGPU. Open in Chrome or Safari 26+.
         </div>
@@ -96,85 +112,54 @@ export function VeuszFigure({
 
   return (
     <div data-testid="veusz-figure" className="vz-fig" style={card}>
-      <div style={bar}>
-        <strong style={{ fontSize: 13 }}>{title ?? 'Veusz figure'}</strong>
-        <span style={{ flex: 1 }} />
-        {error && <span data-testid="veusz-error" style={{ color: 'crimson', fontSize: 12 }}>{error}</span>}
-        {canSvg && (
-          <button type="button" data-testid="veusz-export-svg"
-            disabled={busy} onClick={() => { void onExportSvg(); }} style={btn(false)}
-            title="Download this figure as a vector SVG">
-            {busy ? '…' : 'SVG'}
-          </button>
-        )}
+      <div className="vz-toolbar" style={toolbar}>
+        <DownloadMenu items={downloadItems()} busy={busy} />
         {editable && (
           <button type="button" data-testid="veusz-edit-toggle"
-            aria-pressed={editing} onClick={() => setEditing((v) => !v)} style={btn(editing)}>
-            Edit
+            onClick={() => setEditing(true)} style={editBtn} title="Edit this figure">
+            ✎ Edit
           </button>
         )}
       </div>
 
-      <div className="vz-body">
-        <div className="vz-plot">
-          <EmbedPlot store={store} width={width} height={height} />
-        </div>
-
-        {editing && (
-          <aside data-testid="veusz-edit-panel" className="vz-panel">
-            {editable && (
-              <div style={drawerHeader}>
-                <span style={{ fontSize: 12, color: '#666' }}>Edit</span>
-                <button type="button" data-testid="veusz-edit-close"
-                  aria-label="Close edit panel" onClick={() => setEditing(false)}
-                  style={closeBtn}>×</button>
-              </div>
-            )}
-            {tree ? (
-              <Tree
-                root={tree}
-                selected={selected}
-                onSelect={(path: string) => { void store.getState().select([path]); }}
-              />
-            ) : <p style={{ color: '#888' }}>Loading…</p>}
-            <hr style={{ border: 0, borderTop: '1px solid #eee', margin: '8px 0' }} />
-            {schema && selected.length > 0 ? (
-              <Inspector
-                schema={schema}
-                widgetPaths={selected}
-                values={values}
-                datasets={datasets.map((d) => d.name)}
-                onChange={(path, value) => { void store.getState().setValue(path, value); }}
-                onChangeMany={(ops) => { void store.getState().setValues(ops); }}
-              />
-            ) : <p style={{ color: '#888', fontSize: 13 }}>Select a widget to edit.</p>}
-          </aside>
+      <div className="vz-inline">
+        {previewUrl !== undefined ? (
+          <img src={previewUrl} alt={title ?? 'Veusz figure'} className="vz-preview"
+            data-testid="veusz-inline-poster" />
+        ) : (
+          <div style={{ height: Math.round((height / width) * 100) + '%', minHeight: 200 }}>
+            <EmbedPlot store={store} width={width} height={height} />
+          </div>
+        )}
+        {error && !editing && (
+          <div data-testid="veusz-error" style={errBar}>{error}</div>
         )}
       </div>
+
+      {editing && (
+        <EditorModal
+          store={store} title={title} width={width} height={height}
+          toolbar={<DownloadMenu items={downloadItems()} busy={busy} />}
+          onClose={closeModal}
+        />
+      )}
     </div>
   );
 }
 
 const card: React.CSSProperties = {
-  border: '1px solid #e2e4e8', borderRadius: 10, overflow: 'hidden',
-  background: '#fff', font: '14px system-ui, sans-serif',
+  position: 'relative', border: '1px solid #e2e4e8', borderRadius: 10,
+  overflow: 'hidden', background: '#fff', font: '14px system-ui, sans-serif',
 };
-const bar: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
-  borderBottom: '1px solid #eee', background: '#fafbfc',
+const toolbar: React.CSSProperties = {
+  position: 'absolute', top: 8, right: 8, zIndex: 3,
+  display: 'flex', gap: 6, alignItems: 'flex-start',
 };
-const drawerHeader: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  marginBottom: 4,
+const editBtn: React.CSSProperties = {
+  border: '1px solid #d0d3d9', borderRadius: 6, padding: '3px 10px',
+  cursor: 'pointer', fontSize: 12, background: '#fff', color: '#222',
 };
-const closeBtn: React.CSSProperties = {
-  border: 0, background: 'transparent', cursor: 'pointer',
-  fontSize: 18, lineHeight: 1, color: '#888', padding: '0 4px',
+const errBar: React.CSSProperties = {
+  position: 'absolute', left: 8, bottom: 8, color: 'crimson', fontSize: 12,
+  background: 'rgba(255,255,255,0.9)', padding: '2px 6px', borderRadius: 4,
 };
-function btn(active: boolean): React.CSSProperties {
-  return {
-    border: '1px solid #d0d3d9', borderRadius: 6, padding: '3px 10px',
-    cursor: 'pointer', fontSize: 12,
-    background: active ? '#1f6feb' : '#fff', color: active ? '#fff' : '#222',
-  };
-}

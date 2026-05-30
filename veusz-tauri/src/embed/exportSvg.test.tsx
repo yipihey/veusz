@@ -6,7 +6,7 @@ vi.mock('../components/plot/velloWasm', () => ({
   svgExportAvailable: vi.fn(async () => true),
 }));
 
-import { exportFigureAsSvg, downloadText } from './exportSvg';
+import { exportFigureAsSvg, downloadText, buildJpegPdf } from './exportSvg';
 import { sceneToSvg } from '../components/plot/velloWasm';
 
 describe('exportFigureAsSvg', () => {
@@ -29,6 +29,18 @@ describe('exportFigureAsSvg', () => {
     expect(scene).toHaveBeenCalledWith(2, 640, 480, 96);
     expect(sceneToSvg).toHaveBeenCalledWith('QUJD', 640, 480);
     expect(clicks).toEqual(['My Plot.svg']);
+  });
+
+  it('buildJpegPdf assembles a valid single-page PDF embedding the image', () => {
+    const fakeJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+    const pdf = buildJpegPdf(fakeJpeg, 200, 150, 600, 450);
+    const ascii = new TextDecoder('latin1').decode(pdf);
+    expect(ascii.startsWith('%PDF-1.4')).toBe(true);
+    expect(ascii).toContain('/Subtype /Image');
+    expect(ascii).toContain('/Filter /DCTDecode');
+    expect(ascii).toContain('/MediaBox [0 0 600 450]');
+    expect(ascii).toContain('/Im0 Do');
+    expect(ascii.includes('xref') && ascii.trimEnd().endsWith('%%EOF')).toBe(true);
   });
 
   it('downloadText sets the download name and an object URL', () => {

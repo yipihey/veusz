@@ -110,6 +110,33 @@ export async function renderSceneToCanvas(
   await renderSceneBytesToCanvas(canvas, base64ToBytes(sceneB64), bg);
 }
 
+/** Render a base64 Scene IR to an image Blob (PNG/JPEG) at `w`×`h` device
+ *  pixels via WebGPU. Uses a temporary off-screen canvas attached hidden to
+ *  the document (WebGPU needs a real canvas to present into). Default white
+ *  background so exported figures aren't transparent. */
+export async function renderSceneToImageBlob(
+  sceneB64: string,
+  w: number,
+  h: number,
+  type: 'image/png' | 'image/jpeg' = 'image/png',
+  quality = 0.92,
+  bg: [number, number, number, number] = [1, 1, 1, 1],
+): Promise<Blob> {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w));
+  canvas.height = Math.max(1, Math.round(h));
+  canvas.style.cssText = 'position:absolute;left:-99999px;top:0;pointer-events:none';
+  document.body.appendChild(canvas);
+  try {
+    await renderSceneBytesToCanvas(canvas, base64ToBytes(sceneB64), bg);
+    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, type, quality));
+    if (!blob) throw new Error('canvas.toBlob returned null');
+    return blob;
+  } finally {
+    canvas.remove();
+  }
+}
+
 /** True if the loaded runtime can emit vector SVG (the `veusz-paint-svg`
  *  binding shipped). False on older published runtimes. */
 export async function svgExportAvailable(): Promise<boolean> {
