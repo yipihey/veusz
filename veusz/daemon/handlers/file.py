@@ -45,7 +45,10 @@ def register(ctx):
             ctx.document.wipe()
             ctx.document.load(path, mode=mode)
         except Exception as e:
-            raise RpcError(INVALID_PARAMS, f'load failed: {e}') from e
+            import traceback as _tb
+            raise RpcError(
+                INVALID_PARAMS, f'load failed: {e}',
+                data={'traceback': _tb.format_exc()}) from e
         _push_recent(path)
         ctx.notifier.publish('doc.changed', {
             'changeset': ctx.document.changeset, 'paths': [], 'kind': 'load',

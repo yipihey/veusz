@@ -23,6 +23,13 @@
  *   wasm-base     base URL of the Vello WASM renderer (defaults to /wasm)
  *   pyodide-index Pyodide distribution dir (defaults to jsDelivr)
  *   veusz-wheel   URL of the headless veusz wheel (CDN/bundle)
+ *   data-url-base base URL for resolving relative URLs the .vsz uses with
+ *                 `ImportFileURL("relative.csv", …)`. Defaults to the .vsz's
+ *                 own directory so co-located data files just work.
+ *   data-url-map  JSON object `{"<originalURL>": "<replacementURL>"}` to
+ *                 retarget specific .vsz URLs at embed time — duplicate the
+ *                 element with different maps to compare data sources without
+ *                 modifying the .vsz.
  *
  * WebGPU is probed *before* the heavy runtime loads: with no WebGPU we show the
  * poster (or a message) and never download Pyodide.
@@ -34,6 +41,7 @@ import { createRpc } from '../rpc/client';
 import { createDocStore } from '../state/doc';
 import { webgpuAvailable } from '../components/plot/velloWasm';
 import { bootVeuszRuntime } from './runtime';
+import { prefetchUrlsInVsz, wireUrlLinks, type UrlLinkController } from './urlLinks';
 import { VeuszFigure } from './VeuszFigure';
 
 const NEEDS_WEBGPU = 'This interactive figure needs WebGPU. '
@@ -43,6 +51,7 @@ class VeuszFigureElement extends HTMLElement {
   private root: Root | null = null;
   private mounted = false;
   private noteEl: HTMLElement | null = null;
+  private urlLinks: UrlLinkController | null = null;
 
   connectedCallback() {
     if (this.mounted) return;
@@ -51,6 +60,8 @@ class VeuszFigureElement extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.urlLinks?.stop();
+    this.urlLinks = null;
     this.root?.unmount();
     this.root = null;
   }
@@ -160,7 +171,24 @@ class VeuszFigureElement extends HTMLElement {
 
       const resp = await fetch(src);
       if (!resp.ok) throw new Error(`fetch ${src}: ${resp.status}`);
-      await runtime.loadVsz(await resp.text());
+      const vszText = await resp.text();
+
+      // URL data sources: the .vsz can `ImportFileURL(...)`. Pre-fetch every
+      // URL it references and feed bytes into Pyodide via `data.url_ingest`
+      // so `loadVsz` finds them synchronously. Defaults: relative URLs
+      // resolve against the .vsz's own directory; `data-url-base` /
+      // `data-url-map` retarget fetches without modifying document state.
+      const urlOpts = {
+        urlBase: this.getAttribute('data-url-base')
+          ?? new URL('.', new URL(src, location.href)).toString(),
+        urlMap: parseJSONAttr(this.getAttribute('data-url-map')),
+      };
+      await prefetchUrlsInVsz(vszText, runtime.transport, urlOpts);
+
+      await runtime.loadVsz(vszText);
+
+      // Install per-URL polling intervals from the now-registered URL links.
+      this.urlLinks = await wireUrlLinks(runtime.transport, urlOpts);
 
       const store = createDocStore(createRpc(runtime.transport));
 
@@ -187,6 +215,23 @@ class VeuszFigureElement extends HTMLElement {
         this.status(`Failed to load figure: ${msg}`);
       }
     }
+  }
+}
+
+/** Parse a JSON object attribute (e.g. data-url-map). Returns undefined for
+ *  null/empty input and warns + returns undefined on malformed JSON. */
+function parseJSONAttr(raw: string | null): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      return v as Record<string, string>;
+    }
+    console.warn('[veusz-figure] data-url-map must be a JSON object');
+    return undefined;
+  } catch (e) {
+    console.warn('[veusz-figure] invalid data-url-map JSON:', e);
+    return undefined;
   }
 }
 

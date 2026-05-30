@@ -71,6 +71,10 @@ class Bridge:
     def __init__(self, deterministic: bool = False):
         self.ctx = Context(deterministic=deterministic)
         self.ctx.startup()                         # QApplication + widgets + doc
+        # The browser can't make sync network calls from Python; the JS side
+        # fetches URL data and feeds bytes in via `data.url_ingest`.
+        from ..dataimport import url_fetch
+        url_fetch.set_fetcher(url_fetch._pyodide_cache_only_fetcher)
         self.notifier = BrowserNotifier()
         self.ctx.notifier = self.notifier
         self.methods = all_handlers(self.ctx)

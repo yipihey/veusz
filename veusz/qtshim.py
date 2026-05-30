@@ -1142,6 +1142,21 @@ class QLocale:
     def decimalPoint(self): return "."
     def name(self): return "C"
 
+    def toDouble(self, s):
+        """Mirror PyQt6: returns ``(value, ok)``. readcsv unpacks the tuple
+        when guessing column types, so returning None (the __getattr__
+        fallback) breaks any CSV import in the embed."""
+        try:
+            return float(s), True
+        except (TypeError, ValueError):
+            return 0.0, False
+
+    def toInt(self, s):
+        try:
+            return int(s), True
+        except (TypeError, ValueError):
+            return 0, False
+
     def __getattr__(self, name):
         def _m(*a, **k):
             return None

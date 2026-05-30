@@ -27,3 +27,4 @@ from . import defn_nd, dialog_nd
 from . import defn_hdf5, dialog_hdf5
 from . import dialog_fits, defn_fits
 from . import defn_plugin, dialog_plugin
+from . import defn_url  # URL data source (no GUI dialog in v1)
