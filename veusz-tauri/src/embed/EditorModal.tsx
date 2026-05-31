@@ -7,7 +7,7 @@
  * sits in the host layout.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../state/doc';
@@ -38,6 +38,20 @@ export function EditorModal({
   const canRedo = store((s) => s.canRedo);
   const [full, setFull] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Lock the host page's scroll while the editor is open, so the mouse wheel
+  // scrolls the inspector/tree panel (overflow:auto) instead of the gallery
+  // behind the modal.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    // Lock both <html> and <body> — in standards mode the viewport scroller is
+    // usually <html>, so locking only <body> may not stop the page.
+    const de = document.documentElement, bo = document.body;
+    const prevDe = de.style.overflow, prevBo = bo.style.overflow;
+    de.style.overflow = 'hidden';
+    bo.style.overflow = 'hidden';
+    return () => { de.style.overflow = prevDe; bo.style.overflow = prevBo; };
+  }, []);
 
   const undo = () => { void store.getState().undo(); };
   const redo = () => { void store.getState().redo(); };
@@ -132,5 +146,5 @@ const plotArea: React.CSSProperties = {
 };
 const side: React.CSSProperties = {
   flex: '0 0 320px', width: 320, borderLeft: '1px solid #eee',
-  padding: 10, overflow: 'auto', background: '#fff',
+  padding: 10, overflow: 'auto', overscrollBehavior: 'contain', background: '#fff',
 };

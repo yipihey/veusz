@@ -52,8 +52,11 @@ describe('VeuszFigure shell + editor modal', () => {
     expect(screen.getByTestId('veusz-undo')).toBeInTheDocument();
     expect(screen.getByTestId('veusz-redo')).toBeInTheDocument();
     expect(screen.getByTestId('veusz-reset')).toBeInTheDocument();
+    // Background scroll is locked while editing so the wheel scrolls the panel.
+    expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(screen.getByTestId('veusz-modal-close'));
     await waitFor(() => expect(screen.queryByTestId('veusz-modal')).toBeNull());
+    expect(document.body.style.overflow).not.toBe('hidden');
   });
 
   it('Download menu offers .vsz, SVG, PNG and PDF', async () => {
