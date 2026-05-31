@@ -92,6 +92,17 @@ describe('Inspector', () => {
     expect(screen.getByTestId('row-transparency').dataset.default).toBe('true');
   });
 
+  it('dims all-default subgroups, and "only customised" hides defaults', () => {
+    render(<Inspector {...baseProps} onChange={() => {}} />);
+    // PlotLine's leaves all equal their defaults → group not marked customised.
+    expect(screen.getByTestId('subgroup-PlotLine').dataset.customised).toBeUndefined();
+    // Toggle "only customised".
+    fireEvent.click(screen.getByTestId('inspector-only-customised'));
+    expect(screen.getByTestId('row-xData')).toBeInTheDocument();   // customised: kept
+    expect(screen.queryByTestId('row-marker')).toBeNull();          // default: hidden
+    expect(screen.queryByTestId('subgroup-PlotLine')).toBeNull();   // all-default group: hidden
+  });
+
   it('emits onChange with the full setting path when a leaf changes', () => {
     const onChange = vi.fn();
     render(<Inspector {...baseProps} onChange={onChange} />);

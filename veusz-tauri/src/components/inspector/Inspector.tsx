@@ -51,6 +51,10 @@ export function Inspector(props: InspectorProps) {
   const setGroupOpen = (relPath: string, open: boolean) =>
     setOpenOverrides((prev) => ({ ...prev, [relPath]: open }));
 
+  // "Only customised": hide rows/groups still at their default value, so just
+  // the settings that define this figure remain.
+  const [hideDefaults, setHideDefaults] = useState(false);
+
   // For multi-edit, an edit on the leaf at absolute path
   // `${base}${rel}` must be applied to every selected widget at
   // `${widgetPath}${rel}`. We compute the relative tail off `base`.
@@ -75,7 +79,15 @@ export function Inspector(props: InspectorProps) {
       data-multi={multi || undefined}
       data-count={props.widgetPaths.length}
     >
-      <h3 data-testid="inspector-title">{title}</h3>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <h3 data-testid="inspector-title" style={{ margin: '0.3em 0' }}>{title}</h3>
+        <label style={{ fontSize: 12, color: '#666', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}
+          title="Show only settings changed from their default">
+          <input type="checkbox" data-testid="inspector-only-customised"
+            checked={hideDefaults} onChange={(e) => setHideDefaults(e.target.checked)} />
+          Only customised
+        </label>
+      </div>
       <GroupBody
         group={props.schema}
         basePath={base}
@@ -86,6 +98,7 @@ export function Inspector(props: InspectorProps) {
         settingMenu={props.settingMenu}
         groupOpen={groupOpen}
         setGroupOpen={setGroupOpen}
+        hideDefaults={hideDefaults}
       />
     </div>
   );
@@ -102,6 +115,21 @@ function groupIsFormatting(g: SettingsGroup): boolean {
   const leaves = g.settings.filter((s) => !s.hidden);
   if (leaves.length > 0) return leaves.every((s) => s.formatting);
   if (g.subgroups.length > 0) return g.subgroups.every(groupIsFormatting);
+  return false;
+}
+
+/** True when any (recursive) leaf of the group is customised (not at default),
+ *  so the group's header can be emphasised and kept when "only customised". */
+function groupHasCustomised(
+  g: SettingsGroup, basePath: string, values: Record<string, unknown>,
+): boolean {
+  for (const s of g.settings) {
+    if (s.hidden) continue;
+    if (!isAtDefault(s, values[joinPath(basePath, s.name)], s.mixed_value === true)) return true;
+  }
+  for (const sub of g.subgroups) {
+    if (groupHasCustomised(sub, joinPath(basePath, sub.name), values)) return true;
+  }
   return false;
 }
 
@@ -122,34 +150,44 @@ interface GroupBodyProps {
   groupOpen: (relPath: string, group: SettingsGroup) => boolean;
   /** Record a user expand/collapse for a subgroup (by its basePath). */
   setGroupOpen: (relPath: string, open: boolean) => void;
+  /** Hide rows/groups still at their default value. */
+  hideDefaults: boolean;
 }
 
-function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu, groupLabel, groupOpen, setGroupOpen }: GroupBodyProps) {
+function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu, groupLabel, groupOpen, setGroupOpen, hideDefaults }: GroupBodyProps) {
   return (
     <Fragment>
-      {group.settings.map((s) =>
-        s.hidden ? null : (
+      {group.settings.map((s) => {
+        if (s.hidden) return null;
+        const v = values[joinPath(basePath, s.name)];
+        if (hideDefaults && isAtDefault(s, v, s.mixed_value === true)) return null;
+        return (
           <SettingRow
             key={s.name}
             schema={s}
             basePath={basePath}
             widgetPath={widgetPath}
-            value={values[joinPath(basePath, s.name)]}
+            value={v}
             datasets={datasets}
             onChange={onChange}
             settingMenu={settingMenu}
             groupLabel={groupLabel}
           />
-        ),
-      )}
+        );
+      })}
       {group.subgroups.map((sub) => {
         const label = sub.usertext || humanize(sub.name);
         const subPath = joinPath(basePath, sub.name);
-        const open = groupOpen(subPath, sub);
+        const customised = groupHasCustomised(sub, subPath, values);
+        // In "only customised" mode, drop all-default groups and auto-expand
+        // the ones that contain customised settings so they're visible.
+        if (hideDefaults && !customised) return null;
+        const open = hideDefaults ? customised : groupOpen(subPath, sub);
         return (
           <details
             key={sub.name}
             data-testid={`subgroup-${sub.name}`}
+            data-customised={customised || undefined}
             open={open}
             onToggle={(e) => {
               const el = e.currentTarget as HTMLDetailsElement;
@@ -159,7 +197,10 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
               if (isOpen !== open) setGroupOpen(subPath, isOpen);
             }}
           >
-            <summary>{label}</summary>
+            {/* Dim a group that's entirely at default; emphasise one with edits. */}
+            <summary style={{ opacity: customised ? 1 : 0.5, fontWeight: customised ? 600 : 400 }}>
+              {label}
+            </summary>
             <GroupBody
               group={sub}
               basePath={subPath}
@@ -171,6 +212,7 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
               groupLabel={label}
               groupOpen={groupOpen}
               setGroupOpen={setGroupOpen}
+              hideDefaults={hideDefaults}
             />
           </details>
         );
