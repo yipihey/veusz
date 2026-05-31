@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from 'react';
+import { Fragment, useState, type CSSProperties, type ReactNode } from 'react';
 import type { SettingsGroup, SettingSchema, WidgetSchema } from '../../rpc/types';
 import { resolve } from '../settings';
 
@@ -179,6 +179,37 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
   );
 }
 
+/** Loose equality for a setting value vs its default. Handles the common cases
+ *  (primitives, distance strings like "1pt", and list/dict values) without
+ *  caring about number-vs-string representation differences. */
+function settingsValueEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  if (typeof a === 'object' || typeof b === 'object') {
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+  }
+  return String(a) === String(b);
+}
+
+/** True when a setting still holds its schema default (so it can be dimmed,
+ *  making the *customised* settings of a figure stand out). A value that
+ *  differs from default — or differs across a multi-selection (`mixed`) — is
+ *  treated as customised. An unset value is effectively the default. */
+function isAtDefault(schema: SettingSchema, value: unknown, mixed: boolean): boolean {
+  if (mixed) return false;
+  if (value === undefined) return true;
+  return settingsValueEqual(value, schema.default);
+}
+
+/** Row style: dim defaults; give customised rows a left accent so they pop. */
+function rowStyle(atDefault: boolean): CSSProperties {
+  return {
+    borderLeft: `2px solid ${atDefault ? 'transparent' : '#1f6feb'}`,
+    paddingLeft: 6,
+    opacity: atDefault ? 0.5 : 1,
+  };
+}
+
 function SettingRow({
   schema,
   basePath,
@@ -206,6 +237,7 @@ function SettingRow({
   // with a marker the leaf controls can read (and the row dims its
   // label) — matches Qt's italic "differing values" affordance.
   const mixed = schema.mixed_value === true;
+  const atDefault = isAtDefault(schema, value, mixed);
 
   // Wrap a label element with the optional right-click menu.
   const wrapLabel = (labelEl: ReactNode): ReactNode =>
@@ -226,7 +258,8 @@ function SettingRow({
     // Registry fallback for typenames we haven't covered yet —
     // show the raw value so the user at least sees it.
     return (
-      <div data-testid={`row-${schema.name}`} data-mixed={mixed || undefined}>
+      <div data-testid={`row-${schema.name}`} data-mixed={mixed || undefined}
+        data-default={atDefault || undefined} style={rowStyle(atDefault)}>
         {wrapLabel(<label>{label}</label>)}
         <code data-testid={`fallback-${schema.name}`}>
           {value === undefined ? '(unset)' : JSON.stringify(value)}
@@ -239,6 +272,8 @@ function SettingRow({
     <div
       data-testid={`row-${schema.name}`}
       data-mixed={mixed || undefined}
+      data-default={atDefault || undefined}
+      style={rowStyle(atDefault)}
     >
       {wrapLabel(
         <label style={mixed ? { fontStyle: 'italic', color: '#888' } : undefined}>

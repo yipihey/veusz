@@ -82,6 +82,16 @@ describe('Inspector', () => {
     expect(screen.getByTestId('subgroup-PlotLine').hasAttribute('open')).toBe(true);
   });
 
+  it('marks settings at their default value vs customised ones', () => {
+    render(<Inspector {...baseProps} onChange={() => {}} />);
+    // xData='x' differs from its default '' → customised (no data-default).
+    expect(screen.getByTestId('row-xData').dataset.default).toBeUndefined();
+    // marker='circle' equals its default 'circle' → at default (dimmed).
+    expect(screen.getByTestId('row-marker').dataset.default).toBe('true');
+    // transparency=0 equals its default 0 → at default.
+    expect(screen.getByTestId('row-transparency').dataset.default).toBe('true');
+  });
+
   it('emits onChange with the full setting path when a leaf changes', () => {
     const onChange = vi.fn();
     render(<Inspector {...baseProps} onChange={onChange} />);
