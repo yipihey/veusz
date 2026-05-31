@@ -756,6 +756,10 @@ class AxisLabels(Object):
 # ---------------------------------------------------------------------------
 
 class Mesh(Object):
+    """Regular grid surface (Function3D, Surface3D shimming). ``direction``
+    picks which axis is the "height" — the other two become the in-plane
+    grid. Mirrors ``objects.cpp:Mesh::get{Line,Surface}Fragments``."""
+
     class Direction:
         X_DIRN = 0
         Y_DIRN = 1
@@ -773,12 +777,99 @@ class Mesh(Object):
         self.hidehorzline = bool(hidehorzline)
         self.hidevertline = bool(hidevertline)
 
+    def _vec_idxs(self):
+        """(vidx_h, vidx_1, vidx_2) for the chosen height direction."""
+        d = self.direction
+        D = Mesh.Direction
+        if d == D.Y_DIRN: return (1, 2, 0)
+        if d == D.Z_DIRN: return (2, 0, 1)
+        return (0, 1, 2)  # X_DIRN (default)
+
     def getFragments(self, perspM, outerM, v):
-        # TODO(W1e): emit triangle grid + horizontal/vertical line segments.
-        pass
+        self._getLineFragments(perspM, outerM, v)
+        self._getSurfaceFragments(perspM, outerM, v)
+
+    def _getLineFragments(self, perspM, outerM, v):
+        if self.lineprop is None:
+            return
+        vh, v1, v2 = self._vec_idxs()
+        n1 = len(self.pos1); n2 = len(self.pos2)
+        if n1 == 0 or n2 == 0 or len(self.heights) < n1 * n2:
+            return
+        idx = 0
+        pt4 = N.array([0.0, 0.0, 0.0, 1.0])
+        # Two passes: stepindex 0 = sweep along pos1 (per pos2 row), 1 = vice versa.
+        for stepindex in range(2):
+            if self.hidehorzline and stepindex == 0:
+                continue
+            if self.hidevertline and stepindex == 1:
+                continue
+            vec_step = self.pos1 if stepindex == 0 else self.pos2
+            vec_const = self.pos2 if stepindex == 0 else self.pos1
+            vidx_step = v1 if stepindex == 0 else v2
+            vidx_const = v2 if stepindex == 0 else v1
+            for consti in range(len(vec_const)):
+                pt4[vidx_const] = vec_const[consti]
+                prev = None
+                for stepi in range(len(vec_step)):
+                    hi = stepi * n2 + consti if stepindex == 0 else consti * n2 + stepi
+                    pt4[vidx_step] = vec_step[stepi]
+                    pt4[vh] = self.heights[hi]
+                    cur = vec4to3(outerM * Vec4(pt4[0], pt4[1], pt4[2], pt4[3]))
+                    if stepi > 0 and cur.isfinite() and prev.isfinite():
+                        f = Fragment()
+                        f.type = FR_LINESEG
+                        f.lineprop = self.lineprop
+                        f.object = self
+                        f.points[0] = cur
+                        f.points[1] = prev
+                        f.index = idx
+                        idx += 1
+                        v.append(f)
+                    prev = cur
+
+    def _getSurfaceFragments(self, perspM, outerM, v):
+        if self.surfaceprop is None:
+            return
+        vh, v1, v2 = self._vec_idxs()
+        n1 = len(self.pos1); n2 = len(self.pos2)
+        if n1 < 2 or n2 < 2 or len(self.heights) < n1 * n2:
+            return
+        # Two alternating triangulation patterns produce a diamond grid pattern.
+        tidxs = (((0, 1, 2), (3, 1, 2)), ((1, 0, 3), (2, 0, 3)))
+        cell_idx = 0
+        for i1 in range(n1 - 1):
+            for i2 in range(n2 - 1):
+                p4 = [N.array([0.0, 0.0, 0.0, 1.0]) for _ in range(4)]
+                pproj = [None, None, None, None]
+                for i in range(4):
+                    j1 = i1 + (i & 1); j2 = i2 + (i >> 1)
+                    p4[i][vh] = self.heights[j1 * n2 + j2]
+                    p4[i][v1] = self.pos1[j1]
+                    p4[i][v2] = self.pos2[j2]
+                    pproj[i] = vec4to3(outerM * Vec4(*p4[i]))
+                pat = tidxs[(i1 + i2) % 2]
+                for tri in range(2):
+                    a, b, c = pat[tri]
+                    if pproj[a].isfinite() and pproj[b].isfinite() and pproj[c].isfinite():
+                        f = Fragment()
+                        f.type = FR_TRIANGLE
+                        f.surfaceprop = self.surfaceprop
+                        f.object = self
+                        f.points[0], f.points[1], f.points[2] = pproj[a], pproj[b], pproj[c]
+                        f.index = cell_idx
+                        v.append(f)
+                cell_idx += 1
 
 
 class DataMesh(Object):
+    """Binned 2D data displayed as a 3D surface (Surface3D). ``idxval`` /
+    ``idxedge1`` / ``idxedge2`` assign data + edges to the X/Y/Z axes.
+    v1: lowres mode only (highres neighbour-averaging deferred). Per-cell
+    duplicate edges are NOT deduplicated — the painter draws shared edges
+    twice; cosmetically identical, mild perf cost. Mirrors
+    ``objects.cpp:DataMesh::getFragments``."""
+
     def __init__(self, edges1, edges2, vals, idxval, idxedge1, idxedge2,
                  highres, lineprop, surfprop, hidehorzline=False, hidevertline=False):
         super().__init__()
@@ -795,11 +886,119 @@ class DataMesh(Object):
         self.hidevertline = bool(hidevertline)
 
     def getFragments(self, perspM, outerM, v):
-        # TODO(W1e): triangulate (edges1 × edges2) cells with vals.
-        pass
+        # validate index permutation
+        idxs = (self.idxval, self.idxedge1, self.idxedge2)
+        if sorted(idxs) != [0, 1, 2]:
+            return
+        if self.lineprop is None and self.surfaceprop is None:
+            return
+        n1 = int(len(self.edges1)) - 1
+        n2 = int(len(self.edges2)) - 1
+        if n1 <= 0 or n2 <= 0 or len(self.vals) < n1 * n2:
+            return
+
+        e1 = N.asarray(self.edges1, dtype=float)
+        e2 = N.asarray(self.edges2, dtype=float)
+        vals = N.asarray(self.vals, dtype=float).reshape(n1, n2)
+        # 4-neighbour average for cell corners (clipped at edges).
+        # corner stencil order (v1 lowres uses indices 0, 2, 4, 6):
+        #   0=(i1, i2)             top-left
+        #   2=(i1, i2+1)           top-right
+        #   4=(i1+1, i2+1)         bot-right
+        #   6=(i1+1, i2)           bot-left
+        ix1 = N.clip(N.arange(n1 + 1)[:, None] - 1, 0, n1 - 1)
+        ix2 = N.clip(N.arange(n2 + 1)[None, :] - 1, 0, n2 - 1)
+        jx1 = N.clip(N.arange(n1 + 1)[:, None], 0, n1 - 1)
+        jx2 = N.clip(N.arange(n2 + 1)[None, :], 0, n2 - 1)
+        # corner_val[(i1, i2)] = avg of cells around grid intersection (i1, i2)
+        corner_val = 0.25 * (
+            vals[ix1, ix2] + vals[jx1, ix2] + vals[ix1, jx2] + vals[jx1, jx2])
+
+        # lowres triangulation patterns and lines (mirror objects.cpp)
+        TLR1 = ((0, 2, 4), (0, 6, 4))
+        TLR2 = ((2, 0, 6), (2, 4, 6))
+        LINES = ((0, 2), (0, 6), (4, 2), (4, 6))
+
+        for i1 in range(n1):
+            for i2 in range(n2):
+                vc = vals[i1, i2]
+                if not math.isfinite(vc):
+                    continue
+                # build the 4 corners (0/2/4/6 in the 9-corner stencil)
+                corners = [None] * 9
+                # corner 0: top-left of cell, value = corner_val[i1, i2]
+                corners[0] = self._corner(corner_val[i1, i2], e1[i1], e2[i2])
+                corners[2] = self._corner(corner_val[i1, i2 + 1], e1[i1], e2[i2 + 1])
+                corners[4] = self._corner(corner_val[i1 + 1, i2 + 1], e1[i1 + 1], e2[i2 + 1])
+                corners[6] = self._corner(corner_val[i1 + 1, i2], e1[i1 + 1], e2[i2])
+
+                corners3 = [vec4to3(outerM * c) for c in corners if c is not None]
+                cmap = {0: corners3[0], 2: corners3[1], 4: corners3[2], 6: corners3[3]}
+
+                if self.surfaceprop is not None:
+                    pat = TLR1 if (i1 + i2) % 2 == 0 else TLR2
+                    cell_idx = i1 * n2 + i2
+                    for a, b, c in pat:
+                        f = Fragment()
+                        f.type = FR_TRIANGLE
+                        f.surfaceprop = self.surfaceprop
+                        f.object = self
+                        f.points[0], f.points[1], f.points[2] = cmap[a], cmap[b], cmap[c]
+                        f.index = cell_idx
+                        v.append(f)
+
+                if self.lineprop is not None:
+                    # linedirn: 0,1,0,1 — alternating horz/vert
+                    for k, (a, b) in enumerate(LINES):
+                        dirn = k & 1
+                        if self.hidehorzline and dirn == 0:
+                            continue
+                        if self.hidevertline and dirn == 1:
+                            continue
+                        f = Fragment()
+                        f.type = FR_LINESEG
+                        f.lineprop = self.lineprop
+                        f.object = self
+                        f.points[0] = cmap[a]; f.points[1] = cmap[b]
+                        f.index = i1 * n2 + i2
+                        v.append(f)
+
+    def _corner(self, vh, p1, p2):
+        """Pack a (height, edge1, edge2) corner into a homogeneous Vec4
+        according to the axis permutation."""
+        pt = [0.0, 0.0, 0.0, 1.0]
+        pt[self.idxval] = float(vh)
+        pt[self.idxedge1] = float(p1)
+        pt[self.idxedge2] = float(p2)
+        return Vec4(*pt)
 
 
 class MultiCuboid(Object):
+    """Array of axis-aligned boxes (Volume3D). Each cuboid emits 12
+    triangles + 12 edge segments. Tables mirror ``objects.cpp``."""
+
+    # 12 triangles per cuboid: each triple is (corner-index of 0=min/1=max along x,y,z)
+    _TRI_IDX = (
+        ((0, 0, 0), (0, 0, 1), (1, 0, 0)),
+        ((0, 0, 1), (0, 0, 0), (0, 1, 0)),
+        ((0, 1, 0), (0, 1, 1), (0, 0, 1)),
+        ((0, 1, 0), (1, 1, 0), (0, 1, 1)),
+        ((0, 1, 0), (0, 0, 0), (1, 0, 0)),
+        ((0, 1, 1), (1, 0, 1), (0, 0, 1)),
+        ((0, 1, 1), (1, 1, 1), (1, 0, 1)),
+        ((1, 0, 0), (1, 1, 0), (0, 1, 0)),
+        ((1, 0, 1), (1, 0, 0), (0, 0, 1)),
+        ((1, 0, 1), (1, 1, 0), (1, 0, 0)),
+        ((1, 0, 1), (1, 1, 1), (1, 1, 0)),
+        ((1, 1, 0), (1, 1, 1), (0, 1, 1)),
+    )
+    _EDGE_IDX = (
+        ((0, 0, 0), (0, 0, 1)), ((0, 0, 0), (0, 1, 0)), ((0, 0, 0), (1, 0, 0)),
+        ((0, 0, 1), (0, 1, 1)), ((0, 0, 1), (1, 0, 1)), ((0, 1, 0), (0, 1, 1)),
+        ((0, 1, 0), (1, 1, 0)), ((0, 1, 1), (1, 1, 1)), ((1, 0, 0), (1, 0, 1)),
+        ((1, 0, 0), (1, 1, 0)), ((1, 0, 1), (1, 1, 1)), ((1, 1, 0), (1, 1, 1)),
+    )
+
     def __init__(self, xmin, xmax, ymin, ymax, zmin, zmax,
                  lineprop, surfprop):
         super().__init__()
@@ -810,8 +1009,40 @@ class MultiCuboid(Object):
         self.surfaceprop = surfprop
 
     def getFragments(self, perspM, outerM, v):
-        # TODO(W1e): 12 triangles per cuboid + 12 edge segments.
-        pass
+        sp = self.surfaceprop
+        lp = self.lineprop
+        if (sp is None or sp.hide) and (lp is None or lp.hide):
+            return
+        n = min(len(self.xmin), len(self.xmax),
+                len(self.ymin), len(self.ymax),
+                len(self.zmin), len(self.zmax))
+        for i in range(n):
+            x = (self.xmin[i], self.xmax[i])
+            y = (self.ymin[i], self.ymax[i])
+            z = (self.zmin[i], self.zmax[i])
+            if sp is not None and not sp.hide:
+                for tri in MultiCuboid._TRI_IDX:
+                    pts = []
+                    for ix, iy, iz in tri:
+                        pts.append(vec4to3(outerM * Vec4(x[ix], y[iy], z[iz], 1.0)))
+                    f = Fragment()
+                    f.type = FR_TRIANGLE
+                    f.surfaceprop = sp
+                    f.object = self
+                    f.points[0], f.points[1], f.points[2] = pts
+                    f.index = i
+                    v.append(f)
+            if lp is not None and not lp.hide:
+                for a, b in MultiCuboid._EDGE_IDX:
+                    pa = vec4to3(outerM * Vec4(x[a[0]], y[a[1]], z[a[2]], 1.0))
+                    pb = vec4to3(outerM * Vec4(x[b[0]], y[b[1]], z[b[2]], 1.0))
+                    f = Fragment()
+                    f.type = FR_LINESEG
+                    f.lineprop = lp
+                    f.object = self
+                    f.points[0], f.points[1] = pa, pb
+                    f.index = i
+                    v.append(f)
 
 
 # ===========================================================================

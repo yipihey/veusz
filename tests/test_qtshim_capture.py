@@ -186,13 +186,11 @@ def test_headless_capture_matches_qt(name):
 # 3D example, plus a meaningful number of fills for the scatter examples.
 
 @pytest.mark.parametrize('name,min_ops,min_fills', [
-    ('3d_points.vsz',   500, 100),   # full scatter
-    ('3d_errors.vsz',   500, 100),   # scatter + error bars
-    # function/surface/volume render axes + frame only in v1 (Mesh / DataMesh /
-    # MultiCuboid emit no fragments yet — primitives are stubbed).
-    ('3d_function.vsz', 100, 0),
-    ('3d_surface.vsz',  100, 0),
-    ('3d_volume.vsz',   100, 0),
+    ('3d_points.vsz',   500, 100),    # full scatter
+    ('3d_errors.vsz',   500, 100),    # scatter + error bars
+    ('3d_function.vsz', 500, 1000),   # parametric Mesh surface
+    ('3d_surface.vsz',  500, 1000),   # DataMesh surface
+    ('3d_volume.vsz',   500, 100),    # MultiCuboid grid
 ])
 def test_3d_example_captures_under_shim(name, min_ops, min_fills):
     h = _shim_histogram(os.path.join(EXAMPLES, name))
