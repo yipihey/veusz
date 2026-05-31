@@ -411,24 +411,29 @@ class RectangleOverlapTester:
 
 
 class LineLabeller:
-    """Base for contour line labelling (contour widgets are out of scope
-    headless); methods are inert so subclassing/import works."""
+    """Pure-Python contour line labeller. Unlike the C++ extension it does not
+    place text or break lines around labels — it simply passes the added
+    polylines straight through so contour *lines* render. The painter clips to
+    ``clippath`` (the plot rect, set by the subclass), so lines stay inside the
+    graph; label text is drawn by the subclass's ``drawAt`` (a no-op here, since
+    ``process`` doesn't compute label rectangles)."""
 
     def __init__(self, cliprect=None, rotatelabels=False):
         self._cliprect = cliprect
         self._rotatelabels = rotatelabels
+        self._lines = []
 
     def addLine(self, poly, textsize):
-        pass
+        self._lines.append(poly)
 
     def process(self):
         pass
 
     def getNumPolySets(self):
-        return 0
+        return len(self._lines)
 
     def getPolySet(self, i):
-        return []
+        return [self._lines[i]]
 
     def drawAt(self, idx, r):
         pass

@@ -48,6 +48,10 @@ describe('VeuszFigure shell + editor modal', () => {
     expect(modal).toBeInTheDocument();
     expect(screen.getByTestId('embed-plot')).toBeInTheDocument();
     expect(screen.getByTestId('veusz-modal-fullscreen')).toBeInTheDocument();
+    // Editing controls.
+    expect(screen.getByTestId('veusz-undo')).toBeInTheDocument();
+    expect(screen.getByTestId('veusz-redo')).toBeInTheDocument();
+    expect(screen.getByTestId('veusz-reset')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('veusz-modal-close'));
     await waitFor(() => expect(screen.queryByTestId('veusz-modal')).toBeNull());
   });

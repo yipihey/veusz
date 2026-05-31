@@ -45,6 +45,10 @@ def _(text, disambiguation=None, context='Contour'):
 
 def finitePoly(poly):
     """Remove non-finite coordinates from numpy arrays of coordinates."""
+    if poly is None:
+        # A tracer that couldn't produce lines (e.g. an absent C extension)
+        # returns None; treat as "no lines" rather than crashing.
+        return []
     out = []
     for line in poly:
         finite = N.isfinite(line)

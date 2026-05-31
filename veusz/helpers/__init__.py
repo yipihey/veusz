@@ -76,7 +76,13 @@ if _ext_missing('qtloops'):
 # Contour / 3D / MathML / record extensions: inert stubs when absent (those
 # widget types are out of scope headless, but the modules must be importable
 # so ``import veusz.widgets`` succeeds).
-for _ext in ('_nc_cntr', 'threed', 'qtmml', 'recordpaint'):
+# _nc_cntr: pure-Python marching-squares contour tracer when the C++ extension
+# is absent (so contour *lines* still render in the browser; fills are skipped).
+if _ext_missing('_nc_cntr'):
+    from . import _nc_cntr_py as _nc_cntr_py_mod
+    _sys.modules[f'{__name__}._nc_cntr'] = _nc_cntr_py_mod
+
+for _ext in ('threed', 'qtmml', 'recordpaint'):
     if _ext_missing(_ext):
         _sys.modules[f'{__name__}.{_ext}'] = _make_inert(_ext)
 

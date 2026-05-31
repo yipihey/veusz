@@ -34,7 +34,23 @@ export function EditorModal({
   const values = store((s) => s.values);
   const datasets = store((s) => s.datasets);
   const error = store((s) => s.error);
+  const canUndo = store((s) => s.canUndo);
+  const canRedo = store((s) => s.canRedo);
   const [full, setFull] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const undo = () => { void store.getState().undo(); };
+  const redo = () => { void store.getState().redo(); };
+  // Reset = revert every edit back to the originally-loaded document by
+  // undoing until there's nothing left (loading the doc isn't undoable).
+  const reset = async () => {
+    setBusy(true);
+    try {
+      for (let i = 0; i < 1000 && store.getState().canUndo; i++) {
+        await store.getState().undo();
+      }
+    } finally { setBusy(false); }
+  };
 
   return createPortal(
     <div data-testid="veusz-modal" style={backdrop}
@@ -42,6 +58,14 @@ export function EditorModal({
       <div style={full ? winFull : win} data-testid="veusz-modal-window">
         <header style={hdr}>
           <strong style={{ fontSize: 14 }}>{title ?? 'Edit figure'}</strong>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button type="button" data-testid="veusz-undo" onClick={undo} disabled={!canUndo || busy}
+              style={hbtn} title="Undo last change">↶ Undo</button>
+            <button type="button" data-testid="veusz-redo" onClick={redo} disabled={!canRedo || busy}
+              style={hbtn} title="Redo">↷ Redo</button>
+            <button type="button" data-testid="veusz-reset" onClick={() => void reset()} disabled={!canUndo || busy}
+              style={hbtn} title="Reset all edits to the original figure">⟲ Reset</button>
+          </div>
           {error && <span data-testid="veusz-error" style={{ color: 'crimson', fontSize: 12 }}>{error}</span>}
           <span style={{ flex: 1 }} />
           {toolbar}

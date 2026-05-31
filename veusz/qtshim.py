@@ -238,6 +238,14 @@ class QSizeF:
     def height(self): return self._h
     def setWidth(self, v): self._w = float(v)
     def setHeight(self, v): self._h = float(v)
+    # Qt's QSizeF supports componentwise +/- (used e.g. to pad contour-label
+    # boxes by the font descent): add/subtract widths and heights.
+    def __iadd__(self, o):
+        self._w += o.width(); self._h += o.height(); return self
+    def __isub__(self, o):
+        self._w -= o.width(); self._h -= o.height(); return self
+    def __add__(self, o): return QSizeF(self._w + o.width(), self._h + o.height())
+    def __sub__(self, o): return QSizeF(self._w - o.width(), self._h - o.height())
 
 
 class QSize(QSizeF):
