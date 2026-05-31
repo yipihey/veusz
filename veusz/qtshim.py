@@ -955,6 +955,54 @@ class QImage:
         img = QImage(self._w, self._h, fmt)
         img._pixels = self._pixels  # pixels already straight-alpha ARGB32-ish
         return img
+    def copy(self, *a):
+        """Full copy (no args / QRect) or sub-rectangle copy(x, y, w, h),
+        carrying the ARGB32 pixel bytes so cropped images still draw."""
+        if len(a) == 0:
+            img = QImage(self._w, self._h, self._fmt); img._pixels = self._pixels
+            return img
+        if len(a) == 1 and hasattr(a[0], 'x'):
+            r = a[0]; x, y, w, h = int(r.x()), int(r.y()), int(r.width()), int(r.height())
+        elif len(a) >= 4:
+            x, y, w, h = int(a[0]), int(a[1]), int(a[2]), int(a[3])
+        else:
+            img = QImage(self._w, self._h, self._fmt); img._pixels = self._pixels
+            return img
+        w, h = max(0, w), max(0, h)
+        img = QImage(w, h, self._fmt)
+        if self._pixels is not None and w and h:
+            src = self._pixels; sw, sh = self._w, self._h
+            out = bytearray(w * h * 4)
+            x0 = max(0, x); x1 = min(sw, x + w); cw = x1 - x0
+            if cw > 0:
+                doff = (x0 - x) * 4
+                for row in range(h):
+                    sy = y + row
+                    if 0 <= sy < sh:
+                        si = (sy * sw + x0) * 4
+                        di = row * w * 4 + doff
+                        out[di:di + cw * 4] = src[si:si + cw * 4]
+            img._pixels = bytes(out)
+        return img
+    def scaled(self, w, h, *a):
+        """Nearest-neighbour resample to w×h (used by the resample draw modes)."""
+        w, h = max(0, int(w)), max(0, int(h))
+        img = QImage(w, h, self._fmt)
+        if self._pixels is not None and w and h and self._w and self._h:
+            src = self._pixels; sw, sh = self._w, self._h
+            out = bytearray(w * h * 4)
+            for row in range(h):
+                sy = min(sh - 1, row * sh // h)
+                base = sy * sw
+                for col in range(w):
+                    sx = min(sw - 1, col * sw // w)
+                    si = (base + sx) * 4; di = (row * w + col) * 4
+                    out[di:di + 4] = src[si:si + 4]
+            img._pixels = bytes(out)
+        return img
+    def mirrored(self, *a, **k):
+        img = QImage(self._w, self._h, self._fmt); img._pixels = self._pixels
+        return img
     def depth(self): return 32
     def logicalDpiX(self): return 96
     def logicalDpiY(self): return 96
