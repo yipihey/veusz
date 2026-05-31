@@ -348,6 +348,14 @@ class RotatedRectangle:
     def rotate(self, dtheta):
         self.angle += dtheta
 
+    def rotateAboutOrigin(self, dtheta):
+        import math
+        c, s = math.cos(dtheta), math.sin(dtheta)
+        nx = self.cx * c - self.cy * s
+        ny = self.cx * s + self.cy * c
+        self.cx, self.cy = nx, ny
+        self.angle += dtheta
+
     def translate(self, dx, dy):
         self.cx += dx; self.cy += dy
 

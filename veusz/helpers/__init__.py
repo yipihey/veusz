@@ -82,7 +82,14 @@ if _ext_missing('_nc_cntr'):
     from . import _nc_cntr_py as _nc_cntr_py_mod
     _sys.modules[f'{__name__}._nc_cntr'] = _nc_cntr_py_mod
 
-for _ext in ('threed', 'qtmml', 'recordpaint'):
+# threed: pure-Python 3D engine (scene graph + Lambertian lighting + depth-sort
+# + plain QPainter ops) when the C++ extension is absent — drives every 3D
+# widget through the same Scene IR + Vello pipeline as 2D.
+if _ext_missing('threed'):
+    from . import threed_py as _threed_py
+    _sys.modules[f'{__name__}.threed'] = _threed_py
+
+for _ext in ('qtmml', 'recordpaint'):
     if _ext_missing(_ext):
         _sys.modules[f'{__name__}.{_ext}'] = _make_inert(_ext)
 

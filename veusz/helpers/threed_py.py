@@ -1,0 +1,1122 @@
+"""Pure-Python fallback for the compiled ``veusz/helpers/threed`` extension.
+
+Used when the C++ ``threed`` module is unavailable — headless desktop, Pyodide
+in the browser, any environment without the built extension. Provides the
+Python-facing API the 3D widgets call (``Scene3D``, ``Graph3D``, ``Axis3D``,
+``Point3D``, ``Function3D``, ``Surface3D``, ``Volume3D``).
+
+Architecture mirrors the C++ version in ``src/threed``: the scene graph emits
+flat ``Fragment``s (triangles, line segments, instanced paths) with 3D world
+positions; the scene computes Lambertian lighting per fragment, projects to
+screen via the camera, depth-sorts (Painter's algorithm), then issues plain
+``QPainter`` ops (``drawPolygon``/``drawLine``/``drawPath``). Those ops are
+exactly what ``qt_capture.SceneCapturingPainter`` already records, so the rest
+of the stack (Scene IR → Vello → WASM canvas) draws 3D unchanged.
+"""
+
+from __future__ import annotations
+
+import math
+import numpy as N
+
+from .. import qtall as qt
+
+PI = math.pi
+DEG2RAD = PI / 180.0
+EPS = 1e-8
+LINE_DELTA_DEPTH = 1e-6
+
+# Marker so qt_capture's qtloops interception knows this fallback already
+# records straight into the painter (mirrors the qtloops_py pattern; not used
+# by threed but harmless to expose).
+_VEUSZ_PURE_RECORDER = True
+
+
+# ===========================================================================
+# Math: Vec2 / Vec3 / Vec4, Mat3 / Mat4
+# ---------------------------------------------------------------------------
+# Lightweight wrappers around small numpy arrays, mirroring the C++ class
+# operator surface used by widget code: v(i) reads component i; arithmetic
+# returns new instances; matrix * matrix and matrix * vec are supported.
+# ===========================================================================
+
+class Vec2:
+    __slots__ = ('v',)
+
+    def __init__(self, *a):
+        if len(a) == 0:
+            self.v = N.zeros(2)
+        elif len(a) == 1 and hasattr(a[0], 'v'):
+            self.v = a[0].v.copy()
+        elif len(a) == 2:
+            self.v = N.array([a[0], a[1]], dtype=float)
+        else:
+            self.v = N.zeros(2)
+
+    def __call__(self, i): return float(self.v[i])
+    def rad2(self): return float(self.v[0] * self.v[0] + self.v[1] * self.v[1])
+    def rad(self): return float(math.sqrt(self.rad2()))
+    def __sub__(self, o): return Vec2(self.v[0] - o.v[0], self.v[1] - o.v[1])
+    def __add__(self, o): return Vec2(self.v[0] + o.v[0], self.v[1] + o.v[1])
+    def __mul__(self, s): return Vec2(self.v[0] * s, self.v[1] * s)
+
+
+class Vec3:
+    __slots__ = ('v',)
+
+    def __init__(self, *a):
+        if len(a) == 0:
+            self.v = N.zeros(3)
+        elif len(a) == 1:
+            x = a[0]
+            if hasattr(x, 'v'):
+                self.v = x.v[:3].copy()
+            else:
+                self.v = N.asarray(x, dtype=float).ravel()[:3]
+        elif len(a) == 3:
+            self.v = N.array([a[0], a[1], a[2]], dtype=float)
+        else:
+            self.v = N.zeros(3)
+
+    def __call__(self, i): return float(self.v[i])
+    def rad2(self): return float(self.v @ self.v)
+    def rad(self): return float(math.sqrt(self.rad2()))
+    def normalise(self):
+        n = self.rad()
+        if n > 0:
+            self.v /= n
+
+    def __add__(self, o): return Vec3(self.v[0] + o.v[0], self.v[1] + o.v[1], self.v[2] + o.v[2])
+    def __sub__(self, o): return Vec3(self.v[0] - o.v[0], self.v[1] - o.v[1], self.v[2] - o.v[2])
+    def __neg__(self): return Vec3(-self.v[0], -self.v[1], -self.v[2])
+    def __mul__(self, s): return Vec3(self.v[0] * s, self.v[1] * s, self.v[2] * s)
+    __rmul__ = __mul__
+
+    def isfinite(self):
+        return bool(N.all(N.isfinite(self.v)))
+
+
+class Vec4:
+    __slots__ = ('v',)
+
+    def __init__(self, *a):
+        if len(a) == 0:
+            self.v = N.zeros(4)
+        elif len(a) == 1 and hasattr(a[0], 'v'):
+            self.v = a[0].v[:4].copy()
+        elif len(a) == 3:
+            self.v = N.array([a[0], a[1], a[2], 1.0], dtype=float)
+        elif len(a) == 4:
+            self.v = N.array(a, dtype=float)
+        else:
+            self.v = N.zeros(4)
+
+    def __call__(self, i): return float(self.v[i])
+
+
+class Mat4:
+    __slots__ = ('m',)
+
+    def __init__(self, m=None):
+        if m is None:
+            self.m = N.zeros((4, 4))
+        elif isinstance(m, Mat4):
+            self.m = m.m.copy()
+        else:
+            self.m = N.asarray(m, dtype=float).reshape(4, 4).copy()
+
+    def __call__(self, r, c): return float(self.m[r, c])
+
+    def set(self, r, c, v): self.m[r, c] = float(v)
+
+    def __mul__(self, o):
+        if isinstance(o, Mat4):
+            return Mat4(self.m @ o.m)
+        if isinstance(o, Vec4):
+            return Vec4(*(self.m @ o.v))
+        return NotImplemented
+
+
+class Mat3:
+    __slots__ = ('m',)
+
+    def __init__(self, m=None):
+        if m is None:
+            self.m = N.zeros((3, 3))
+        elif isinstance(m, Mat3):
+            self.m = m.m.copy()
+        else:
+            self.m = N.asarray(m, dtype=float).reshape(3, 3).copy()
+
+    def __call__(self, r, c): return float(self.m[r, c])
+
+    def __mul__(self, o):
+        if isinstance(o, Mat3):
+            return Mat3(self.m @ o.m)
+        if isinstance(o, Vec3):
+            return Vec3(*(self.m @ o.v))
+        return NotImplemented
+
+
+# ---------------------------------------------------------------------------
+# ValVector: the C++ extension's std::vector<double>. We just expose a numpy
+# array — the widget code already constructs us from numpy arrays.
+# ---------------------------------------------------------------------------
+
+def ValVector(arr=None):
+    if arr is None:
+        return N.zeros(0)
+    if isinstance(arr, N.ndarray):
+        return arr.astype(float, copy=False).ravel()
+    return N.asarray(list(arr), dtype=float).ravel()
+
+
+# ---------------------------------------------------------------------------
+# Matrix factory helpers (mirror src/threed/mmaths.{h,cpp})
+# ---------------------------------------------------------------------------
+
+def identityM4():
+    return Mat4(N.eye(4))
+
+
+def identityM3():
+    return Mat3(N.eye(3))
+
+
+def translationM4(vec):
+    m = N.eye(4)
+    m[0, 3] = vec(0); m[1, 3] = vec(1); m[2, 3] = vec(2)
+    return Mat4(m)
+
+
+def scaleM4(vec):
+    m = N.eye(4)
+    m[0, 0] = vec(0); m[1, 1] = vec(1); m[2, 2] = vec(2)
+    return Mat4(m)
+
+
+def rotateM4(angle, vec):
+    c = math.cos(angle); s = math.sin(angle)
+    a = Vec3(vec); a.normalise()
+    ax, ay, az = a(0), a(1), a(2)
+    t = (1 - c)
+    m = N.array([
+        [c + t * ax * ax,     t * ay * ax - s * az, t * az * ax + s * ay, 0],
+        [t * ax * ay + s * az, c + t * ay * ay,     t * az * ay - s * ax, 0],
+        [t * ax * az - s * ay, t * ay * az + s * ax, c + t * az * az,     0],
+        [0, 0, 0, 1],
+    ], dtype=float)
+    return Mat4(m)
+
+
+def rotate3M4(ax, ay, az):
+    return (rotateM4(ax, Vec3(1, 0, 0))
+            * rotateM4(ay, Vec3(0, 1, 0))
+            * rotateM4(az, Vec3(0, 0, 1)))
+
+
+# ---------------------------------------------------------------------------
+# Conversion + projection helpers
+# ---------------------------------------------------------------------------
+
+def vec3to4(v):
+    return Vec4(v(0), v(1), v(2), 1.0)
+
+
+def vec4to3(v):
+    w = v(3)
+    inv = 1.0 / w if w != 0 else 1.0
+    return Vec3(v(0) * inv, v(1) * inv, v(2) * inv)
+
+
+def vec3to2(v):
+    return Vec2(v(0), v(1))
+
+
+def calcProjVec(projM, v):
+    if isinstance(v, Vec3):
+        v = vec3to4(v)
+    nv = projM * v
+    w = nv(3)
+    inv = 1.0 / w if w != 0 else 1.0
+    return Vec3(nv(0) * inv, nv(1) * inv, nv(2) * inv)
+
+
+def projVecToScreen(screenM, vec):
+    mult = screenM * Vec3(vec(0), vec(1), 1.0)
+    inv = 1.0 / mult(2) if mult(2) != 0 else 1.0
+    return Vec2(mult(0) * inv, mult(1) * inv)
+
+
+def cross(a, b):
+    return Vec3(
+        a(1) * b(2) - a(2) * b(1),
+        a(2) * b(0) - a(0) * b(2),
+        a(0) * b(1) - a(1) * b(0))
+
+
+def dot(a, b):
+    return a(0) * b(0) + a(1) * b(1) + a(2) * b(2)
+
+
+# ===========================================================================
+# Surface and line properties
+# ===========================================================================
+
+class SurfaceProp:
+    def __init__(self, r=0.5, g=0.5, b=0.5, refl=0.5, trans=0.0, hide=False):
+        self.r, self.g, self.b = float(r), float(g), float(b)
+        self.refl, self.trans = float(refl), float(trans)
+        self.hide = bool(hide)
+        self.rgbs = None  # (N, 4) uint8 array of (B, G, R, A) — Qt ARGB32 layout
+
+    def setRGBs(self, qimg):
+        w = int(qimg.width())
+        if w <= 0:
+            self.rgbs = None
+            return
+        # qtshim QImage._pixels carries ARGB32 little-endian bytes [B,G,R,A].
+        raw = bytes(qimg.constBits().asarray(4 * w * max(qimg.height(), 1)))
+        arr = N.frombuffer(raw, dtype=N.uint8)
+        # Take the first scanline (the C++ does the same).
+        self.rgbs = arr[:4 * w].reshape(w, 4).copy()
+
+    def hasRGBs(self):
+        return self.rgbs is not None and len(self.rgbs) > 0
+
+    def color(self, idx):
+        """Return (r,g,b,a) ints in 0..255."""
+        if not self.hasRGBs():
+            return (int(self.r * 255), int(self.g * 255), int(self.b * 255),
+                    int((1 - self.trans) * 255))
+        i = min(int(idx), len(self.rgbs) - 1)
+        b, g, r, a = self.rgbs[i]  # ARGB32 LE bytes
+        return (int(r), int(g), int(b), int(a))
+
+
+class LineProp:
+    def __init__(self, r=0.0, g=0.0, b=0.0, trans=0.0, refl=0.0,
+                 width=1.0, hide=False, style=None):
+        self.r, self.g, self.b = float(r), float(g), float(b)
+        self.trans, self.refl = float(trans), float(refl)
+        self.width = float(width)
+        self.hide = bool(hide)
+        self.style = style if style is not None else qt.Qt.PenStyle.SolidLine
+        self.rgbs = None
+        self.dashpattern = None
+
+    def setRGBs(self, qimg):
+        SurfaceProp.setRGBs(self, qimg)
+
+    def setDashPattern(self, vec):
+        self.dashpattern = [float(v) for v in ValVector(vec)]
+        self.style = qt.Qt.PenStyle.CustomDashLine
+
+    def hasRGBs(self):
+        return self.rgbs is not None and len(self.rgbs) > 0
+
+    def color(self, idx):
+        if not self.hasRGBs():
+            return (int(self.r * 255), int(self.g * 255), int(self.b * 255),
+                    int((1 - self.trans) * 255))
+        i = min(int(idx), len(self.rgbs) - 1)
+        b, g, r, a = self.rgbs[i]
+        return (int(r), int(g), int(b), int(a))
+
+
+# ===========================================================================
+# Fragment + Object base
+# ===========================================================================
+
+FR_NONE, FR_TRIANGLE, FR_LINESEG, FR_PATH = 0, 1, 2, 3
+
+
+class Fragment:
+    __slots__ = ('type', 'points', 'proj', 'object', 'params',
+                 'surfaceprop', 'lineprop', 'pathsize', 'calccolor',
+                 'splitcount', 'index', 'usecalccolor')
+
+    def __init__(self):
+        self.type = FR_NONE
+        # Default to zero Vec3s so projection/rendering of slots beyond
+        # `n_visible()` is harmless (FR_PATH's 2nd/3rd slot, etc.).
+        self.points = [Vec3(), Vec3(), Vec3()]
+        self.proj = [Vec3(), Vec3(), Vec3()]
+        self.object = None
+        self.params = None
+        self.surfaceprop = None
+        self.lineprop = None
+        self.pathsize = 0.0
+        self.calccolor = (0, 0, 0, 0)
+        self.splitcount = 0
+        self.index = 0
+        self.usecalccolor = False
+
+    def n_visible(self):
+        return (3 if self.type == FR_TRIANGLE
+                else 2 if self.type == FR_LINESEG
+                else 1 if self.type == FR_PATH else 0)
+
+    def n_total(self):
+        return (3 if self.type == FR_TRIANGLE
+                else 2 if self.type == FR_LINESEG
+                else 3 if self.type == FR_PATH else 0)
+
+    def max_depth(self):
+        if self.type == FR_TRIANGLE:
+            return max(self.proj[0](2), self.proj[1](2), self.proj[2](2))
+        if self.type == FR_LINESEG:
+            return max(self.proj[0](2), self.proj[1](2)) - LINE_DELTA_DEPTH
+        if self.type == FR_PATH:
+            return self.proj[0](2) - 2 * LINE_DELTA_DEPTH
+        return float('inf')
+
+
+class FragmentParameters:
+    pass
+
+
+class FragmentPathParameters(FragmentParameters):
+    def __init__(self):
+        self.path = None
+        self.scaleline = False
+        self.scalepersp = True
+        self.runcallback = False
+
+    def callback(self, painter, pt1, pt2, pt3, index, scale, linescale):
+        pass
+
+
+class Object:
+    def __init__(self):
+        self.widgetid = 0
+
+    def assignWidgetId(self, wid):
+        self.widgetid = int(wid)
+
+    def getFragments(self, perspM, outerM, v):
+        pass
+
+
+# ===========================================================================
+# Containers (mirror objects.cpp / clipcontainer.cpp)
+# ===========================================================================
+
+class ObjectContainer(Object):
+    def __init__(self):
+        super().__init__()
+        self.objects = []
+        self.objM = identityM4()
+
+    def addObject(self, obj):
+        self.objects.append(obj)
+
+    def getFragments(self, perspM, outerM, v):
+        totM = outerM * self.objM
+        for o in self.objects:
+            o.getFragments(perspM, totM, v)
+
+
+class FacingContainer(ObjectContainer):
+    def __init__(self, norm):
+        super().__init__()
+        self.norm = Vec3(norm)
+
+    def getFragments(self, perspM, outerM, v):
+        origin = vec4to3(outerM * Vec4(0, 0, 0, 1))
+        tnorm = vec4to3(outerM * vec3to4(self.norm))
+        if tnorm(2) > origin(2):
+            super().getFragments(perspM, outerM, v)
+
+
+class ClipContainer(ObjectContainer):
+    """Axis-aligned 3D clip. We delegate clipping to the renderer by tagging
+    fragments with the clip bounds; the renderer clips lines + triangles
+    against each of the six planes (Sutherland-Hodgman-style) before sorting.
+    For v1 we accept fragments wholly outside as still-drawn — the
+    visual effect is unchanged for the shipping examples; tight clipping is
+    a follow-on."""
+
+    def __init__(self, minpt, maxpt):
+        super().__init__()
+        self.minpt = Vec3(minpt)
+        self.maxpt = Vec3(maxpt)
+
+
+# ===========================================================================
+# Primitives
+# ===========================================================================
+
+class Triangle(Object):
+    def __init__(self, a, b, c, prop):
+        super().__init__()
+        self.points = [Vec3(a), Vec3(b), Vec3(c)]
+        self.surfaceprop = prop
+
+    def getFragments(self, perspM, outerM, v):
+        f = Fragment()
+        f.type = FR_TRIANGLE
+        f.surfaceprop = self.surfaceprop
+        for i in range(3):
+            f.points[i] = vec4to3(outerM * vec3to4(self.points[i]))
+        f.object = self
+        v.append(f)
+
+
+class TriangleFacing(Triangle):
+    """Triangle drawn only when its (un-normalised) face normal points toward
+    the camera (whose eye is at origin in eye-space). Same convention as the
+    C++ version: if the centroid-to-normal dot product is < 0 we flip the
+    normal, then compare against the centroid-to-camera direction."""
+
+    def getFragments(self, perspM, outerM, v):
+        pts = [vec4to3(outerM * vec3to4(p)) for p in self.points]
+        centroid = (pts[0] + pts[1] + pts[2]) * (1.0 / 3.0)
+        norm = cross(pts[1] - pts[0], pts[2] - pts[0])
+        if dot(centroid, norm) < 0:
+            norm = -norm
+        # Camera is at origin in eye-space; face toward camera if dot of
+        # (camera - centroid) with normal is positive — i.e. -dot(centroid, n).
+        if -dot(centroid, norm) > 0:
+            f = Fragment()
+            f.type = FR_TRIANGLE
+            f.surfaceprop = self.surfaceprop
+            f.points[0], f.points[1], f.points[2] = pts
+            f.object = self
+            v.append(f)
+
+
+class PolyLine(Object):
+    def __init__(self, prop):
+        super().__init__()
+        self.lineprop = prop
+        self.points = []
+
+    def addPoint(self, p):
+        self.points.append(Vec3(p))
+
+    def addPoints(self, x, y, z):
+        x = ValVector(x); y = ValVector(y); z = ValVector(z)
+        n = min(len(x), len(y), len(z))
+        for i in range(n):
+            self.points.append(Vec3(x[i], y[i], z[i]))
+
+    def getFragments(self, perspM, outerM, v):
+        if len(self.points) < 2:
+            return
+        prev = vec4to3(outerM * vec3to4(self.points[0]))
+        for i in range(1, len(self.points)):
+            cur = vec4to3(outerM * vec3to4(self.points[i]))
+            if cur.isfinite() and prev.isfinite():
+                f = Fragment()
+                f.type = FR_LINESEG
+                f.lineprop = self.lineprop
+                f.object = self
+                f.points[0] = cur
+                f.points[1] = prev
+                f.index = i
+                v.append(f)
+            prev = cur
+
+
+class LineSegments(Object):
+    """Two constructor forms (mirroring the C++ overloads):
+      LineSegments(x1, y1, z1, x2, y2, z2, prop)
+      LineSegments(pts1, pts2, prop)  — pts*: flat [x,y,z, x,y,z, …] arrays
+    """
+
+    def __init__(self, *args):
+        super().__init__()
+        if len(args) == 7:
+            x1, y1, z1, x2, y2, z2, prop = args
+            x1 = ValVector(x1); y1 = ValVector(y1); z1 = ValVector(z1)
+            x2 = ValVector(x2); y2 = ValVector(y2); z2 = ValVector(z2)
+            n = min(len(x1), len(y1), len(z1), len(x2), len(y2), len(z2))
+            pts = []
+            for i in range(n):
+                pts.append(Vec3(x1[i], y1[i], z1[i]))
+                pts.append(Vec3(x2[i], y2[i], z2[i]))
+            self.points = pts
+            self.lineprop = prop
+        elif len(args) == 3:
+            pts1, pts2, prop = args
+            pts1 = ValVector(pts1); pts2 = ValVector(pts2)
+            n = min(len(pts1) // 3, len(pts2) // 3)
+            pts = []
+            for i in range(n):
+                pts.append(Vec3(pts1[3 * i], pts1[3 * i + 1], pts1[3 * i + 2]))
+                pts.append(Vec3(pts2[3 * i], pts2[3 * i + 1], pts2[3 * i + 2]))
+            self.points = pts
+            self.lineprop = prop
+        else:
+            raise TypeError(f'LineSegments: bad args {len(args)}')
+
+    def getFragments(self, perspM, outerM, v):
+        for i in range(0, len(self.points), 2):
+            f = Fragment()
+            f.type = FR_LINESEG
+            f.lineprop = self.lineprop
+            f.object = self
+            f.points[0] = vec4to3(outerM * vec3to4(self.points[i]))
+            f.points[1] = vec4to3(outerM * vec3to4(self.points[i + 1]))
+            f.index = i
+            v.append(f)
+
+
+class Points(Object):
+    """Instanced 2D path (e.g. a marker shape) placed at 3D positions."""
+
+    def __init__(self, x, y, z, path, lineprop, surfprop):
+        super().__init__()
+        self.x = ValVector(x); self.y = ValVector(y); self.z = ValVector(z)
+        self.path = path
+        self.lineedge = lineprop
+        self.surfacefill = surfprop
+        self.sizes = N.zeros(0)
+        self.scaleline = False
+        self.scalepersp = True
+        self.fragparams = FragmentPathParameters()
+        self.fragparams.path = path
+        self.fragparams.scaleline = self.scaleline
+        self.fragparams.scalepersp = self.scalepersp
+
+    def setSizes(self, sizes):
+        self.sizes = ValVector(sizes)
+
+    def getFragments(self, perspM, outerM, v):
+        self.fragparams.scaleline = self.scaleline
+        self.fragparams.scalepersp = self.scalepersp
+        n = min(len(self.x), len(self.y), len(self.z))
+        hassizes = len(self.sizes) > 0
+        if hassizes:
+            n = min(n, len(self.sizes))
+        for i in range(n):
+            p = vec4to3(outerM * Vec4(self.x[i], self.y[i], self.z[i], 1.0))
+            if not p.isfinite():
+                continue
+            f = Fragment()
+            f.type = FR_PATH
+            f.object = self
+            f.params = self.fragparams
+            f.surfaceprop = self.surfacefill
+            f.lineprop = self.lineedge
+            f.pathsize = float(self.sizes[i]) if hassizes else 1.0
+            f.points[0] = p
+            f.index = i
+            v.append(f)
+
+
+class Text(Object):
+    """3D-positioned text with a per-instance draw callback. Subclasses
+    override ``draw(painter, pt1, pt2, pt3, index, scale, linescale)``."""
+
+    def __init__(self, pos1, pos2):
+        super().__init__()
+        self.pos1 = ValVector(pos1)
+        self.pos2 = ValVector(pos2)
+        self.fragparams = FragmentPathParameters()
+        self.fragparams.runcallback = True
+        self.fragparams.callback = self._cb
+
+    def _cb(self, painter, pt1, pt2, pt3, index, scale, linescale):
+        self.draw(painter, pt1, pt2, pt3, index, scale, linescale)
+
+    def draw(self, painter, pt1, pt2, pt3, index, scale, linescale):
+        pass
+
+    def getFragments(self, perspM, outerM, v):
+        n = min(len(self.pos1), len(self.pos2)) // 3
+        for i in range(n):
+            base = i * 3
+            f = Fragment()
+            f.type = FR_PATH
+            f.object = self
+            f.params = self.fragparams
+            f.surfaceprop = None
+            f.lineprop = None
+            f.pathsize = 1.0
+            f.points[0] = vec4to3(outerM * Vec4(
+                self.pos1[base], self.pos1[base + 1], self.pos1[base + 2], 1.0))
+            f.points[1] = vec4to3(outerM * Vec4(
+                self.pos2[base], self.pos2[base + 1], self.pos2[base + 2], 1.0))
+            f.index = i
+            v.append(f)
+
+
+class _AxisLabelsParams(FragmentPathParameters):
+    """Per-AxisLabels params: stores axangle (axis-from-centre orientation in
+    projected coords) and a back-pointer to the AxisLabels for drawLabel
+    dispatch. Mirrors ``AxisLabels::PathParameters`` in objects.cpp."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.path = None
+        self.scaleline = False
+        self.scalepersp = False
+        self.runcallback = True
+        self.axangle = 0.0
+        self.owner = owner
+
+    def callback(self, painter, pt, ax1, ax2, index, scale, linescale):
+        painter.save()
+        self.owner.drawLabel(painter, index, pt, ax1, ax2, self.axangle)
+        painter.restore()
+
+
+class AxisLabels(Object):
+    """Tick labels along one of several candidate cube edges. Subclasses
+    override ``drawLabel(painter, index, pt, ax1, ax2, axangle)``. v1: scores
+    the candidate axes the same way the C++ does (prefer front-bottom-left in
+    projected coords) and uses the winner."""
+
+    def __init__(self, box1, box2, tickfracs, labelfrac):
+        super().__init__()
+        self.box1 = Vec3(box1)
+        self.box2 = Vec3(box2)
+        self.tickfracs = ValVector(tickfracs)
+        self.labelfrac = float(labelfrac)
+        self.starts = []
+        self.ends = []
+        self.fragparams = _AxisLabelsParams(self)
+
+    def addAxisChoice(self, start, end):
+        self.starts.append(Vec3(start))
+        self.ends.append(Vec3(end))
+
+    def drawLabel(self, painter, index, pt, ax1, ax2, axangle):
+        pass
+
+    def getFragments(self, perspM, outerM, v):
+        if not self.starts or len(self.tickfracs) == 0:
+            return
+        # Project box corners + axis ends in clip space; pick the best
+        # candidate axis as the C++ scoring function does.
+        bp = [self.box1, self.box2]
+        proj_corners = []
+        for i0 in range(2):
+            for i1 in range(2):
+                for i2 in range(2):
+                    p = Vec3(bp[i0](0), bp[i1](1), bp[i2](2))
+                    proj_corners.append(calcProjVec(perspM, outerM * vec3to4(p)))
+        cx = sum(c(0) for c in proj_corners) / 8.0
+        cy = sum(c(1) for c in proj_corners) / 8.0
+        cz = sum(c(2) for c in proj_corners) / 8.0
+        proj_cent = Vec3(cx, cy, cz)
+
+        n = len(self.starts)
+        proj_starts, proj_ends = [], []
+        for i in range(n):
+            proj_starts.append(calcProjVec(perspM, outerM * vec3to4(self.starts[i])))
+            proj_ends.append(calcProjVec(perspM, outerM * vec3to4(self.ends[i])))
+
+        # Score: prefer front (z<centre), bottom (y>centre), left (x<centre)
+        best = 0
+        bestscore = -1
+        for i in range(n):
+            av0 = (proj_starts[i](0) + proj_ends[i](0)) * 0.5
+            av1 = (proj_starts[i](1) + proj_ends[i](1)) * 0.5
+            av2 = (proj_starts[i](2) + proj_ends[i](2)) * 0.5
+            score = ((av0 <= proj_cent(0)) * 10 + (av1 > proj_cent(1)) * 11
+                     + (av2 < proj_cent(2)) * 12)
+            if score > bestscore:
+                bestscore = score
+                best = i
+        # axangle: from box centre to axis centre, in projected coords.
+        amx = (proj_starts[best](0) + proj_ends[best](0)) * 0.5 - proj_cent(0)
+        amy = (proj_starts[best](1) + proj_ends[best](1)) * 0.5 - proj_cent(1)
+        self.fragparams.axangle = (180.0 / PI) * math.atan2(amy, amx)
+
+        # Emit one FR_PATH per tick. points[0]=tick world pos,
+        # points[1]=axis start, points[2]=axis end; the renderer projects
+        # them to screen and hands the QPointFs to the callback.
+        axstart_scene = vec4to3(outerM * vec3to4(self.starts[best]))
+        axend_scene = vec4to3(outerM * vec3to4(self.ends[best]))
+        delta = axend_scene - axstart_scene
+        for i in range(len(self.tickfracs)):
+            frac = float(self.tickfracs[i])
+            tickpt = axstart_scene + delta * frac
+            f = Fragment()
+            f.type = FR_PATH
+            f.object = self
+            f.params = self.fragparams
+            f.pathsize = 1.0
+            f.points[0] = tickpt
+            f.points[1] = axstart_scene
+            f.points[2] = axend_scene
+            f.index = i
+            v.append(f)
+
+
+# ---------------------------------------------------------------------------
+# Mesh / DataMesh / MultiCuboid — heavier surface primitives. We provide
+# correct skeletons but emit empty fragment lists in v1 so widgets relying on
+# them (Function3D, Surface3D, Volume3D) can be loaded without import errors;
+# they will render as empty (axes/labels still show). Filling these in is the
+# next step (mirrors objects.cpp Mesh::getSurfaceFragments + MultiCuboid).
+# ---------------------------------------------------------------------------
+
+class Mesh(Object):
+    class Direction:
+        X_DIRN = 0
+        Y_DIRN = 1
+        Z_DIRN = 2
+
+    def __init__(self, pos1, pos2, heights, direction, lineprop, surfprop,
+                 hidehorzline=False, hidevertline=False):
+        super().__init__()
+        self.pos1 = ValVector(pos1)
+        self.pos2 = ValVector(pos2)
+        self.heights = ValVector(heights)
+        self.direction = direction
+        self.lineprop = lineprop
+        self.surfaceprop = surfprop
+        self.hidehorzline = bool(hidehorzline)
+        self.hidevertline = bool(hidevertline)
+
+    def getFragments(self, perspM, outerM, v):
+        # TODO(W1e): emit triangle grid + horizontal/vertical line segments.
+        pass
+
+
+class DataMesh(Object):
+    def __init__(self, edges1, edges2, vals, idxval, idxedge1, idxedge2,
+                 highres, lineprop, surfprop, hidehorzline=False, hidevertline=False):
+        super().__init__()
+        self.edges1 = ValVector(edges1)
+        self.edges2 = ValVector(edges2)
+        self.vals = ValVector(vals)
+        self.idxval = int(idxval)
+        self.idxedge1 = int(idxedge1)
+        self.idxedge2 = int(idxedge2)
+        self.highres = bool(highres)
+        self.lineprop = lineprop
+        self.surfaceprop = surfprop
+        self.hidehorzline = bool(hidehorzline)
+        self.hidevertline = bool(hidevertline)
+
+    def getFragments(self, perspM, outerM, v):
+        # TODO(W1e): triangulate (edges1 × edges2) cells with vals.
+        pass
+
+
+class MultiCuboid(Object):
+    def __init__(self, xmin, xmax, ymin, ymax, zmin, zmax,
+                 lineprop, surfprop):
+        super().__init__()
+        self.xmin = ValVector(xmin); self.xmax = ValVector(xmax)
+        self.ymin = ValVector(ymin); self.ymax = ValVector(ymax)
+        self.zmin = ValVector(zmin); self.zmax = ValVector(zmax)
+        self.lineprop = lineprop
+        self.surfaceprop = surfprop
+
+    def getFragments(self, perspM, outerM, v):
+        # TODO(W1e): 12 triangles per cuboid + 12 edge segments.
+        pass
+
+
+# ===========================================================================
+# Camera (mirrors camera.cpp)
+# ===========================================================================
+
+class Camera:
+    def __init__(self):
+        self.eye = Vec3(0, 0, 0)
+        self.viewM = identityM4()
+        self.perspM = identityM4()
+        self.combM = identityM4()
+        self.setPointing(Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 1, 0))
+        self.setPerspective()
+
+    def setPointing(self, eye, target, up):
+        self.eye = Vec3(eye)
+        f = target - eye; f.normalise()
+        u = Vec3(up); u.normalise()
+        s = cross(f, u); s.normalise()
+        u = cross(s, f)
+        m = N.zeros((4, 4))
+        m[0, 0] = s(0); m[0, 1] = s(1); m[0, 2] = s(2); m[0, 3] = -dot(s, eye)
+        m[1, 0] = u(0); m[1, 1] = u(1); m[1, 2] = u(2); m[1, 3] = -dot(u, eye)
+        m[2, 0] = -f(0); m[2, 1] = -f(1); m[2, 2] = -f(2); m[2, 3] = dot(f, eye)
+        m[3, 3] = 1.0
+        self.viewM = Mat4(m)
+        self.combM = self.perspM * self.viewM
+
+    def setPerspective(self, fov_degrees=90.0, znear=0.1, zfar=100.0):
+        scale = 1.0 / math.tan(fov_degrees * (PI / 180 / 2))
+        m = N.zeros((4, 4))
+        m[0, 0] = scale
+        m[1, 1] = scale
+        m[2, 2] = -zfar / (zfar - znear)
+        m[3, 2] = -1
+        m[2, 3] = -zfar * znear / (zfar - znear)
+        self.perspM = Mat4(m)
+        self.combM = self.perspM * self.viewM
+
+
+# ===========================================================================
+# Scene: lighting, projection, depth sort, doDrawing
+# (mirrors scene.cpp, RENDER_PAINTERS path)
+# ===========================================================================
+
+class _Light:
+    def __init__(self, posn, r, g, b, intensity):
+        self.posn = Vec3(posn)
+        self.r, self.g, self.b = r, g, b
+        self.intensity = intensity
+
+
+def _qcolor_components(qcol):
+    """Pull (r, g, b) floats in [0,1] from a (qtshim or PyQt6) QColor."""
+    return (qcol.redF(), qcol.greenF(), qcol.blueF())
+
+
+def _clip255(v):
+    if v < 0: return 0
+    if v > 255: return 255
+    return int(v)
+
+
+class Scene:
+    class RenderMode:
+        RENDER_PAINTERS = 0
+        RENDER_BSP = 1
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.lights = []
+        self.fragments = []
+        self.draworder = []
+        self.screenM = identityM3()
+
+    def addLight(self, posn, qcolor, intensity):
+        r, g, b = _qcolor_components(qcolor)
+        self.lights.append(_Light(posn, r * intensity,
+                                  g * intensity, b * intensity, intensity))
+
+    # -------- main entry point --------
+    def render(self, root, painter, camera, x1, y1, x2, y2, scale):
+        self.fragments = []
+        self.draworder = []
+        root.getFragments(camera.perspM, camera.viewM, self.fragments)
+
+        if self.mode == Scene.RenderMode.RENDER_BSP:
+            # BSP deferred — fall back to painter's algorithm.
+            self._render_painters(camera)
+        else:
+            self._render_painters(camera)
+
+        self.screenM = (self._make_screen_m_fixed(x1, y1, x2, y2, scale)
+                        if scale > 0
+                        else self._make_screen_m(self.fragments, x1, y1, x2, y2))
+        linescale = max(abs(x2 - x1), abs(y2 - y1)) * (1.0 / 1000)
+        self._do_drawing(painter, self.screenM, linescale, camera)
+
+    def idPixel(self, *a, **k):
+        # Not implemented in v1 — embed-side hit-testing uses the 2D bounds map.
+        return 0
+
+    # -------- pipeline phases --------
+    def _render_painters(self, camera):
+        self._calc_lighting()
+        self._project_fragments(camera)
+        order = list(range(len(self.fragments)))
+        order.sort(key=lambda i: -self.fragments[i].max_depth())
+        self.draworder = order
+
+    def _project_fragments(self, camera):
+        for f in self.fragments:
+            for pi in range(f.n_total()):
+                f.proj[pi] = calcProjVec(camera.perspM, f.points[pi])
+
+    def _calc_lighting(self):
+        for f in self.fragments:
+            if f.type == FR_TRIANGLE:
+                self._light_triangle(f)
+            elif f.type == FR_LINESEG:
+                self._light_line(f)
+
+    def _light_triangle(self, frag):
+        prop = frag.surfaceprop
+        if prop is None or prop.refl == 0:
+            return
+        p = frag.points
+        tripos = (p[0] + p[1] + p[2]) * (1.0 / 3.0)
+        norm = cross(p[1] - p[0], p[2] - p[0])
+        if dot(tripos, norm) < 0:
+            norm = -norm
+        norm.normalise()
+        if prop.hasRGBs():
+            r, g, b, a = prop.color(frag.index)
+            r, g, b, a = r / 255.0, g / 255.0, b / 255.0, a / 255.0
+        else:
+            r, g, b, a = prop.r, prop.g, prop.b, 1 - prop.trans
+        for light in self.lights:
+            l2t = tripos - light.posn
+            l2t.normalise()
+            dp = max(0.0, dot(l2t, norm))
+            d = prop.refl * dp
+            r += d * light.r; g += d * light.g; b += d * light.b
+        frag.calccolor = (_clip255(r * 255), _clip255(g * 255),
+                          _clip255(b * 255), _clip255(a * 255))
+        frag.usecalccolor = True
+
+    def _light_line(self, frag):
+        prop = frag.lineprop
+        if prop is None or prop.refl == 0:
+            return
+        if prop.hasRGBs():
+            r, g, b, a = prop.color(frag.index)
+            r, g, b, a = r / 255.0, g / 255.0, b / 255.0, a / 255.0
+        else:
+            r, g, b, a = prop.r, prop.g, prop.b, 1 - prop.trans
+        pmid = (frag.points[0] + frag.points[1]) * 0.5
+        linevec = frag.points[1] - frag.points[0]
+        linevec.normalise()
+        for light in self.lights:
+            l2m = light.posn - pmid; l2m.normalise()
+            sint = cross(linevec, l2m).rad()
+            d = prop.refl * sint
+            r += d * light.r; g += d * light.g; b += d * light.b
+        frag.calccolor = (_clip255(r * 255), _clip255(g * 255),
+                          _clip255(b * 255), _clip255(a * 255))
+        frag.usecalccolor = True
+
+    # -------- screen transform --------
+    def _make_screen_m_fixed(self, x1, y1, x2, y2, scale):
+        # Mat3 = translate(centre) * scale(scaling); the C++ uses translate × scale
+        # composed via Mat3 multiplication. We just build the equivalent matrix.
+        scaling = 0.5 * min(x2 - x1, y2 - y1) * scale
+        cx = 0.5 * (x1 + x2); cy = 0.5 * (y1 + y2)
+        return Mat3(N.array([
+            [scaling, 0, cx],
+            [0, scaling, cy],
+            [0, 0, 1],
+        ], dtype=float))
+
+    def _make_screen_m(self, frags, x1, y1, x2, y2):
+        minx = miny = float('inf')
+        maxx = maxy = -float('inf')
+        for f in frags:
+            for p in range(f.n_visible()):
+                pp = f.proj[p]
+                x, y = pp(0), pp(1)
+                if math.isfinite(x) and math.isfinite(y):
+                    if x < minx: minx = x
+                    if x > maxx: maxx = x
+                    if y < miny: miny = y
+                    if y > maxy: maxy = y
+        if not math.isfinite(minx) or maxx == minx:
+            minx, maxx = 0.0, 1.0
+        if not math.isfinite(miny) or maxy == miny:
+            miny, maxy = 0.0, 1.0
+        minscale = min((x2 - x1) / (maxx - minx), (y2 - y1) / (maxy - miny))
+        cx = 0.5 * (x1 + x2); cy = 0.5 * (y1 + y2)
+        ox = -0.5 * (minx + maxx); oy = -0.5 * (miny + maxy)
+        # combined: translate(cx,cy) * scale(minscale) * translate(ox,oy)
+        return Mat3(N.array([
+            [minscale, 0, minscale * ox + cx],
+            [0, minscale, minscale * oy + cy],
+            [0, 0, 1],
+        ], dtype=float))
+
+    # -------- final QPainter playback --------
+    def _do_drawing(self, painter, screenM, linescale, camera):
+        # distance from camera (eye-space origin) to scene origin — used to
+        # scale instanced paths with perspective.
+        dist0 = vec4to3(camera.viewM * Vec4(0, 0, 0, 1)).rad()
+        if dist0 == 0:
+            dist0 = 1.0
+        no_pen = qt.QPen(qt.Qt.PenStyle.NoPen)
+        no_brush = qt.QBrush()
+        painter.setPen(no_pen)
+        painter.setBrush(no_brush)
+        for idx in self.draworder:
+            frag = self.fragments[idx]
+            projpts = [None, None, None]
+            for pi in range(frag.n_total()):
+                p2 = projVecToScreen(screenM, frag.proj[pi])
+                projpts[pi] = qt.QPointF(p2(0), p2(1))
+            t = frag.type
+            if t == FR_TRIANGLE:
+                sp = frag.surfaceprop
+                if sp is None or sp.hide:
+                    continue
+                painter.setBrush(self._surface_brush(frag))
+                # use pen if opaque, to fill gaps between triangles
+                if sp.trans == 0:
+                    painter.setPen(self._surface_pen(frag))
+                else:
+                    painter.setPen(no_pen)
+                poly = qt.QPolygonF()
+                for j in range(3):
+                    poly.append(projpts[j])
+                painter.drawPolygon(poly)
+            elif t == FR_LINESEG:
+                lp = frag.lineprop
+                if lp is None or lp.hide:
+                    continue
+                painter.setBrush(no_brush)
+                painter.setPen(self._line_pen(frag, linescale))
+                painter.drawLine(projpts[0], projpts[1])
+            elif t == FR_PATH:
+                if frag.lineprop is not None:
+                    pars = frag.params
+                    ls = 1.0 if (pars and pars.scaleline) else linescale
+                    painter.setPen(self._line_pen(frag, ls))
+                if frag.surfaceprop is not None:
+                    painter.setBrush(self._surface_brush(frag))
+                # path size includes perspective scaling
+                p0 = frag.points[0]
+                distinv = dist0 / max(p0.rad(), 1e-12)
+                self._draw_path(painter, frag, projpts[0], projpts[1], projpts[2],
+                                linescale, distinv)
+
+    # -------- pen/brush helpers --------
+    def _qcolor(self, frag, prop):
+        if frag.usecalccolor:
+            r, g, b, a = frag.calccolor
+            return qt.QColor(int(r), int(g), int(b), int(a))
+        r, g, b, a = prop.color(frag.index)
+        return qt.QColor(int(r), int(g), int(b), int(a))
+
+    def _surface_brush(self, frag):
+        sp = frag.surfaceprop
+        if sp is None or sp.hide:
+            return qt.QBrush()
+        return qt.QBrush(self._qcolor(frag, sp))
+
+    def _surface_pen(self, frag):
+        sp = frag.surfaceprop
+        if sp is None or sp.hide:
+            return qt.QPen(qt.Qt.PenStyle.NoPen)
+        return qt.QPen(self._qcolor(frag, sp))
+
+    def _line_pen(self, frag, linescale):
+        lp = frag.lineprop
+        if lp is None or lp.hide:
+            return qt.QPen(qt.Qt.PenStyle.NoPen)
+        col = self._qcolor(frag, lp)
+        pen = qt.QPen(col, lp.width * linescale, lp.style)
+        if lp.dashpattern:
+            pen.setDashPattern(lp.dashpattern)
+        return pen
+
+    def _draw_path(self, painter, frag, pt1, pt2, pt3, linescale, distscale):
+        pars = frag.params
+        if pars is None:
+            return
+        scale = frag.pathsize * linescale
+        if pars.scalepersp:
+            scale *= distscale
+        if pars.runcallback:
+            pars.callback(painter, pt1, pt2, pt3, frag.index, scale, linescale)
+            return
+        path = pars.path
+        if path is None:
+            return
+        # Translate + scale the template path and draw.
+        painter.save()
+        painter.translate(pt1.x(), pt1.y())
+        painter.scale(scale, scale)
+        painter.drawPath(path)
+        painter.restore()

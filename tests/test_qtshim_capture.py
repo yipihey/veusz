@@ -172,3 +172,31 @@ def test_headless_capture_matches_qt(name):
     assert shim_h['hist'] == qt_h['hist'], (
         f'op histogram mismatch for {name}:\n'
         f'  qt  : {qt_h}\n  shim: {shim_h}')
+
+
+# ---- 3D ----------------------------------------------------------------
+#
+# Op-histogram parity vs real Qt is NOT a useful metric for 3D: the C++
+# `threed` extension calls QPainter methods directly from C++, bypassing the
+# Python-level overrides our `SceneCapturingPainter` installs. So real Qt
+# captures almost nothing for a 3D widget (only a handful of axis-label text
+# ops via the Python text renderer). Our pure-Python ``threed_py`` is the
+# first time 3D actually reaches the Scene IR — the test here just asserts
+# the engine runs end-to-end and emits a non-trivial scene for every shipped
+# 3D example, plus a meaningful number of fills for the scatter examples.
+
+@pytest.mark.parametrize('name,min_ops,min_fills', [
+    ('3d_points.vsz',   500, 100),   # full scatter
+    ('3d_errors.vsz',   500, 100),   # scatter + error bars
+    # function/surface/volume render axes + frame only in v1 (Mesh / DataMesh /
+    # MultiCuboid emit no fragments yet — primitives are stubbed).
+    ('3d_function.vsz', 100, 0),
+    ('3d_surface.vsz',  100, 0),
+    ('3d_volume.vsz',   100, 0),
+])
+def test_3d_example_captures_under_shim(name, min_ops, min_fills):
+    h = _shim_histogram(os.path.join(EXAMPLES, name))
+    total = h['n']
+    fills = h['hist'].get('FillPath', 0)
+    assert total >= min_ops, f'{name}: only {total} ops captured (want >= {min_ops})'
+    assert fills >= min_fills, f'{name}: only {fills} fills (want >= {min_fills})'
