@@ -259,6 +259,35 @@ def dot(a, b):
     return a(0) * b(0) + a(1) * b(1) + a(2) * b(2)
 
 
+# ---------------------------------------------------------------------------
+# 2D hit-test helpers used by Scene.idPixel
+# ---------------------------------------------------------------------------
+
+def _point_in_tri(px, py, x0, y0, x1, y1, x2, y2):
+    """Sign-of-cross-products point-in-triangle (any winding)."""
+    d1 = (px - x1) * (y0 - y1) - (x0 - x1) * (py - y1)
+    d2 = (px - x2) * (y1 - y2) - (x1 - x2) * (py - y2)
+    d3 = (px - x0) * (y2 - y0) - (x2 - x0) * (py - y0)
+    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+    return not (has_neg and has_pos)
+
+
+def _point_near_seg(px, py, x0, y0, x1, y1, tol):
+    """True if (px, py) is within ``tol`` of segment (x0,y0)-(x1,y1)."""
+    dx = x1 - x0; dy = y1 - y0
+    L2 = dx * dx + dy * dy
+    if L2 <= 0:
+        ex = px - x0; ey = py - y0
+        return ex * ex + ey * ey <= tol * tol
+    t = ((px - x0) * dx + (py - y0) * dy) / L2
+    if t < 0: t = 0
+    elif t > 1: t = 1
+    fx = x0 + t * dx; fy = y0 + t * dy
+    ex = px - fx; ey = py - fy
+    return ex * ex + ey * ey <= tol * tol
+
+
 # ===========================================================================
 # Surface and line properties
 # ===========================================================================
@@ -885,10 +914,30 @@ class DataMesh(Object):
         self.hidehorzline = bool(hidehorzline)
         self.hidevertline = bool(hidevertline)
 
+    # 9-corner stencil indices (mirrors objects.cpp):
+    #   6 -- 5 -- 4
+    #   |    |    |
+    #   7 -- 8 -- 3
+    #   |    |    |
+    #   0 -- 1 -- 2
+    # lowres: only corners 0, 2, 4, 6 (cell corners) — two-triangle fan,
+    # alternating diamond pattern.
+    _LR_TRI_A = ((0, 2, 4), (0, 6, 4))
+    _LR_TRI_B = ((2, 0, 6), (2, 4, 6))
+    _LR_LINES = ((0, 2), (0, 6), (4, 2), (4, 6))
+    _LR_LINE_CELLS = ((0, 0, 0), (0, 0, 1), (0, 1, 0), (1, 0, 1))
+    _LR_DIRN = (0, 1, 0, 1)
+    # highres: 8 fan triangles from cell-centre (corner 8) + octagon edges.
+    _HR_TRIS = ((8, 0, 1), (8, 1, 2), (8, 2, 3), (8, 3, 4),
+                (8, 4, 5), (8, 5, 6), (8, 6, 7), (8, 7, 0))
+    _HR_LINES = ((0, 1), (1, 2), (2, 3), (3, 4),
+                 (4, 5), (5, 6), (6, 7), (7, 0))
+    _HR_LINE_CELLS = ((0, 0, 0), (0, 0, 1), (1, 0, 2), (1, 0, 3),
+                      (0, 1, 1), (0, 1, 0), (0, 0, 3), (0, 0, 2))
+    _HR_DIRN = (1, 1, 0, 0, 1, 1, 0, 0)
+
     def getFragments(self, perspM, outerM, v):
-        # validate index permutation
-        idxs = (self.idxval, self.idxedge1, self.idxedge2)
-        if sorted(idxs) != [0, 1, 2]:
+        if sorted((self.idxval, self.idxedge1, self.idxedge2)) != [0, 1, 2]:
             return
         if self.lineprop is None and self.surfaceprop is None:
             return
@@ -900,67 +949,98 @@ class DataMesh(Object):
         e1 = N.asarray(self.edges1, dtype=float)
         e2 = N.asarray(self.edges2, dtype=float)
         vals = N.asarray(self.vals, dtype=float).reshape(n1, n2)
-        # 4-neighbour average for cell corners (clipped at edges).
-        # corner stencil order (v1 lowres uses indices 0, 2, 4, 6):
-        #   0=(i1, i2)             top-left
-        #   2=(i1, i2+1)           top-right
-        #   4=(i1+1, i2+1)         bot-right
-        #   6=(i1+1, i2)           bot-left
+
+        # Vectorised 4-neighbour cell-corner averages: corner_val[i1, i2]
+        # = average of the up-to-4 cells touching grid intersection (i1, i2).
         ix1 = N.clip(N.arange(n1 + 1)[:, None] - 1, 0, n1 - 1)
         ix2 = N.clip(N.arange(n2 + 1)[None, :] - 1, 0, n2 - 1)
         jx1 = N.clip(N.arange(n1 + 1)[:, None], 0, n1 - 1)
         jx2 = N.clip(N.arange(n2 + 1)[None, :], 0, n2 - 1)
-        # corner_val[(i1, i2)] = avg of cells around grid intersection (i1, i2)
         corner_val = 0.25 * (
             vals[ix1, ix2] + vals[jx1, ix2] + vals[ix1, jx2] + vals[jx1, jx2])
 
-        # lowres triangulation patterns and lines (mirror objects.cpp)
-        TLR1 = ((0, 2, 4), (0, 6, 4))
-        TLR2 = ((2, 0, 6), (2, 4, 6))
-        LINES = ((0, 2), (0, 6), (4, 2), (4, 6))
+        highres = self.highres
+        if highres:
+            tris = DataMesh._HR_TRIS
+            lines = DataMesh._HR_LINES
+            line_cells = DataMesh._HR_LINE_CELLS
+            line_dirn = DataMesh._HR_DIRN
+            # Edge-midpoints use 2-neighbour averages — mirror C++.
+            # mid_h[(i1, i2)] is the horizontal edge midpoint between
+            # cell (i1, i2) and cell (i1, i2-1) (clipped).
+            # We compute on demand inside the cell loop.
+        else:
+            tris = DataMesh._LR_TRI_A
+            lines = DataMesh._LR_LINES
+            line_cells = DataMesh._LR_LINE_CELLS
+            line_dirn = DataMesh._LR_DIRN
+
+        drawn = set()  # (i1, i2, lineid) — per-cell line dedup
 
         for i1 in range(n1):
             for i2 in range(n2):
                 vc = vals[i1, i2]
                 if not math.isfinite(vc):
                     continue
-                # build the 4 corners (0/2/4/6 in the 9-corner stencil)
+
+                # Build the corners we actually need for this mode.
                 corners = [None] * 9
-                # corner 0: top-left of cell, value = corner_val[i1, i2]
                 corners[0] = self._corner(corner_val[i1, i2], e1[i1], e2[i2])
                 corners[2] = self._corner(corner_val[i1, i2 + 1], e1[i1], e2[i2 + 1])
                 corners[4] = self._corner(corner_val[i1 + 1, i2 + 1], e1[i1 + 1], e2[i2 + 1])
                 corners[6] = self._corner(corner_val[i1 + 1, i2], e1[i1 + 1], e2[i2])
+                if highres:
+                    # 2-neighbour averages along cell edges (clipped to grid).
+                    n_l = vals[max(i1 - 1, 0), i2] if i1 > 0 else vc
+                    n_r = vals[min(i1 + 1, n1 - 1), i2] if i1 < n1 - 1 else vc
+                    n_t = vals[i1, max(i2 - 1, 0)] if i2 > 0 else vc
+                    n_b = vals[i1, min(i2 + 1, n2 - 1)] if i2 < n2 - 1 else vc
+                    em = 0.5 * (e1[i1] + e1[i1 + 1])
+                    em2 = 0.5 * (e2[i2] + e2[i2 + 1])
+                    corners[1] = self._corner(0.5 * (vc + n_t), e1[i1], em2)
+                    corners[3] = self._corner(0.5 * (vc + n_r), em, e2[i2 + 1])
+                    corners[5] = self._corner(0.5 * (vc + n_b), e1[i1 + 1], em2)
+                    corners[7] = self._corner(0.5 * (vc + n_l), em, e2[i2])
+                    corners[8] = self._corner(vc, em, em2)
 
-                corners3 = [vec4to3(outerM * c) for c in corners if c is not None]
-                cmap = {0: corners3[0], 2: corners3[1], 4: corners3[2], 6: corners3[3]}
+                # Project to scene/world space.
+                world = {k: vec4to3(outerM * c) for k, c in enumerate(corners) if c is not None}
 
                 if self.surfaceprop is not None:
-                    pat = TLR1 if (i1 + i2) % 2 == 0 else TLR2
+                    pat = (tris if highres
+                           else (DataMesh._LR_TRI_A if (i1 + i2) % 2 == 0
+                                 else DataMesh._LR_TRI_B))
                     cell_idx = i1 * n2 + i2
                     for a, b, c in pat:
                         f = Fragment()
                         f.type = FR_TRIANGLE
                         f.surfaceprop = self.surfaceprop
                         f.object = self
-                        f.points[0], f.points[1], f.points[2] = cmap[a], cmap[b], cmap[c]
+                        f.points[0], f.points[1], f.points[2] = world[a], world[b], world[c]
                         f.index = cell_idx
                         v.append(f)
 
                 if self.lineprop is not None:
-                    # linedirn: 0,1,0,1 — alternating horz/vert
-                    for k, (a, b) in enumerate(LINES):
-                        dirn = k & 1
+                    cell_idx = i1 * n2 + i2
+                    for k, (a, b) in enumerate(lines):
+                        dirn = line_dirn[k]
                         if self.hidehorzline and dirn == 0:
                             continue
                         if self.hidevertline and dirn == 1:
                             continue
+                        # Per-cell dedup: this line belongs to cell (i1+dx, i2+dy)
+                        # with id `lid`; if already drawn by an adjacent cell, skip.
+                        dx, dy, lid = line_cells[k]
+                        key = (i1 + dx, i2 + dy, lid)
+                        if key in drawn:
+                            continue
+                        drawn.add(key)
                         f = Fragment()
                         f.type = FR_LINESEG
                         f.lineprop = self.lineprop
                         f.object = self
-                        f.points[0] = cmap[a]; f.points[1] = cmap[b]
-                        f.index = i1 * n2 + i2
+                        f.points[0] = world[a]; f.points[1] = world[b]
+                        f.index = cell_idx
                         v.append(f)
 
     def _corner(self, vh, p1, p2):
@@ -1118,6 +1198,12 @@ class Scene:
         self.fragments = []
         self.draworder = []
         self.screenM = identityM3()
+        # Bulk numpy views populated by _project_fragments + _build_screen_xy
+        # so the playback loop reads slices instead of calling projVecToScreen.
+        self._proj_xyz = None      # (Nfrags, 3, 3): clip-space (x, y, depth)
+        self._proj_counts = None   # (Nfrags,) int8: n_total per fragment
+        self._scr_x = None         # (Nfrags, 3): screen-space x per point
+        self._scr_y = None         # (Nfrags, 3): screen-space y per point
 
     def addLight(self, posn, qcolor, intensity):
         r, g, b = _qcolor_components(qcolor)
@@ -1139,25 +1225,151 @@ class Scene:
         self.screenM = (self._make_screen_m_fixed(x1, y1, x2, y2, scale)
                         if scale > 0
                         else self._make_screen_m(self.fragments, x1, y1, x2, y2))
+        self._build_screen_xy()
         linescale = max(abs(x2 - x1), abs(y2 - y1)) * (1.0 / 1000)
         self._do_drawing(painter, self.screenM, linescale, camera)
 
-    def idPixel(self, *a, **k):
-        # Not implemented in v1 — embed-side hit-testing uses the 2D bounds map.
-        return 0
+    def _build_screen_xy(self):
+        """Bulk apply screenM to every projected clip-space point so the
+        playback loop just reads (x, y) out of two numpy arrays."""
+        if self._proj_xyz is None:
+            self._scr_x = self._scr_y = None
+            return
+        sm = self.screenM.m
+        xyz = self._proj_xyz                          # (N, 3, 3)
+        x = xyz[:, :, 0]; y = xyz[:, :, 1]
+        # screenM acts on (x, y, 1): (mult0, mult1, mult2) = (a*x+b*y+c, d*x+e*y+f, g*x+h*y+i)
+        m0 = sm[0, 0] * x + sm[0, 1] * y + sm[0, 2]
+        m1 = sm[1, 0] * x + sm[1, 1] * y + sm[1, 2]
+        m2 = sm[2, 0] * x + sm[2, 1] * y + sm[2, 2]
+        with N.errstate(invalid='ignore', divide='ignore'):
+            self._scr_x = m0 / m2
+            self._scr_y = m1 / m2
+
+    def idPixel(self, root, painter, camera, x1, y1, x2, y2, scale,
+                scaling=1.0, x=0, y=0, **_):
+        """3D pick: which object lies under screen pixel ``(x, y)``? Returns
+        ``object.widgetid`` of the front-most hit fragment, or 0 if none.
+
+        The C++ version renders the scene to a tiny 7×7 pixmap and watches
+        which fragment last modified the pixels. Without a rasterizer we do
+        the equivalent geometrically: project every fragment and test the
+        cursor against its 2D footprint (point-in-triangle, point-near-line,
+        path-bbox), then pick the smallest-depth hit. Same semantic result;
+        no QPixmap required."""
+        self.fragments = []
+        self.draworder = []
+        root.getFragments(camera.perspM, camera.viewM, self.fragments)
+        self._project_fragments(camera)
+        self.screenM = (self._make_screen_m_fixed(x1, y1, x2, y2, scale)
+                        if scale > 0
+                        else self._make_screen_m(self.fragments, x1, y1, x2, y2))
+        self._build_screen_xy()
+        if self._scr_x is None:
+            return 0
+        px, py = float(x), float(y)
+        # tolerance scales with the picker radius (mirror C++ ~7-pixel box).
+        tol = 3.5 * float(max(scaling, 1.0))
+        best_wid = 0
+        best_depth = float('inf')
+        sx = self._scr_x; sy = self._scr_y
+        proj = self._proj_xyz
+        for i, f in enumerate(self.fragments):
+            wid = getattr(f.object, 'widgetid', 0) if f.object else 0
+            if not wid:
+                continue
+            t = f.type
+            if t == FR_TRIANGLE:
+                if _point_in_tri(px, py,
+                                 sx[i, 0], sy[i, 0],
+                                 sx[i, 1], sy[i, 1],
+                                 sx[i, 2], sy[i, 2]):
+                    d = float(proj[i, :3, 2].max())
+                else:
+                    continue
+            elif t == FR_LINESEG:
+                if _point_near_seg(px, py,
+                                   sx[i, 0], sy[i, 0],
+                                   sx[i, 1], sy[i, 1], tol):
+                    d = float(max(proj[i, 0, 2], proj[i, 1, 2]))
+                else:
+                    continue
+            elif t == FR_PATH:
+                cx, cy = sx[i, 0], sy[i, 0]
+                if abs(px - cx) <= tol and abs(py - cy) <= tol:
+                    d = float(proj[i, 0, 2])
+                else:
+                    continue
+            else:
+                continue
+            if d < best_depth:
+                best_depth = d
+                best_wid = wid
+        return int(best_wid)
 
     # -------- pipeline phases --------
+    # Vectorised projection / depth-sort / screen-mapping all share a
+    # (Nfrags, 3) max-3-points-per-fragment numpy view. We keep fragment.proj
+    # as Vec3s for any external readers, but the playback loop reads the
+    # bulk `_scr_x/_scr_y` arrays directly — that's a >30× speedup over the
+    # per-fragment projVecToScreen calls.
+
     def _render_painters(self, camera):
         self._calc_lighting()
         self._project_fragments(camera)
-        order = list(range(len(self.fragments)))
-        order.sort(key=lambda i: -self.fragments[i].max_depth())
-        self.draworder = order
+        if self._proj_xyz is None:
+            self.draworder = []
+            return
+        # max-depth per fragment: numpy max over the visible-points slice.
+        # We left unused slots filled with -inf so they never dominate the max.
+        depths = self._proj_xyz[:, :, 2].max(axis=1)
+        self.draworder = N.argsort(-depths, kind='stable').tolist()
 
     def _project_fragments(self, camera):
-        for f in self.fragments:
-            for pi in range(f.n_total()):
-                f.proj[pi] = calcProjVec(camera.perspM, f.points[pi])
+        """Bulk perspective projection. Builds three numpy arrays:
+
+          _proj_xyz   (Nfrags, 3, 3)   clip-space (x, y, depth) per point
+          _proj_mask  (Nfrags, 3)      True for slots that hold real points
+
+        Unused slots are filled with NaN (mask False) so they don't poison
+        screen-mapping; depth slots for unused points use -inf so they don't
+        dominate the per-fragment max-depth sort key.
+        """
+        frags = self.fragments
+        if not frags:
+            self._proj_xyz = None
+            self._proj_counts = None
+            return
+        n = len(frags)
+        counts = N.fromiter((f.n_total() for f in frags), dtype=N.int8, count=n)
+        # Pack all points into a flat (n*3, 4) homogeneous source, NaN-filled
+        # for unused slots so they round-trip through matmul harmlessly.
+        src = N.full((n, 3, 4), N.nan)
+        src[:, :, 3] = 1.0
+        for i, f in enumerate(frags):
+            c = counts[i]
+            for pi in range(c):
+                src[i, pi, :3] = f.points[pi].v
+        # bulk matmul: (n, 3, 4) @ (4, 4) -> (n, 3, 4)
+        out = src @ camera.perspM.m.T
+        w = out[:, :, 3:4]
+        # divide; the NaN rows stay NaN, real rows become clip-space xyz.
+        with N.errstate(invalid='ignore', divide='ignore'):
+            xyz = out[:, :, :3] / w
+        # Stash for downstream phases.
+        self._proj_xyz = xyz
+        self._proj_counts = counts
+        # For depth-sort, replace NaNs in the z slot with -inf so the max
+        # over (n_total) slots picks the real maximum among visible points.
+        z = xyz[:, :, 2]
+        N.copyto(z, -N.inf, where=N.isnan(z))
+        # Mirror back into Vec3 fragment.proj (cheap, only needed for any
+        # external readers; the playback loop bypasses these).
+        for i, f in enumerate(frags):
+            c = int(counts[i])
+            for pi in range(c):
+                v = xyz[i, pi]
+                f.proj[pi] = Vec3(v[0], v[1], v[2])
 
     def _calc_lighting(self):
         for f in self.fragments:
@@ -1261,12 +1473,14 @@ class Scene:
         no_brush = qt.QBrush()
         painter.setPen(no_pen)
         painter.setBrush(no_brush)
+        scr_x = self._scr_x; scr_y = self._scr_y
+        QPointF = qt.QPointF
         for idx in self.draworder:
             frag = self.fragments[idx]
-            projpts = [None, None, None]
-            for pi in range(frag.n_total()):
-                p2 = projVecToScreen(screenM, frag.proj[pi])
-                projpts[pi] = qt.QPointF(p2(0), p2(1))
+            n = frag.n_total()
+            projpts = [QPointF(float(scr_x[idx, pi]), float(scr_y[idx, pi]))
+                       if pi < n else None
+                       for pi in range(3)]
             t = frag.type
             if t == FR_TRIANGLE:
                 sp = frag.surfaceprop

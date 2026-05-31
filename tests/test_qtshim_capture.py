@@ -198,3 +198,24 @@ def test_3d_example_captures_under_shim(name, min_ops, min_fills):
     fills = h['hist'].get('FillPath', 0)
     assert total >= min_ops, f'{name}: only {total} ops captured (want >= {min_ops})'
     assert fills >= min_fills, f'{name}: only {fills} fills (want >= {min_fills})'
+
+
+# ---- idPixel (3D picking) ---------------------------------------------
+# threed_py is pure Python/numpy with no Qt — we can exercise it directly.
+
+def test_idpixel_hits_triangle_and_misses_outside():
+    from veusz.helpers import threed_py as t3
+    sp = t3.SurfaceProp(1, 0, 0)
+    # large triangle filling most of clip space when viewed from z=+5.
+    tri = t3.Triangle(t3.Vec3(-1, -1, 0), t3.Vec3(1, -1, 0), t3.Vec3(0, 1, 0), sp)
+    tri.assignWidgetId(42)
+    root = t3.ObjectContainer()
+    root.addObject(tri)
+    cam = t3.Camera()
+    cam.setPointing(t3.Vec3(0, 0, 5), t3.Vec3(0, 0, 0), t3.Vec3(0, 1, 0))
+    scene = t3.Scene(t3.Scene.RenderMode.RENDER_PAINTERS)
+    # 200x200 viewport with fixed scale=1 -> triangle covers the centre.
+    wid_centre = scene.idPixel(root, None, cam, 0, 0, 200, 200, 1.0, 1.0, 100, 90)
+    wid_corner = scene.idPixel(root, None, cam, 0, 0, 200, 200, 1.0, 1.0, 5, 5)
+    assert wid_centre == 42
+    assert wid_corner == 0
