@@ -112,7 +112,14 @@ export function EmbedPlot({
         const { renderSceneToCanvas } = await import('../components/plot/velloWasm');
         if (!cancelled) await renderSceneToCanvas(cv, sb, [1, 1, 1, 1]);
       } catch (e) {
-        if (!cancelled) console.error('embed scene render failed', e);
+        if (!cancelled) {
+          // Surface the actual cause: console.error('msg', errObj) renders
+          // {} in many log viewers because Error props aren't enumerable.
+          const err = e as { message?: string; stack?: string; toString?: () => string };
+          const msg = err?.message || err?.toString?.() || String(e);
+          console.error('embed scene render failed:', msg);
+          if (err?.stack) console.error(err.stack);
+        }
       }
     })();
     return () => { cancelled = true; };
