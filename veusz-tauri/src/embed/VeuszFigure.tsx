@@ -15,6 +15,8 @@ import type { DocState } from '../state/doc';
 import { EmbedPlot } from './EmbedPlot';
 import { EditorModal } from './EditorModal';
 import { DownloadMenu, type DownloadItem } from './DownloadMenu';
+import { EmbedToolbar } from './EmbedToolbar';
+import { makeEmbedActionCtx } from './embedActionCtx';
 import { ensureEmbedStyles } from './embedStyles';
 import { svgExportAvailable, renderSceneToImageBlob } from '../components/plot/velloWasm';
 import { exportFigureAsSvg, exportFigureAsPng, exportFigureAsPdf } from './exportSvg';
@@ -113,6 +115,15 @@ export function VeuszFigure({
   return (
     <div data-testid="veusz-figure" className="vz-fig" style={card}>
       <div className="vz-toolbar" style={toolbar}>
+        {editable && (
+          <EmbedToolbar
+            store={store}
+            density="inline"
+            ctx={makeEmbedActionCtx(store, {
+              notify: (m) => store.setState({ error: m }),
+            })}
+          />
+        )}
         <DownloadMenu items={downloadItems()} busy={busy} />
         {editable && (
           <button type="button" data-testid="veusz-edit-toggle"

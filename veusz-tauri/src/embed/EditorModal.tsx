@@ -13,7 +13,13 @@ import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../state/doc';
 import { Tree } from '../components/tree/Tree';
 import { Inspector } from '../components/inspector/Inspector';
+import { DataDialog, type DataMode } from '../components/data/DataDialog';
+import { DataEditDialog } from '../components/data/DataEditDialog';
+import { CustomDialog } from '../components/data/CustomDialog';
 import { EmbedPlot } from './EmbedPlot';
+import { EmbedToolbar } from './EmbedToolbar';
+import { makeEmbedActionCtx } from './embedActionCtx';
+import type { DialogId } from '../actions/types';
 
 type Store = UseBoundStore<StoreApi<DocState>>;
 
@@ -34,10 +40,12 @@ export function EditorModal({
   const values = store((s) => s.values);
   const datasets = store((s) => s.datasets);
   const error = store((s) => s.error);
-  const canUndo = store((s) => s.canUndo);
-  const canRedo = store((s) => s.canRedo);
   const [full, setFull] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Subset of ActionCtx.openDialog(id) routed to a portal-mounted dialog
+  // here — Data Create / Create 2D / Filter / Histogram / Edit / Custom.
+  // Other dialog ids (preferences / export / fit / …) fall back to notify.
+  const [dialog, setDialog] = useState<DialogId | null>(null);
 
   // Lock the host page's scroll while the editor is open, so the mouse wheel
   // scrolls the inspector/tree panel (overflow:auto) instead of the gallery
@@ -53,8 +61,6 @@ export function EditorModal({
     return () => { de.style.overflow = prevDe; bo.style.overflow = prevBo; };
   }, []);
 
-  const undo = () => { void store.getState().undo(); };
-  const redo = () => { void store.getState().redo(); };
   // Reset = revert every edit back to the originally-loaded document by
   // undoing until there's nothing left (loading the doc isn't undoable).
   const reset = async () => {
@@ -66,20 +72,37 @@ export function EditorModal({
     } finally { setBusy(false); }
   };
 
+  // ActionCtx wired to this modal: notify via the store's error slot
+  // (already surfaced in the header) and route the half-dozen data dialogs
+  // we host into a portal-mounted dialog.
+  const SUPPORTED: ReadonlySet<DialogId> = new Set<DialogId>([
+    'dataCreate', 'dataCreate2d', 'filter', 'histogram', 'dataEdit', 'custom',
+  ]);
+  const ctx = makeEmbedActionCtx(store, {
+    notify: (m) => store.setState({ error: m }),
+    openDialog: (id) => {
+      if (SUPPORTED.has(id)) setDialog(id);
+      else store.setState({ error: `"${id}" dialog is unavailable in the embed.` });
+    },
+    toggleFullScreen: () => setFull((f) => !f),
+  });
+  const DATA_MODES: Partial<Record<DialogId, DataMode>> = {
+    dataCreate: 'create1d', dataCreate2d: 'create2d',
+    filter: 'filter', histogram: 'histogram',
+  };
+  const closeDialog = () => setDialog(null);
+  const notify = (m: string) => store.setState({ error: m });
+
   return createPortal(
     <div data-testid="veusz-modal" style={backdrop}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={full ? winFull : win} data-testid="veusz-modal-window">
         <header style={hdr}>
           <strong style={{ fontSize: 14 }}>{title ?? 'Edit figure'}</strong>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button type="button" data-testid="veusz-undo" onClick={undo} disabled={!canUndo || busy}
-              style={hbtn} title="Undo last change">↶ Undo</button>
-            <button type="button" data-testid="veusz-redo" onClick={redo} disabled={!canRedo || busy}
-              style={hbtn} title="Redo">↷ Redo</button>
-            <button type="button" data-testid="veusz-reset" onClick={() => void reset()} disabled={!canUndo || busy}
-              style={hbtn} title="Reset all edits to the original figure">⟲ Reset</button>
-          </div>
+          <EmbedToolbar store={store} density="full" ctx={ctx} />
+          <button type="button" data-testid="veusz-reset" onClick={() => void reset()}
+            disabled={!store.getState().canUndo || busy}
+            style={hbtn} title="Reset all edits to the original figure">⟲ Reset</button>
           {error && <span data-testid="veusz-error" style={{ color: 'crimson', fontSize: 12 }}>{error}</span>}
           <span style={{ flex: 1 }} />
           {toolbar}
@@ -110,11 +133,47 @@ export function EditorModal({
             ) : <p style={{ color: '#888', fontSize: 13 }}>Select a widget to edit.</p>}
           </aside>
         </div>
+
+        {dialog && (
+          <div style={dialogBackdrop}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) closeDialog(); }}>
+            <div style={dialogPanel}
+              data-testid={`embed-dialog-${dialog}`}>
+              <div style={dialogHdr}>
+                <strong style={{ fontSize: 13 }}>{DIALOG_TITLES[dialog]}</strong>
+                <span style={{ flex: 1 }} />
+                <button type="button" data-testid="embed-dialog-close"
+                  onClick={closeDialog} style={hbtn}>Close</button>
+              </div>
+              <div style={{ padding: 12 }}>
+                {DATA_MODES[dialog] && (
+                  <DataDialog store={store} mode={DATA_MODES[dialog]!}
+                    onClose={closeDialog} notify={notify} />
+                )}
+                {dialog === 'dataEdit' && (
+                  <DataEditDialog store={store} notify={notify} />
+                )}
+                {dialog === 'custom' && (
+                  <CustomDialog store={store} notify={notify} />
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>,
     document.body,
   );
 }
+
+const DIALOG_TITLES: Partial<Record<DialogId, string>> = {
+  dataCreate: 'Create dataset',
+  dataCreate2d: 'Create 2D dataset',
+  filter: 'Filter data',
+  histogram: 'Histogram',
+  dataEdit: 'Data editor',
+  custom: 'Custom definitions',
+};
 
 const backdrop: React.CSSProperties = {
   position: 'fixed', inset: 0, background: 'rgba(15,17,21,0.45)',
@@ -147,4 +206,16 @@ const plotArea: React.CSSProperties = {
 const side: React.CSSProperties = {
   flex: '0 0 320px', width: 320, borderLeft: '1px solid #eee',
   padding: 10, overflow: 'auto', overscrollBehavior: 'contain', background: '#fff',
+};
+const dialogBackdrop: React.CSSProperties = {
+  position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.30)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10,
+};
+const dialogPanel: React.CSSProperties = {
+  background: '#fff', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+  minWidth: 420, maxWidth: '90%', maxHeight: '85%', overflow: 'auto',
+};
+const dialogHdr: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+  borderBottom: '1px solid #eee',
 };

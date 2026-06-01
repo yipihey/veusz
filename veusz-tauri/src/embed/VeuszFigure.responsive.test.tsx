@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { VeuszFigure } from './VeuszFigure';
 import { createDocStore } from '../state/doc';
 import { createRpc } from '../rpc/client';
@@ -48,10 +48,14 @@ describe('VeuszFigure shell + editor modal', () => {
     expect(modal).toBeInTheDocument();
     expect(screen.getByTestId('embed-plot')).toBeInTheDocument();
     expect(screen.getByTestId('veusz-modal-fullscreen')).toBeInTheDocument();
-    // Editing controls.
-    expect(screen.getByTestId('veusz-undo')).toBeInTheDocument();
-    expect(screen.getByTestId('veusz-redo')).toBeInTheDocument();
-    expect(screen.getByTestId('veusz-reset')).toBeInTheDocument();
+    // Editing controls — Undo/Redo now live on the embed toolbar; Reset
+    // is still a header button. Scope to the modal because the inline
+    // figure header renders its own (compact) toolbar with the same ids.
+    const w = within(modal);
+    expect(w.getByTestId('embed-toolbar-full')).toBeInTheDocument();
+    expect(w.getByTestId('embed-action-edit.undo')).toBeInTheDocument();
+    expect(w.getByTestId('embed-action-edit.redo')).toBeInTheDocument();
+    expect(w.getByTestId('veusz-reset')).toBeInTheDocument();
     // Background scroll is locked while editing so the wheel scrolls the panel.
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(screen.getByTestId('veusz-modal-close'));
