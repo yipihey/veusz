@@ -75,3 +75,36 @@ describe('veusz-embed CLI (poster)', () => {
         .toContain('poster="./fit.poster.png"');
     });
 });
+
+describe('veusz-embed CLI (--self-contained)', () => {
+  // Bakes the scene + Vello wasm + JS glue into one HTML. Requires the venv
+  // python (for the capture) and the built Vello pkg; skip the test cleanly
+  // when either is absent so CI without them stays green.
+  const PKG_WASM = join(REPO, 'veusz-tauri', 'crates', 'veusz-paint-wasm',
+                        'pkg', 'veusz_paint_wasm_bg.wasm');
+  const can_run = existsSync(VENV_PY) && existsSync(PKG_WASM);
+
+  it.runIf(can_run)('produces a single HTML with scene + wasm + glue inline', () => {
+    const out = mkdtempSync(join(tmpdir(), 'veusz-embed-single-'));
+    const file = join(out, 'fit.html');
+    execFileSync('node', [CLI, 'build', VSZ, '-o', file,
+      '--self-contained', '--python', VENV_PY,
+      '--width', '500', '--height', '400'], { timeout: 180000 });
+
+    expect(existsSync(file)).toBe(true);
+    const size = readFileSync(file).length;
+    // Wasm dominates: rough check ≥ 1 MB (real builds are ~4 MB).
+    expect(size).toBeGreaterThan(1_000_000);
+    const html = readFileSync(file, 'utf-8');
+    // Single-file structure: every payload inlined; no external resources.
+    expect(html).toContain('<script id="veusz-scene"');
+    expect(html).toContain('<script id="veusz-wasm"');
+    expect(html).toContain('<script id="veusz-glue"');
+    expect(html).toContain('VelloCanvasRenderer');
+    // Must NOT reference the .vsz file (everything's baked in).
+    expect(html).not.toContain('fit.vsz');
+    // CDN/wheel mode artifacts must NOT appear.
+    expect(html).not.toContain('<veusz-figure');
+    expect(html).not.toContain('veusz-wheel=');
+  });
+});
