@@ -32,6 +32,20 @@ def main():
     # Keep the QApplication on a module-global so it isn't garbage-collected.
     from PyQt6.QtWidgets import QApplication
     globals()['_app'] = QApplication.instance() or QApplication(sys.argv)
+
+    # Force text measurement to use the SAME font the in-browser Vello/WASM
+    # renderer draws with (LiberationSans-Regular via fonttools). Otherwise
+    # textrender lays out positions for Qt's system font and the renderer
+    # uses a different one — italic runs (axis labels' "x" / "y") end up
+    # overlapping or gapping with the surrounding roman text. The Pyodide
+    # path already does this; here we wire it for the desktop capture too,
+    # BEFORE any veusz module captures a reference to qt.QFontMetricsF
+    # (textrender.py:42 does ``FontMetrics = qt.QFontMetricsF`` at import).
+    from veusz import qtall as _qt
+    from veusz import qtshim as _qtshim
+    _qt.QFontMetricsF = _qtshim.QFontMetricsF
+    _qt.QFontMetrics = _qtshim.QFontMetrics
+
     import veusz.widgets  # noqa: F401  — registers widget types
     import veusz.dataimport  # noqa: F401
     from veusz import document
