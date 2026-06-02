@@ -1274,6 +1274,52 @@ class OperationDatasetPlugin(Operation):
         for name, ds in self.olddata.items():
             document.setData(name, ds)
 
+class OperationDatasetHistogram2D(Operation):
+    """Operation to make a 2D histogram (density grid) from two expressions."""
+
+    descr = _("make 2D histogram")
+
+    def __init__(self, exprx, expry, outds, weightexpr=None,
+                 binparamsx=None, binparamsy=None,
+                 binmanualx=None, binmanualy=None, method='counts'):
+        """
+        exprx, expry = input dataset expressions for the two axes
+        outds = name of the 2D dataset to create
+        weightexpr = None or a dataset expression giving per-point weights
+        binparamsx/y = None or (numbins, minval, maxval, islog) per axis
+        binmanualx/y = None or an explicit list of bin edges per axis
+        method = 'counts', 'sum', 'mean' or 'density'
+        """
+        self.exprx = exprx
+        self.expry = expry
+        self.outds = outds
+        self.weightexpr = weightexpr
+        self.binparamsx = binparamsx
+        self.binparamsy = binparamsy
+        self.binmanualx = binmanualx
+        self.binmanualy = binmanualy
+        self.method = method
+
+    def do(self, document):
+        """Create the 2D histogram dataset."""
+        gen = datasets.DatasetHisto2DGenerator(
+            document, self.exprx, self.expry, exprweight=self.weightexpr,
+            binparamsx=self.binparamsx, binparamsy=self.binparamsy,
+            binmanualx=self.binmanualx, binmanualy=self.binmanualy,
+            method=self.method)
+
+        self.oldds = None
+        if self.outds != '':
+            self.oldds = document.data.get(self.outds, None)
+            document.setData(self.outds, gen.generateDataset())
+
+    def undo(self, document):
+        """Undo creation of the dataset."""
+        if self.oldds is not None:
+            document.setData(self.outds, self.oldds)
+        else:
+            document.deleteData(self.outds)
+
 class OperationDatasetHistogram(Operation):
     """Operation to make histogram from data."""
 

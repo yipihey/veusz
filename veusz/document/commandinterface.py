@@ -59,6 +59,7 @@ class CommandInterface(qt.QObject):
         'CloneWidget',
         'SetCompatLevel',
         'CreateHistogram',
+        'CreateHistogram2D',
         'DatasetPlugin',
         'FilterDatasets',
         'Get',
@@ -277,6 +278,32 @@ class CommandInterface(qt.QObject):
                 'Constructed histogram of "%s", creating datasets'
                 ' "%s" and "%s"') % (inexpr, outbinsds, outvalsds)
             )
+
+    def CreateHistogram2D(self, exprx, expry, outds, weightexpr=None,
+                          binparamsx=None, binparamsy=None,
+                          binmanualx=None, binmanualy=None, method='counts'):
+        """Make a 2D histogram (density grid) of two expressions.
+
+        exprx, expry are the input expressions for the two axes.
+        outds is the name of the 2D dataset to create (rendered by an
+          ``image`` widget, with a ``colorbar``).
+        weightexpr is None or an expression giving per-point weights, used by
+          the 'sum' and 'mean' methods.
+        binparamsx/binparamsy are None or (numbins, minval, maxval, islogbins)
+          per axis; minval/maxval may be 'Auto'.
+        binmanualx/binmanualy are None or an explicit list of bin edges.
+        method is 'counts', 'sum', 'mean' or 'density'.
+        """
+        op = operations.OperationDatasetHistogram2D(
+            exprx, expry, outds, weightexpr=weightexpr,
+            binparamsx=binparamsx, binparamsy=binparamsy,
+            binmanualx=binmanualx, binmanualy=binmanualy, method=method)
+        self.document.applyOperation(op)
+
+        if self.verbose:
+            print(_(
+                'Constructed 2D histogram of "%s" vs "%s", creating dataset'
+                ' "%s"') % (exprx, expry, outds))
 
     def CurrentPath(self):
         """Return the current path (set by To())."""

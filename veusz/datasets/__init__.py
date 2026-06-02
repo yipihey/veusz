@@ -26,6 +26,7 @@ from .text import *
 from .date import *
 from .filtered import *
 from .histo import *
+from .histo2d import *
 from .expression import *
 from .plugin import *
 

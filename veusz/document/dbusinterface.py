@@ -80,6 +80,11 @@ class DBusInterface(vzdbus.Object):
                                 str(outvalsds), **optargs)
 
     @vzdbus.method(dbus_interface=interface,
+                   in_signature='sssa{sv}')
+    def CreateHistogram2D(self, exprx, expry, outds, optargs):
+        self.ci.CreateHistogram2D(str(exprx), str(expry), str(outds), **optargs)
+
+    @vzdbus.method(dbus_interface=interface,
                    in_signature='sa{sv}a{sv}')
     def DatasetPlugin(self, pluginname, fields, datasetnames):
         self.ci.DatasetPlugin(str(pluginname), fields, datasetnames)
