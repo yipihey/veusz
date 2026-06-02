@@ -29,7 +29,8 @@ export const INSERT_WIDGETS: { group: string; items: [string, string][] }[] = [
   { group: 'Plotters', items: [
     ['xy', 'Points (XY)'], ['function', 'Function'], ['bar', 'Bar chart'],
     ['histo', 'Histogram'], ['boxplot', 'Box plot'], ['fit', 'Fit'],
-    ['image', 'Image'], ['contour', 'Contour'], ['vectorfield', 'Vector field'],
+    ['image', 'Image'], ['density', 'Density (2D histogram)'],
+    ['contour', 'Contour'], ['vectorfield', 'Vector field'],
     ['covariance', 'Covariance'], ['polar', 'Polar'], ['ternary', 'Ternary'],
     ['nonorthpoint', 'Non-orth. points'], ['nonorthfunc', 'Non-orth. function'],
   ]},

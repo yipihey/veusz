@@ -55,7 +55,7 @@ class ColorBar(axis.Axis):
         s.add( setting.WidgetChoice(
             'widgetName', '',
             descr=_('Corresponding widget'),
-            widgettypes=('image', 'xy', 'nonorthpoint'),
+            widgettypes=('image', 'density', 'xy', 'nonorthpoint'),
             usertext = _('Widget')), 0 )
 
         s.get('log').readonly = True

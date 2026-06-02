@@ -37,6 +37,7 @@ from .root import Root
 from .key import Key
 from .fit import Fit
 from .image import Image
+from .density import Density
 from .contour import Contour
 from .colorbar import ColorBar
 from .shape import Shape, BoxShape, Rectangle, Ellipse, ImageFile, SVGFile

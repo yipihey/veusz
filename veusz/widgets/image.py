@@ -181,6 +181,13 @@ class Image(plotters.GenericPlotter):
             descr=_('Map image using pixels or bound coordinates'),
             usertext=_('Mapping')), 5 )
 
+        klass.addColormapSettings(s)
+
+    @classmethod
+    def addColormapSettings(klass, s):
+        """Colormap + draw-mode settings shared by image-like widgets
+        (image, density). Kept separate so subclasses with a different data
+        source reuse the exact same colour controls."""
         s.add( setting.Colormap(
             'colorMap',
             'grey',
@@ -219,6 +226,15 @@ class Image(plotters.GenericPlotter):
             }[x],
             formatting=True,
         ) )
+
+    def getImageData(self):
+        """Return the 2D dataset to draw. Override point for subclasses (e.g.
+        density) that synthesise their grid instead of reading a dataset."""
+        return self.settings.get('data').getData(self.document)
+
+    def getTransparencyData(self):
+        """Return the optional 2D transparency dataset, or None."""
+        return self.settings.get('transparencyData').getData(self.document)
 
     @property
     def userdescription(self):
@@ -263,7 +279,7 @@ class Image(plotters.GenericPlotter):
         d = self.document
 
         # return if no data
-        data = s.get('data').getData(d)
+        data = self.getImageData()
         if data is None or data.dimensions != 2:
             return
 
@@ -280,7 +296,7 @@ class Image(plotters.GenericPlotter):
 
         s = self.settings
         d = self.document
-        data = s.get('data').getData(d)
+        data = self.getImageData()
         minval, maxval = self.getDataValueRange(data)
 
         return (
@@ -353,11 +369,11 @@ class Image(plotters.GenericPlotter):
         s = self.settings
         d = self.document
 
-        data = s.get('data').getData(d)
+        data = self.getImageData()
         if s.hide or data is None or data.dimensions != 2:
             return
 
-        transimg = s.get('transparencyData').getData(d)
+        transimg = self.getTransparencyData()
         if transimg is not None:
             transimg = transimg.data
 
