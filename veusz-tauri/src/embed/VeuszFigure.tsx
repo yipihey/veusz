@@ -38,10 +38,16 @@ export interface VeuszFigureProps {
   vszUrl?: string;
   /** Open the editor modal immediately on mount (e.g. user clicked Edit). */
   initialEditing?: boolean;
+  /** Reload-data hook. The WASM embed wires this to refetch URL data sources
+   *  via the urlLinks controller *then* reload filesystem-linked data, so a
+   *  single Reload click refreshes everything. Omitted in tests / hosts
+   *  without a runtime — the toolbar falls back to the file-only reload. */
+  onReload?: () => Promise<void> | void;
 }
 
 export function VeuszFigure({
   store, width = 700, height = 500, editable = true, title, poster, vszUrl, initialEditing,
+  onReload,
 }: VeuszFigureProps) {
   const error = store((s) => s.error);
   const webgpu = store((s) => s.webgpuAvailable);
@@ -129,6 +135,7 @@ export function VeuszFigure({
             ctx={makeEmbedActionCtx(store, {
               notify: (m) => store.setState({ error: m }),
             })}
+            onReload={onReload}
           />
         )}
         <DownloadMenu items={downloadItems()} busy={busy} />
@@ -158,6 +165,7 @@ export function VeuszFigure({
         <EditorModal
           store={store} title={title} width={width} height={height}
           toolbar={<DownloadMenu items={downloadItems()} busy={busy} />}
+          onReload={onReload}
           onClose={closeModal}
         />
       )}

@@ -230,6 +230,32 @@ describe('wireUrlLinks', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('refresh() re-fetches every link on demand, including those without poll_seconds', async () => {
+    const links: UrlLinkEntry[] = [
+      { url: 'http://example.com/a.csv', format: 'csv', poll_seconds: 0,
+        names: ['a'], etag: null, last_modified: null },
+      { url: 'http://example.com/b.csv', format: 'csv', poll_seconds: 0,
+        names: ['b'], etag: null, last_modified: null },
+    ];
+    const { transport, calls } = makeTransport({
+      'data.list_url_links': () => links,
+      'data.url_refresh': () => ({ reloaded: [], errors: {}, not_modified: false }),
+    });
+    const fetchSpy = vi.fn(
+      async (_url: string, _init?: RequestInit) => fakeResponse({
+        body: 'x\n1\n', etag: '"v1"',
+      }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const ctl = await wireUrlLinks(transport);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);  // initial pass
+    await ctl.refresh();
+    expect(fetchSpy).toHaveBeenCalledTimes(4);  // refresh = one more per link
+    // data.url_refresh fired twice more (one per link) on the refresh.
+    expect(calls.filter((c) => c.method === 'data.url_refresh')).toHaveLength(4);
+    ctl.stop();
+  });
+
   it('reports a network error via onError; polling continues', async () => {
     const link: UrlLinkEntry = {
       url: 'http://example.com/data.csv', format: 'csv', poll_seconds: 2,

@@ -31,12 +31,20 @@ export interface EmbedToolbarProps {
   store: Store;
   ctx: ActionCtx;
   density: 'inline' | 'full';
+  /** Override the Reload button's behavior. The WASM embed passes a callback
+   *  that re-fetches every URL data source (via the urlLinks controller) *and*
+   *  reloads file-based linked data — so a single click refreshes everything,
+   *  not just filesystem links. When omitted the button falls back to the
+   *  standard `data.reload` action (file-only). When the document has no
+   *  linked datasets the button is hidden either way. */
+  onReload?: () => Promise<void> | void;
 }
 
-export function EmbedToolbar({ store, ctx, density }: EmbedToolbarProps) {
+export function EmbedToolbar({ store, ctx, density, onReload }: EmbedToolbarProps) {
   const s = store();  // reactive — re-renders when state changes (enabled flips, page nav, etc.)
   const npages = s.tree?.children.length ?? 0;
   const inline = density === 'inline';
+  const hasLinked = s.datasets.some((d) => d.linked);
 
   return (
     <div
@@ -46,6 +54,9 @@ export function EmbedToolbar({ store, ctx, density }: EmbedToolbarProps) {
       <InsertDropdown state={s} ctx={ctx} compact={inline} />
       <ActionBtn id="edit.undo" state={s} ctx={ctx} label="↶" title="Undo" />
       <ActionBtn id="edit.redo" state={s} ctx={ctx} label="↷" title="Redo" />
+      {hasLinked && (
+        <ReloadBtn ctx={ctx} compact={inline} onReload={onReload} />
+      )}
 
       {!inline && (
         <>
@@ -103,6 +114,38 @@ function ActionBtn({
 
 function Sep() {
   return <span style={{ width: 1, height: 18, background: '#e2e4e8' }} />;
+}
+
+function ReloadBtn({
+  ctx, compact, onReload,
+}: {
+  ctx: ActionCtx;
+  compact: boolean;
+  onReload?: () => Promise<void> | void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const a = ACTIONS['data.reload'] as Action | undefined;
+  const click = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (onReload) await onReload();
+      else if (a) await a.run(ctx);
+    } finally { setBusy(false); }
+  };
+  const hint = (a?.shortcut ? `Reload data  (${a.shortcut})` : 'Reload data')
+             + (onReload ? ' — refetch URL sources and reload linked files'
+                         : '');
+  return (
+    <button
+      type="button"
+      data-testid="embed-action-data.reload"
+      onClick={() => { void click(); }}
+      disabled={busy}
+      title={hint}
+      style={btn(!busy)}
+    >{busy ? '⟳' : '↻'}{compact ? '' : ' Reload'}</button>
+  );
 }
 
 function InsertDropdown({

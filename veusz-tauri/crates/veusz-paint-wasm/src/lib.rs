@@ -349,12 +349,18 @@ fn build_scene(scene: &VScene) -> VelloScene {
                 }
             }
             SceneOp::DrawImage { image, dst, src } => {
+                // Workaround: vello 0.3's WebGPU image-blit pipeline renders
+                // 1×N / N×1 sources incompletely (Veusz emits colorbar strips
+                // as a 1×128 RGBA blob). Pad to ≥2×2 by duplicating; the dup
+                // samples to the same colour, so the visible result is the
+                // intended one. See bugreports/colorbar-wasm.
+                let (pixels, src_w, src_h) = pad_degenerate_image(image);
                 let img = peniko::Image::new(
-                    peniko::Blob::new(Arc::new(image.pixels.clone())),
-                    PenikoImageFormat::Rgba8, image.width, image.height,
+                    peniko::Blob::new(Arc::new(pixels)),
+                    PenikoImageFormat::Rgba8, src_w, src_h,
                 );
-                let sx = dst.w / src.map(|s| s.w).unwrap_or(image.width as f64);
-                let sy = dst.h / src.map(|s| s.h).unwrap_or(image.height as f64);
+                let sx = dst.w / src.map(|s| s.w).unwrap_or(src_w as f64);
+                let sy = dst.h / src.map(|s| s.h).unwrap_or(src_h as f64);
                 let sx2 = src.map(|s| s.x).unwrap_or(0.0);
                 let sy2 = src.map(|s| s.y).unwrap_or(0.0);
                 let xf = states.last().unwrap().transform
@@ -490,6 +496,31 @@ impl OutlinePen for OutlineToPath {
 
 fn vaff_to_kaff(m: Affine) -> KAffine {
     KAffine::new([m.a, m.b, m.c, m.d, m.e, m.f])
+}
+
+/// Workaround for vello 0.3 + wgpu 22's WebGPU image-blit pipeline rendering
+/// 1-pixel-wide / 1-pixel-tall sources incompletely (the native Metal /
+/// Vulkan / DX12 paths are unaffected). Pads such images to ≥2×2 by
+/// duplicating the lone row / column; sampling a uniform duplicate produces
+/// the same colour, so the visible output matches the native render.
+fn pad_degenerate_image(image: &veusz_paint_core::Image) -> (Vec<u8>, u32, u32) {
+    let w = image.width as usize;
+    let h = image.height as usize;
+    if w >= 2 && h >= 2 {
+        return (image.pixels.clone(), image.width, image.height);
+    }
+    let new_w = w.max(2);
+    let new_h = h.max(2);
+    let mut out = Vec::with_capacity(new_w * new_h * 4);
+    for y in 0..new_h {
+        let sy = y.min(h - 1);
+        for x in 0..new_w {
+            let sx = x.min(w - 1);
+            let i = (sy * w + sx) * 4;
+            out.extend_from_slice(&image.pixels[i..i + 4]);
+        }
+    }
+    (out, new_w as u32, new_h as u32)
 }
 
 fn vrule_to_peniko(r: FillRule) -> PenikoFill {
@@ -632,6 +663,71 @@ mod tests {
         // 'Hello' at 12pt should occupy somewhere between 25 and 60 user-space units.
         assert!(total > 25.0 && total < 60.0,
                 "total width for 'Hello' at 12pt out of range: {total}");
+    }
+
+    #[test]
+    fn pad_degenerate_image_passes_through_2x2_or_larger() {
+        // 2×2 input must be returned verbatim (no padding cost).
+        let img = veusz_paint_core::Image {
+            width: 2, height: 2,
+            pixels: vec![0,0,0,0, 1,1,1,1, 2,2,2,2, 3,3,3,3],
+        };
+        let (px, w, h) = pad_degenerate_image(&img);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(px, img.pixels);
+    }
+
+    #[test]
+    fn pad_degenerate_image_expands_1_by_n_colorbar_to_2_by_n() {
+        // The bug-report case: a 1×4 RGBA colorbar strip. Expand to 2×4
+        // by duplicating the single column; each row carries its own
+        // unique colour, which must be preserved.
+        let img = veusz_paint_core::Image {
+            width: 1, height: 4,
+            pixels: vec![
+                10, 20, 30, 40,    // row 0
+                50, 60, 70, 80,    // row 1
+                90,100,110,120,    // row 2
+               130,140,150,160,    // row 3
+            ],
+        };
+        let (px, w, h) = pad_degenerate_image(&img);
+        assert_eq!((w, h), (2, 4));
+        // Each row now has 2 identical pixels (the original duplicated).
+        for r in 0..4_usize {
+            let base = r * 2 * 4;
+            assert_eq!(&px[base..base + 4], &px[base + 4..base + 8],
+                "row {r}: duplicated columns must be identical");
+        }
+        // Row 2 must be the original (90, 100, 110, 120).
+        assert_eq!(&px[16..20], &[90, 100, 110, 120]);
+    }
+
+    #[test]
+    fn pad_degenerate_image_expands_n_by_1_to_n_by_2() {
+        let img = veusz_paint_core::Image {
+            width: 3, height: 1,
+            pixels: vec![1,2,3,4, 5,6,7,8, 9,10,11,12],
+        };
+        let (px, w, h) = pad_degenerate_image(&img);
+        assert_eq!((w, h), (3, 2));
+        // The single row is duplicated, so the buffer is the input twice over.
+        assert_eq!(&px[0..12], &img.pixels[..]);
+        assert_eq!(&px[12..24], &img.pixels[..]);
+    }
+
+    #[test]
+    fn pad_degenerate_image_expands_1_by_1_to_2_by_2() {
+        // Edge case — the degenerate-in-both-axes input.
+        let img = veusz_paint_core::Image {
+            width: 1, height: 1, pixels: vec![42, 43, 44, 45],
+        };
+        let (px, w, h) = pad_degenerate_image(&img);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(px, vec![
+            42, 43, 44, 45,  42, 43, 44, 45,
+            42, 43, 44, 45,  42, 43, 44, 45,
+        ]);
     }
 
     #[test]

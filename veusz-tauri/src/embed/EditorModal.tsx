@@ -24,7 +24,7 @@ import type { DialogId } from '../actions/types';
 type Store = UseBoundStore<StoreApi<DocState>>;
 
 export function EditorModal({
-  store, title, width, height, toolbar, onClose,
+  store, title, width, height, toolbar, onReload, onClose,
 }: {
   store: Store;
   title?: string;
@@ -32,6 +32,8 @@ export function EditorModal({
   height: number;
   /** Extra controls (e.g. the Download menu) shown in the modal header. */
   toolbar?: React.ReactNode;
+  /** Reload-data hook forwarded to the modal toolbar — see VeuszFigureProps. */
+  onReload?: () => Promise<void> | void;
   onClose: () => void;
 }) {
   const tree = store((s) => s.tree);
@@ -99,7 +101,7 @@ export function EditorModal({
       <div style={full ? winFull : win} data-testid="veusz-modal-window">
         <header style={hdr}>
           <strong style={{ fontSize: 14 }}>{title ?? 'Edit figure'}</strong>
-          <EmbedToolbar store={store} density="full" ctx={ctx} />
+          <EmbedToolbar store={store} density="full" ctx={ctx} onReload={onReload} />
           <button type="button" data-testid="veusz-reset" onClick={() => void reset()}
             disabled={!store.getState().canUndo || busy}
             style={hbtn} title="Reset all edits to the original figure">⟲ Reset</button>

@@ -51,6 +51,8 @@ describe('EmbedToolbar — inline density', () => {
     expect(screen.queryByTestId('embed-action-edit.cut')).toBeNull();
     expect(screen.queryByTestId('embed-action-edit.delete')).toBeNull();
     expect(screen.queryByTestId('embed-data-btn')).toBeNull();
+    // No linked datasets in the rig → no Reload button.
+    expect(screen.queryByTestId('embed-action-data.reload')).toBeNull();
   });
 
   it('Insert ▾ → Plotters → Points (XY) calls doc.add with the graph parent', async () => {
@@ -74,6 +76,59 @@ describe('EmbedToolbar — inline density', () => {
     render(<EmbedToolbar store={store} ctx={buildCtx(store)} density="inline" />);
     fireEvent.click(screen.getByTestId('embed-insert-btn'));
     expect(screen.getByTestId('embed-insert-xy')).toBeDisabled();
+  });
+});
+
+describe('EmbedToolbar — reload', () => {
+  it('hides the Reload button when no dataset is linked', async () => {
+    const { store } = rig();
+    await store.getState().refreshAll();
+    render(<EmbedToolbar store={store} ctx={buildCtx(store)} density="full" />);
+    expect(screen.queryByTestId('embed-action-data.reload')).toBeNull();
+  });
+
+  it('shows Reload when any dataset has a linked file/URL', async () => {
+    const { store } = rig({
+      'data.list': () => [
+        { name: 'x', kind: 'numeric', dtype: 'float64', shape: [3],
+          linked: 'http://example.com/x.csv' },
+      ],
+    });
+    await store.getState().refreshAll();
+    render(<EmbedToolbar store={store} ctx={buildCtx(store)} density="full" />);
+    expect(screen.getByTestId('embed-action-data.reload')).toBeInTheDocument();
+  });
+
+  it('clicking Reload calls onReload when provided (URL refetch + file reload)', async () => {
+    const { store } = rig({
+      'data.list': () => [
+        { name: 'x', kind: 'numeric', dtype: 'float64', shape: [3],
+          linked: 'http://example.com/x.csv' },
+      ],
+    });
+    await store.getState().refreshAll();
+    const onReload = vi.fn(() => Promise.resolve());
+    render(<EmbedToolbar store={store} ctx={buildCtx(store)}
+      density="full" onReload={onReload} />);
+    fireEvent.click(screen.getByTestId('embed-action-data.reload'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onReload).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to data.reload action when onReload is not provided', async () => {
+    let reloads = 0;
+    const { store } = rig({
+      'data.list': () => [
+        { name: 'x', kind: 'numeric', dtype: 'float64', shape: [3],
+          linked: '/tmp/x.csv' },
+      ],
+      'data.reload_file': () => { reloads++; return { reloaded: ['x'], errors: {} }; },
+    });
+    await store.getState().refreshAll();
+    render(<EmbedToolbar store={store} ctx={buildCtx(store)} density="full" />);
+    fireEvent.click(screen.getByTestId('embed-action-data.reload'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(reloads).toBe(1);
   });
 });
 

@@ -57,6 +57,11 @@ export interface WireUrlLinksOptions {
 export interface UrlLinkController {
   /** Cancel every polling interval. */
   stop(): void;
+  /** Re-fetch every URL right now (in parallel, ignoring poll intervals).
+   *  Returns after every fetch has resolved (success or failure). Used by
+   *  the toolbar's Reload button so users can refresh URL-backed data on
+   *  demand without waiting for the next poll tick. */
+  refresh(): Promise<void>;
 }
 
 interface LinkState {
@@ -143,6 +148,9 @@ export async function wireUrlLinks(
     stop() {
       for (const id of timers) clearInterval(id);
       timers.length = 0;
+    },
+    async refresh() {
+      await Promise.allSettled(links.map((l) => tick(l)));
     },
   };
 }

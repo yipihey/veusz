@@ -207,6 +207,16 @@ class VeuszFigureElement extends HTMLElement {
       const container = document.createElement('div');
       this.appendChild(container);
       this.root = createRoot(container);
+      // One-click reload: re-poll every URL data source via the urlLinks
+      // controller (so URL bytes are refreshed and the Python side re-imports
+      // them) and then ask the daemon to reload filesystem-linked data. Both
+      // run regardless of whether the doc has either kind, so the button
+      // works the same way in URL-only, file-only, and mixed figures.
+      const onReload = async () => {
+        await this.urlLinks?.refresh();
+        await store.getState().reloadFile();
+      };
+
       this.root.render(createElement(VeuszFigure, {
         store,
         width: Number(this.getAttribute('width') ?? 600),
@@ -216,6 +226,7 @@ class VeuszFigureElement extends HTMLElement {
         poster,
         vszUrl: src,
         initialEditing: openEditor,
+        onReload,
       }));
     } catch (e) {
       const msg = (e as Error).message;
