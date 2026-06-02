@@ -68,6 +68,44 @@ describe('EmbedPlot pointer interactions', () => {
     ]));
   });
 
+  it('rotates a 3D scene on drag instead of zooming', async () => {
+    const sp = '/page1/scene3d1';
+    const store = createDocStore(createRpc(mockTransport({
+      'doc.get': (p) => {
+        const { paths } = p as { paths: string[] };
+        const v: Record<string, number> = {
+          [`${sp}/xRotation`]: 0, [`${sp}/yRotation`]: 35, [`${sp}/zRotation`]: 0,
+        };
+        return Object.fromEntries(paths.map((k) => [k, v[k] ?? 0]));
+      },
+    })));
+    // Put a scene3d on the current page so EmbedPlot routes drags to rotation.
+    store.setState({ tree: {
+      name: 'doc', path: '/', type: 'document', children: [
+        { name: 'page1', path: '/page1', type: 'page', children: [
+          { name: 'scene3d1', path: sp, type: 'scene3d', children: [] },
+        ] },
+      ],
+    } });
+    const setValues = vi.spyOn(store.getState(), 'setValues').mockResolvedValue(undefined);
+    vi.spyOn(store.getState(), 'requestRender').mockImplementation(() => {});
+
+    render(<EmbedPlot store={store} width={300} height={200} />);
+    const canvas = screen.getByTestId('embed-canvas');
+    stubRect(canvas);
+
+    fireEvent.pointerDown(canvas, { pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1, clientX: 50, clientY: 50 });
+    fireEvent.pointerMove(canvas, { pointerId: 1, pointerType: 'mouse', buttons: 1, clientX: 150, clientY: 50 });
+    fireEvent.pointerUp(canvas, { pointerId: 1, pointerType: 'mouse', clientX: 150, clientY: 50 });
+
+    await waitFor(() => expect(setValues).toHaveBeenCalled());
+    const ops = setValues.mock.calls.at(-1)![0];
+    // The drag writes exactly the three scene rotation settings (not axis ranges).
+    expect(ops.map((o) => o.path).sort()).toEqual([
+      `${sp}/xRotation`, `${sp}/yRotation`, `${sp}/zRotation`,
+    ]);
+  });
+
   it('does not zoom on a click without drag', async () => {
     const store = makeStore();
     const setValues = vi.spyOn(store.getState(), 'setValues').mockResolvedValue(undefined);

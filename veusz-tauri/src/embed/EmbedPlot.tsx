@@ -17,11 +17,16 @@ import {
   computeZoomOps, computeResetOps, computePanOps, computePinchOps,
   formatTooltip, type AxisHit, type SetOp,
 } from './navigate';
+import { computeRotateOps, findScene3dPath, type Angles } from './rotate3d';
 import { displayDpr, BASE_DPI } from './dpi';
 
 type Store = UseBoundStore<StoreApi<DocState>>;
 
 const DRAG_THRESHOLD = 4;
+// Drag sensitivity for 3D rotation, in degrees of rotation per CSS pixel of
+// pointer travel. ~0.4 gives a full half-turn over a ~450px drag, which feels
+// controllable with both mouse and touch.
+const ROTATE_DEG_PER_PX = 0.4;
 // Cap for the backing store's longest side. Raised from the original 2400
 // to keep 3× retina renders of typical embed sizes (≤1200 logical px) from
 // hitting the cap. WebGPU MAX_TEXTURE_DIMENSION_2D is 8192 on every shipping
@@ -58,6 +63,13 @@ export function EmbedPlot({
     return { w, h };
   }, [width, height, dpr]);
   const renderDpi = Math.round(BASE_DPI * (renderSize.w / Math.max(width, 1)));
+  // Path of the scene3d on the current page, if any. When set, a drag rotates
+  // the scene (camera) instead of doing a 2D zoom/pan — the 2D axis gestures
+  // don't apply to a 3D view.
+  const scene3dPath = useMemo(
+    () => (tree ? findScene3dPath(tree.children[currentPage] ?? null) : null),
+    [tree, currentPage],
+  );
   // CSS display size of the fitted figure box (contain), updated on resize.
   // Only changes the canvas's *style* size, not its backing store.
   const [disp, setDisp] = useState({ w: width, h: height });
@@ -68,10 +80,24 @@ export function EmbedPlot({
   >(null);
 
   const axisPaths = useRef<Set<string>>(new Set());
+  const [rotating, setRotating] = useState(false);
   const drag = useRef<null | {
-    pointerId: number; mode: 'zoom' | 'pan'; sx: number; sy: number; moved: boolean;
+    pointerId: number; mode: 'zoom' | 'pan' | 'rotate'; sx: number; sy: number; moved: boolean;
     from?: AxisHit[]; ranges?: Map<string, { min: number; max: number }>;
   }>(null);
+  // 3D rotation gesture state, kept separate from `drag` so it outlives the
+  // pointer release long enough for the final orientation to be applied (the
+  // angles load async and renders are throttled). `startAngles` is undefined
+  // until the scene's current rotation has been fetched.
+  const rotateState = useRef<null | {
+    scenePath: string; startAngles?: Angles; startClientX: number; startClientY: number;
+  }>(null);
+  // Trailing-throttle for rotation: only one rotate render is in flight at a
+  // time; the most recent requested orientation is kept and applied when the
+  // previous completes, so heavy scenes degrade to a lower frame rate rather
+  // than piling up stale RPCs out of order.
+  const rotateBusy = useRef(false);
+  const pendingRotate = useRef<null | { clientX: number; clientY: number; shift: boolean }>(null);
   const pinch = useRef<null | {
     id1: number; id2: number; startDist: number; startCx: number; startCy: number;
     data1?: AxisHit[]; data2?: AxisHit[]; ranges?: Map<string, { min: number; max: number }>;
@@ -148,6 +174,26 @@ export function EmbedPlot({
     requestRender(currentPage, renderSize.w, renderSize.h, renderDpi);
   };
 
+  // Apply the latest pending rotation, if any, when no render is in flight.
+  // Re-pumps itself on completion so a request that arrived mid-flight isn't
+  // dropped (trailing edge), and waits if the start angles are still loading.
+  const pumpRotate = () => {
+    if (rotateBusy.current) return;
+    const r = rotateState.current, p = pendingRotate.current;
+    if (!p || !r || !r.startAngles) return;
+    pendingRotate.current = null;
+    const dx = (p.clientX - r.startClientX) * ROTATE_DEG_PER_PX;
+    const dy = (p.clientY - r.startClientY) * ROTATE_DEG_PER_PX;
+    const ops = computeRotateOps(r.scenePath, r.startAngles, dx, dy, p.shift ? 'xz' : 'xy');
+    rotateBusy.current = true;
+    void applyAndRender(ops).finally(() => { rotateBusy.current = false; pumpRotate(); });
+  };
+
+  const queueRotate = (clientX: number, clientY: number, shift: boolean) => {
+    pendingRotate.current = { clientX, clientY, shift };
+    pumpRotate();
+  };
+
   const beginPinch = () => {
     const cv = canvasRef.current;
     if (!cv) return;
@@ -219,6 +265,24 @@ export function EmbedPlot({
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     pointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
     if (pointers.current.size >= 2) { beginPinch(); return; }
+    if (scene3dPath) {
+      // 3D: this drag rotates the scene. Record the pointer origin now and
+      // fetch the scene's current rotation; deltas are taken from both.
+      const sp = scene3dPath;
+      drag.current = { pointerId: e.pointerId, mode: 'rotate', sx: 0, sy: 0, moved: false };
+      rotateState.current = { scenePath: sp, startClientX: e.clientX, startClientY: e.clientY };
+      void rpc().doc.get([`${sp}/xRotation`, `${sp}/yRotation`, `${sp}/zRotation`]).then((v) => {
+        if (rotateState.current && rotateState.current.scenePath === sp) {
+          rotateState.current.startAngles = {
+            x: Number(v[`${sp}/xRotation`]) || 0,
+            y: Number(v[`${sp}/yRotation`]) || 0,
+            z: Number(v[`${sp}/zRotation`]) || 0,
+          };
+          pumpRotate();  // apply any rotation that was queued while loading
+        }
+      });
+      return;
+    }
     const [x, y] = toCanvasPx(e.clientX, e.clientY);
     const pan = e.pointerType === 'mouse' ? (e.shiftKey || e.button === 1) : true;
     drag.current = { pointerId: e.pointerId, mode: pan ? 'pan' : 'zoom', sx: x, sy: y, moved: false };
@@ -244,11 +308,23 @@ export function EmbedPlot({
     if (pinch.current) { updatePinchPreview(); return; }
     const d = drag.current;
     if (d && d.pointerId === e.pointerId) {
+      if (d.mode === 'rotate') {
+        const r = rotateState.current;
+        const dx = e.clientX - (r?.startClientX ?? e.clientX);
+        const dy = e.clientY - (r?.startClientY ?? e.clientY);
+        if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
+          if (!d.moved) setRotating(true);
+          d.moved = true;
+          queueRotate(e.clientX, e.clientY, e.shiftKey);
+        }
+        return;
+      }
       const [x, y] = toCanvasPx(e.clientX, e.clientY);
       if (Math.abs(x - d.sx) > DRAG_THRESHOLD || Math.abs(y - d.sy) > DRAG_THRESHOLD) d.moved = true;
       if (d.mode === 'zoom' && d.moved) setBand({ x0: d.sx, y0: d.sy, x1: x, y1: y });
       return;
     }
+    if (scene3dPath) return;  // no data-value hover for 3D scenes
     if (e.pointerType !== 'mouse' || e.buttons !== 0) return;
     const now = performance.now();
     if (now - lastHover.current < 40) return;
@@ -277,6 +353,13 @@ export function EmbedPlot({
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
     drag.current = null;
+    if (d.mode === 'rotate') {
+      // Queue the release position as the final orientation; rotateState
+      // outlives the drag so pumpRotate still has the scene path + start angles.
+      if (d.moved) queueRotate(e.clientX, e.clientY, e.shiftKey);
+      setRotating(false);
+      return;
+    }
     setBand(null);
     if (!d.moved) return;
     const [x, y] = toCanvasPx(e.clientX, e.clientY);
@@ -300,6 +383,7 @@ export function EmbedPlot({
   const onPointerCancel = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
     pinch.current = null; drag.current = null;
+    pendingRotate.current = null; setRotating(false);
     setBand(null); setPreview(null);
   };
 
@@ -326,7 +410,8 @@ export function EmbedPlot({
           onDoubleClick={onDoubleClick}
           style={{
             width: '100%', height: '100%', display: 'block',
-            cursor: 'crosshair', touchAction: 'none',
+            cursor: scene3dPath ? (rotating ? 'grabbing' : 'grab') : 'crosshair',
+            touchAction: 'none',
             transform: preview
               ? `translate(${preview.tx}px, ${preview.ty}px) scale(${preview.scale})` : undefined,
             transformOrigin: preview ? `${preview.ox}px ${preview.oy}px` : undefined,
