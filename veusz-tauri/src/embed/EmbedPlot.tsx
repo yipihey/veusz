@@ -17,16 +17,16 @@ import {
   computeZoomOps, computeResetOps, computePanOps, computePinchOps,
   formatTooltip, type AxisHit, type SetOp,
 } from './navigate';
+import { displayDpr, BASE_DPI } from './dpi';
 
 type Store = UseBoundStore<StoreApi<DocState>>;
 
 const DRAG_THRESHOLD = 4;
-const MAX_RENDER_DIM = 2400;
-// Fixed supersample for the backing store. The canvas is rendered ONCE at this
-// resolution and then CSS-scaled to fit; we deliberately do NOT resize the
-// backing on container resize — mutating canvas.width/height clears the WebGPU
-// surface and blanks the figure (the bug this replaces).
-const SUPERSAMPLE = 2;
+// Cap for the backing store's longest side. Raised from the original 2400
+// to keep 3× retina renders of typical embed sizes (≤1200 logical px) from
+// hitting the cap. WebGPU MAX_TEXTURE_DIMENSION_2D is 8192 on every shipping
+// browser, so 4096 is well within budget.
+const MAX_RENDER_DIM = 4096;
 
 type Pt = { clientX: number; clientY: number };
 
@@ -44,13 +44,20 @@ export function EmbedPlot({
   const figRef = useRef<HTMLDivElement>(null);
 
   // Fixed backing-store resolution (rendered once; never churned on resize).
+  // The supersample tracks the screen's devicePixelRatio so the WebGPU
+  // rasterisation lands at the user's actual physical pixels — sharp on 2×/
+  // 3× retina, no waste on 1× monitors. dpi scales with the supersample so
+  // the figure's visual size in CSS pixels stays the same as the unscaled
+  // case (`render.scene` interprets `w/dpi` as page-size in inches).
+  const dpr = useMemo(() => displayDpr(), []);
   const renderSize = useMemo(() => {
-    let w = Math.max(1, Math.round(width * SUPERSAMPLE));
-    let h = Math.max(1, Math.round(height * SUPERSAMPLE));
+    let w = Math.max(1, Math.round(width * dpr));
+    let h = Math.max(1, Math.round(height * dpr));
     const m = Math.max(w, h);
     if (m > MAX_RENDER_DIM) { const f = MAX_RENDER_DIM / m; w = Math.round(w * f); h = Math.round(h * f); }
     return { w, h };
-  }, [width, height]);
+  }, [width, height, dpr]);
+  const renderDpi = Math.round(BASE_DPI * (renderSize.w / Math.max(width, 1)));
   // CSS display size of the fitted figure box (contain), updated on resize.
   // Only changes the canvas's *style* size, not its backing store.
   const [disp, setDisp] = useState({ w: width, h: height });
@@ -98,7 +105,7 @@ export function EmbedPlot({
   }, [width, height]);
 
   useEffect(() => {
-    if (tree && tree.children.length > 0) requestRender(currentPage, renderSize.w, renderSize.h);
+    if (tree && tree.children.length > 0) requestRender(currentPage, renderSize.w, renderSize.h, renderDpi);
   }, [tree, values, currentPage, renderSize.w, renderSize.h, requestRender]);
 
   // Paint the current scene to the (fixed-size) canvas whenever it changes.
@@ -138,7 +145,7 @@ export function EmbedPlot({
 
   const applyAndRender = async (ops: SetOp[]) => {
     await store.getState().setValues(ops);
-    requestRender(currentPage, renderSize.w, renderSize.h);
+    requestRender(currentPage, renderSize.w, renderSize.h, renderDpi);
   };
 
   const beginPinch = () => {

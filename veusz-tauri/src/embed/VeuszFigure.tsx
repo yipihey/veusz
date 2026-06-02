@@ -20,6 +20,7 @@ import { makeEmbedActionCtx } from './embedActionCtx';
 import { ensureEmbedStyles } from './embedStyles';
 import { svgExportAvailable, renderSceneToImageBlob } from '../components/plot/velloWasm';
 import { exportFigureAsSvg, exportFigureAsPng, exportFigureAsPdf } from './exportSvg';
+import { displayDpr, BASE_DPI } from './dpi';
 
 ensureEmbedStyles();
 
@@ -80,9 +81,15 @@ export function VeuszFigure({
 
   // After editing, refresh the inline preview from the (possibly edited) doc so
   // it isn't stale. Best-effort; failure just leaves the previous preview.
+  // Render at the display's pixel density so the static <img> doesn't look
+  // soft on retina screens — the browser scales the image down to the
+  // figure's CSS width without losing detail.
   const refreshPreview = async () => {
     try {
-      const r = await store.getState().rpc.render.scene(currentPage, width, height, 96);
+      const dpr = displayDpr();
+      const rw = Math.round(width * dpr);
+      const rh = Math.round(height * dpr);
+      const r = await store.getState().rpc.render.scene(currentPage, rw, rh, Math.round(BASE_DPI * dpr));
       const blob = await renderSceneToImageBlob(r.scene_b64, r.width, r.height, 'image/png');
       const url = URL.createObjectURL(blob);
       if (objUrl.current) URL.revokeObjectURL(objUrl.current);
