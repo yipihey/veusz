@@ -1,5 +1,5 @@
 {
-  "_comment": "Drives scripts/build_examples_gallery.mjs. `order` lists files first (others auto-append, sorted). `meta` overrides title/description per file. 2D only; 3D/MathML are excluded by the generator.",
+  "_comment": "Drives scripts/build_examples_gallery.mjs. `order` lists files first (others auto-append, sorted). `meta` overrides title/description per file. 3D examples are included (rendered + drag-to-rotate via the threed engine); only MathML is excluded by the generator.",
   "order": [
     "sin.vsz",
     "functions.vsz",
@@ -18,7 +18,12 @@
     "coloredpoints.vsz",
     "markerspolygon.vsz",
     "labels.vsz",
-    "fit.vsz"
+    "fit.vsz",
+    "3d_points.vsz",
+    "3d_errors.vsz",
+    "3d_function.vsz",
+    "3d_surface.vsz",
+    "3d_volume.vsz"
   ],
   "meta": {
     "sin.vsz": { "title": "Sine curve", "description": "A function plotted with a sampled point series — the canonical first plot." },
@@ -56,6 +61,11 @@
     "linked_datasets.vsz": { "title": "Linked datasets", "description": "Datasets linked to an external file." },
     "axis_function.vsz": { "title": "Axis function", "description": "An axis transformed by an arbitrary function." },
     "custom_definitions.vsz": { "title": "Custom definitions", "description": "User-defined constants and functions." },
-    "FDR_example.vsz": { "title": "FDR example", "description": "A false-discovery-rate style plot." }
+    "FDR_example.vsz": { "title": "FDR example", "description": "A false-discovery-rate style plot." },
+    "3d_points.vsz": { "title": "3D scatter", "description": "Points in a 3D scene with a parametric curve — drag to rotate the view." },
+    "3d_errors.vsz": { "title": "3D points with errors", "description": "3D scatter with error bars and coloured parametric curves. Drag to rotate." },
+    "3d_function.vsz": { "title": "3D surface function", "description": "A parametric surface y = sin(2πx)·sin(3πz) on 3D axes. Drag to rotate." },
+    "3d_surface.vsz": { "title": "3D data surface", "description": "A colour-mapped data mesh with lighting and a parametric ring. Drag to rotate." },
+    "3d_volume.vsz": { "title": "3D volume", "description": "A discrete volume drawn as a cuboid grid. Drag to rotate." }
   }
 }

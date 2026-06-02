@@ -11,10 +11,12 @@
  *        [--limit N] [--no-poster] [--width 700] [--height 500] [--python <p>]
  *
  * The layout (titles/descriptions/order) is data-driven from
- * `examples/gallery.json`; any 2D example not listed there is auto-appended
- * with a humanised title. 3D / MathML examples are excluded (the browser
- * render path is 2D raster today). Runtime is loaded from the versioned Pages
- * CDN by default — matching .github/workflows/deploy-embed.yml.
+ * `examples/gallery.json`; any example not listed there is auto-appended with a
+ * humanised title. The 3D examples are included: the pure-Python threed engine
+ * flattens a scene3d into the same 2D Scene IR the Vello/WebGPU path draws, and
+ * the embed adds drag-to-rotate. Only MathML is excluded (no live renderer).
+ * Runtime is loaded from the versioned Pages CDN by default — matching
+ * .github/workflows/deploy-embed.yml.
  */
 
 import {
@@ -32,11 +34,10 @@ const VERSION = readFileSync(join(REPO, 'VERSION'), 'utf-8').trim();
 const WHEEL = `veusz-${VERSION}-py3-none-any.whl`;
 const DEFAULT_CDN = `https://yipihey.github.io/veusz/embed/v${VERSION}`;
 
-// 2D-only: the in-browser Vello/WebGPU path rasterises 2D scenes. 3D scenes and
-// MathML aren't supported live yet (posters would still render, but they
-// wouldn't be editable), so they're left out — matching the upstream split of
-// a separate 3D examples page.
-const EXCLUDE = (f) => /^3d_/i.test(f) || /^(surface|volume|mathml)\b/i.test(f);
+// Only MathML is excluded — there's no in-browser MathML renderer. The 3D
+// examples render (and rotate) through the same Scene IR pipeline as 2D, so
+// they're included.
+const EXCLUDE = (f) => /^mathml\b/i.test(f);
 
 function parseArgs(argv) {
   const a = {
