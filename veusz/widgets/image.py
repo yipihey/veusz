@@ -316,7 +316,6 @@ class Image(plotters.GenericPlotter):
             y0 = int(min(yedgep[0], yedgep[-1]))
             y1 = int(max(yedgep[0], yedgep[-1]))
 
-            print(painter.device().logicalDpiY())
             if drawmode == 'resample-pixels':
                 # resample image to a flat bitmap
                 image = qtloops.resampleNonlinearImage(
