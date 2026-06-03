@@ -1,0 +1,30 @@
+{
+  "name": "myst-veusz",
+  "version": "0.1.0",
+  "description": "MyST Markdown (mystmd) plugin: a `veusz` directive that embeds interactive Veusz figures (live <veusz-figure> web component on HTML, static poster image on PDF/Typst/LaTeX).",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "mystmd",
+    "myst",
+    "veusz",
+    "plugin",
+    "directive",
+    "web-component",
+    "scientific-figures"
+  ],
+  "license": "GPL-2.0-or-later",
+  "engines": {
+    "node": ">=18"
+  }
+}
