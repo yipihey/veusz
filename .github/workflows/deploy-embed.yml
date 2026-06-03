@@ -120,6 +120,15 @@ jobs:
           rm -rf "$DEST"; mkdir -p "$DEST/wasm"
           # The ES module + its code-split chunks (skip .map source maps).
           find veusz-tauri/dist-embed -maxdepth 1 -name '*.js' -exec cp {} "$DEST/" \;
+          # The Pyodide worker chunk (and any code-split chunks) live in
+          # dist-embed/assets/. veusz-embed.js loads the worker via a relative
+          # `assets/…` URL, so they must be staged too — otherwise the worker
+          # 404s ("Pyodide worker error").
+          if [ -d veusz-tauri/dist-embed/assets ]; then
+            mkdir -p "$DEST/assets"
+            find veusz-tauri/dist-embed/assets -maxdepth 1 -name '*.js' \
+              -exec cp {} "$DEST/assets/" \;
+          fi
           cp veusz-tauri/public/wasm/* "$DEST/wasm/"
           cp "dist/veusz-${V}-py3-none-any.whl" "$DEST/"
           # A live, self-contained example figure (fit.vsz). CDN mode → it
@@ -146,8 +155,11 @@ jobs:
           # building. The figure's phase.vsz is staged at notebook/phase.vsz,
           # which is the URL the directive's iframe fetches.
           rm -rf site/notebook
+          # BASE_URL: the notebook is served from the /veusz/notebook/ sub-path,
+          # so the MyST SPA must prefix its asset/content URLs with it (else it
+          # shows "incorrect BASE_URL configuration").
           if ( cd integrations/myst-veusz/example && rm -rf _build \
-               && npx --yes mystmd build --html ) \
+               && BASE_URL=/veusz/notebook npx --yes mystmd build --html ) \
              && [ -f integrations/myst-veusz/example/_build/html/index.html ]; then
             mkdir -p site/notebook
             cp -r integrations/myst-veusz/example/_build/html/. site/notebook/
