@@ -16,6 +16,11 @@
  *  - `clientTransport(client)` wraps the Node `NodeRpcClient` (which
  *                              owns the real UDS connection) — used by
  *                              the live-daemon e2e.
+ *  - `pyodideTransport(bridge)` drives an in-process Pyodide `Bridge`
+ *                              synchronously (kept for the contract test).
+ *  - `workerTransport(worker)` drives the Pyodide `Bridge` running inside a
+ *                              Web Worker, so RPC no longer blocks the UI
+ *                              thread. The in-browser embed runtime uses this.
  */
 
 export type Unsubscribe = () => void;
@@ -135,6 +140,103 @@ export function pyodideTransport(bridge: PyodideBridge): Transport {
       }
       return resp.result;
     },
+    subscribe: (method, fn) => {
+      let ls = listeners.get(method);
+      if (!ls) {
+        ls = new Set();
+        listeners.set(method, ls);
+      }
+      ls.add(fn);
+      return () => { ls!.delete(fn); };
+    },
+  };
+}
+
+/**
+ * Minimal view of a Web Worker — exactly the members `workerTransport` uses.
+ * Lets us drive the transport from a fake in unit tests (no real Worker) while
+ * the real {@link Worker} satisfies it structurally.
+ */
+export interface WorkerLike {
+  postMessage(message: unknown): void;
+  addEventListener(type: 'message', listener: (e: MessageEvent) => void): void;
+  terminate?(): void;
+}
+
+/**
+ * Transport backed by the Veusz runtime running inside a Web Worker (see
+ * `embed/pyodideWorker.ts`). This is the off-main-thread successor to
+ * {@link pyodideTransport}: instead of calling `bridge.dispatch_json`
+ * synchronously on the UI thread, it posts `{id, type:'call', method, params}`
+ * to the worker and resolves the matching Promise when `{id, result|error}`
+ * comes back. Push notifications arrive as `{type:'notify', payload}` (a JSON
+ * string, same as the bridge's notify callback) and fan out to per-method
+ * subscribers. Same `Transport` surface, so nothing downstream changes.
+ *
+ * The returned object also exposes `request(type, extra)` — a generic
+ * id-correlated round-trip the runtime uses for the `loadVsz` message, so call
+ * and loadVsz share one pending-id map and one error contract.
+ */
+export interface WorkerTransport extends Transport {
+  /** Generic id-correlated round-trip to the worker (used for `loadVsz`).
+   *  Resolves with the worker's `result` or rejects with its `error`. */
+  request(type: string, extra: Record<string, unknown>): Promise<unknown>;
+}
+
+export function workerTransport(worker: WorkerLike): WorkerTransport {
+  const listeners = new Map<string, Set<NotificationListener>>();
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
+  let nextId = 1;
+
+  worker.addEventListener('message', (e: MessageEvent) => {
+    const msg = e.data as {
+      id?: number;
+      result?: unknown;
+      error?: { code?: number; message?: string; data?: unknown };
+      type?: string;
+      payload?: string;
+    };
+    // Push notification (no id): fan out to per-method subscribers. `payload`
+    // is the same JSON string the in-process bridge produced.
+    if (msg.type === 'notify') {
+      let parsed: { method?: string; params?: unknown };
+      try {
+        parsed = JSON.parse(msg.payload ?? '');
+      } catch {
+        return;
+      }
+      if (parsed.method) listeners.get(parsed.method)?.forEach((fn) => fn(parsed.params));
+      return;
+    }
+    // Reply to a call/loadVsz — settle the matching pending promise.
+    if (typeof msg.id === 'number') {
+      const p = pending.get(msg.id);
+      if (!p) return;
+      pending.delete(msg.id);
+      if (msg.error) {
+        const err = new Error(msg.error.message || 'rpc error') as Error & {
+          code?: number; data?: unknown;
+        };
+        err.code = msg.error.code;
+        err.data = msg.error.data;
+        p.reject(err);
+      } else {
+        p.resolve(msg.result);
+      }
+    }
+  });
+
+  const request = (type: string, extra: Record<string, unknown>): Promise<unknown> => {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, type, ...extra });
+    });
+  };
+
+  return {
+    call: (method, params = {}) => request('call', { method, params }),
+    request,
     subscribe: (method, fn) => {
       let ls = listeners.get(method);
       if (!ls) {
