@@ -13,10 +13,10 @@ cd "$(dirname "$0")/.."
 cargo build \
     -p veusz-paint-wasm \
     --target wasm32-unknown-unknown \
-    --release \
+    --profile release-wasm \
     --manifest-path veusz-tauri/Cargo.toml
 
-WASM_IN=veusz-tauri/target/wasm32-unknown-unknown/release/veusz_paint_wasm.wasm
+WASM_IN=veusz-tauri/target/wasm32-unknown-unknown/release-wasm/veusz_paint_wasm.wasm
 PKG_OUT=veusz-tauri/crates/veusz-paint-wasm/pkg
 mkdir -p "${PKG_OUT}"
 

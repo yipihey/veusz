@@ -13,3 +13,16 @@ members = [
     "crates/veusz-paint-wasm",
     "src-tauri",
 ]
+
+# Size-tuned profile for the browser wasm renderer ONLY (built via
+# scripts/build_paint_wasm.sh with `--profile release-wasm`). Kept separate
+# from `release` because these settings are wrong for the native crates:
+# opt-level="z" slows the tiny-skia/vello renderers, and panic="abort" breaks
+# PyO3's panic→Python-exception conversion in _paint_ext.
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
