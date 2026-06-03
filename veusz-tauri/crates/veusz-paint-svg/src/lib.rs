@@ -26,8 +26,19 @@
 //! What's in: paths (fill non-zero/even-odd, stroke), solid + linear/radial
 //! gradient fills, dashes/caps/joins/miter, full affine transforms, rect & path
 //! clips, RGBA images (embedded as base64 PNG `<image>`), batched markers, and
-//! real vector `<text>`. Blend modes other than source-over are not emitted
+//! glyph-outline text. Blend modes other than source-over are not emitted
 //! (the audit shows Veusz rarely needs them).
+//!
+//! Text
+//! ----
+//! Text is emitted as filled glyph-outline `<path>` elements, laid out by
+//! `veusz-paint-text` (Parley layout + skrifa outlines) — the same engine the
+//! raster (tiny-skia) and PDF backends use. This makes SVG text pixel-identical
+//! to those backends and, crucially, independent of whatever fonts the SVG
+//! *viewer* happens to have installed (native `<text>` would render in the
+//! viewer's font). When no fonts are available (the `text` feature is off, as
+//! on the wasm32 build, or fontique finds nothing) we fall back to a dashed
+//! bounding-box placeholder, mirroring tiny-skia / pdf.
 
 #![forbid(unsafe_code)]
 
@@ -35,8 +46,8 @@ use std::fmt::Write as _;
 
 use base64::Engine as _;
 use veusz_paint_core::{
-    Color, Fill, FillRule, LineCap, LineJoin, Paint, Path, PathVerb, Scene, SceneOp,
-    Stroke, TextLayout,
+    Affine, Color, Fill, FillRule, LineCap, LineJoin, Paint, Path, PathVerb, Rect, Scene,
+    SceneOp, Stroke, TextLayout,
 };
 
 /// Render a [`Scene`] into a standalone SVG document string.
@@ -69,6 +80,12 @@ struct SvgEmitter {
     fill: Option<Fill>,
     stroke: Option<Stroke>,
     next_id: usize,
+    /// Lazily-constructed glyph layout engine (Parley + skrifa), shared with
+    /// the raster/PDF backends. Built on first `DrawText` so font discovery
+    /// cost is only paid by scenes that actually contain text. Absent when the
+    /// `text` feature is off (e.g. the wasm32 build).
+    #[cfg(feature = "text")]
+    text_engine: Option<veusz_paint_text::TextEngine>,
 }
 
 impl SvgEmitter {
@@ -86,6 +103,8 @@ impl SvgEmitter {
             width, height, defs: String::new(), body,
             group_depth: 0, save_stack: Vec::new(),
             fill: None, stroke: None, next_id: 0,
+            #[cfg(feature = "text")]
+            text_engine: None,
         }
     }
 
@@ -227,15 +246,55 @@ impl SvgEmitter {
         }
     }
 
+    /// Emit text as filled glyph-outline `<path>` elements, laid out by
+    /// `veusz-paint-text` so the result is byte-for-byte the same geometry the
+    /// raster/PDF backends draw — and independent of the viewer's fonts. `(x,y)`
+    /// is the baseline of the first line (Qt's `drawText(QPointF, …)`); the
+    /// engine anchors the first line's baseline there and offsets later lines.
+    /// Falls back to a placeholder when no glyphs come back (no fonts / feature
+    /// off), matching tiny-skia / pdf.
+    #[cfg(feature = "text")]
     fn draw_text(&mut self, layout: &TextLayout, x: f64, y: f64) {
+        if self.text_engine.is_none() {
+            self.text_engine = Some(veusz_paint_text::TextEngine::new());
+        }
+        let engine = self.text_engine.as_ref().expect("just constructed");
+        let glyphs = engine.layout_to_glyph_paths(layout, (x, y));
+        if glyphs.is_empty() {
+            self.draw_text_placeholder(layout, x, y);
+            return;
+        }
+        // All glyphs in one TextLayout share the style colour. Bake each
+        // glyph's translate (the only transform the engine emits) into the path
+        // coordinates so the result is plain `<path d>` independent of any
+        // surrounding viewer transform handling.
+        for g in &glyphs {
+            let _ = write!(self.body,
+                "<path d=\"{}\" fill=\"{}\"{}/>",
+                path_d_transformed(&g.path, g.position),
+                rgb(g.color), opacity("fill", g.color.a));
+        }
+    }
+
+    /// No-text-feature build (e.g. wasm32): fonts are unavailable, so emit the
+    /// placeholder directly.
+    #[cfg(not(feature = "text"))]
+    fn draw_text(&mut self, layout: &TextLayout, x: f64, y: f64) {
+        self.draw_text_placeholder(layout, x, y);
+    }
+
+    /// Dashed bounding-box placeholder, drawn when no glyph outlines are
+    /// available. Mirrors the raster/PDF backends so the pipeline still
+    /// produces visible output rather than silently dropping the label.
+    fn draw_text_placeholder(&mut self, layout: &TextLayout, x: f64, y: f64) {
         let st = &layout.style;
-        let weight = if st.weight != 400 { format!(" font-weight=\"{}\"", st.weight) } else { String::new() };
-        let italic = if st.italic { " font-style=\"italic\"" } else { "" };
+        let w = 0.6 * st.size_pt * layout.text.chars().count() as f64;
+        let h = st.size_pt;
+        let rect = Path::rect(Rect { x, y: y - h, w, h });
         let _ = write!(self.body,
-            "<text x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\"{weight}{italic} \
-             fill=\"{}\"{}>{}</text>",
-            num(x), num(y), xml_attr(&st.family), num(st.size_pt),
-            rgb(st.color), opacity("fill", st.color.a), xml_text(&layout.text));
+            "<path d=\"{}\" fill=\"none\" stroke=\"{}\"{} \
+             stroke-width=\"0.5\" stroke-dasharray=\"2,2\"/>",
+            path_d(&rect), rgb(st.color), opacity("stroke", st.color.a));
     }
 
     fn finish(mut self) -> String {
@@ -342,12 +401,43 @@ fn path_d(p: &Path) -> String {
     d
 }
 
-fn xml_text(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
-fn xml_attr(s: &str) -> String {
-    xml_text(s).replace('"', "&quot;")
+/// Like [`path_d`], but maps every coordinate through `m` first. Used for glyph
+/// outlines, whose [`Affine`] from the layout engine is a pure baseline
+/// translation; baking it into the `d` keeps text as flat `<path>` data with no
+/// per-glyph `<g transform>` wrapper.
+fn path_d_transformed(p: &Path, m: Affine) -> String {
+    // (x, y) -> (a·x + c·y + e, b·x + d·y + f), matching Affine's convention.
+    let tx = |x: f64, y: f64| (m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f);
+    let mut d = String::new();
+    let mut i = 0;
+    for verb in &p.verbs {
+        match verb {
+            PathVerb::MoveTo => {
+                let (x, y) = tx(p.points[i], p.points[i + 1]);
+                let _ = write!(d, "M{} {}", num(x), num(y)); i += 2;
+            }
+            PathVerb::LineTo => {
+                let (x, y) = tx(p.points[i], p.points[i + 1]);
+                let _ = write!(d, "L{} {}", num(x), num(y)); i += 2;
+            }
+            PathVerb::QuadTo => {
+                let (cx, cy) = tx(p.points[i], p.points[i + 1]);
+                let (x, y) = tx(p.points[i + 2], p.points[i + 3]);
+                let _ = write!(d, "Q{} {} {} {}", num(cx), num(cy), num(x), num(y));
+                i += 4;
+            }
+            PathVerb::CubicTo => {
+                let (c1x, c1y) = tx(p.points[i], p.points[i + 1]);
+                let (c2x, c2y) = tx(p.points[i + 2], p.points[i + 3]);
+                let (x, y) = tx(p.points[i + 4], p.points[i + 5]);
+                let _ = write!(d, "C{} {} {} {} {} {}",
+                    num(c1x), num(c1y), num(c2x), num(c2y), num(x), num(y));
+                i += 6;
+            }
+            PathVerb::Close => d.push('Z'),
+        }
+    }
+    d
 }
 
 /// Crop an RGBA image to the `src` pixel rectangle (clamped to integer pixel
@@ -484,20 +574,59 @@ mod tests {
         assert!(svg.contains("fill=\"url(#grad0)\""));
     }
 
+    /// True when fonts are discoverable (so glyph outlines, not the
+    /// placeholder, are emitted). Mirrors veusz-paint-text's own skip guard for
+    /// CI hosts without fonts installed.
+    #[cfg(feature = "text")]
+    fn fonts_available() -> bool {
+        let engine = veusz_paint_text::TextEngine::new();
+        let layout = TextLayout { text: "X".into(), style: TextStyle::default() };
+        !engine.layout_to_glyph_paths(&layout, (0.0, 0.0)).is_empty()
+    }
+
+    /// Text must now render as filled glyph-outline `<path>` elements, NOT as a
+    /// viewer-font-dependent `<text>` element. This is the whole point of the
+    /// path-based text port: pixel parity with the raster/PDF backends.
+    #[cfg(feature = "text")]
     #[test]
-    fn text_is_emitted_as_vector_text_escaped() {
+    fn text_is_emitted_as_glyph_outline_paths() {
+        if !fonts_available() {
+            eprintln!("no fonts available; skipping glyph-outline assertion");
+            return;
+        }
         let s = scene_with(|r| {
             r.draw_text(&TextLayout {
-                text: "a < b & c".into(),
-                style: TextStyle { family: "serif".into(), size_pt: 12.0, weight: 700, italic: true, color: Color::BLACK },
+                text: "Hello".into(),
+                style: TextStyle { family: "sans-serif".into(), size_pt: 14.0,
+                                   weight: 400, italic: false, color: Color::BLACK },
             }, 5.0, 20.0);
         });
         let svg = render_scene_to_svg(&s, 50.0, 50.0, (1.0, 1.0, 1.0, 0.0));
-        assert!(svg.contains("<text x=\"5\" y=\"20\""));
-        assert!(svg.contains("font-family=\"serif\""));
-        assert!(svg.contains("font-weight=\"700\""));
-        assert!(svg.contains("font-style=\"italic\""));
-        assert!(svg.contains(">a &lt; b &amp; c</text>"));
+        // No native <text> element at all.
+        assert!(!svg.contains("<text"), "text must not be emitted as <text>: {svg}");
+        // Glyph outlines: several filled <path d="M..."> in the text colour.
+        assert!(svg.contains("<path d=\"M"), "expected glyph-outline paths: {svg}");
+        let glyph_paths = svg.matches("fill=\"rgb(0,0,0)\"").count();
+        assert!(glyph_paths >= 5,
+                "expected >=5 black glyph fills for 'Hello', got {glyph_paths}: {svg}");
+    }
+
+    /// When no glyphs come back (text feature off, or no fonts), text falls back
+    /// to the dashed bounding-box placeholder — same as tiny-skia / pdf — rather
+    /// than dropping the label.
+    #[cfg(not(feature = "text"))]
+    #[test]
+    fn text_without_fonts_emits_placeholder() {
+        let s = scene_with(|r| {
+            r.draw_text(&TextLayout {
+                text: "Hello".into(),
+                style: TextStyle::default(),
+            }, 5.0, 20.0);
+        });
+        let svg = render_scene_to_svg(&s, 50.0, 50.0, (1.0, 1.0, 1.0, 0.0));
+        assert!(!svg.contains("<text"));
+        assert!(svg.contains("stroke-dasharray=\"2,2\""),
+                "expected placeholder box: {svg}");
     }
 
     #[test]
