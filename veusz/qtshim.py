@@ -852,9 +852,20 @@ class QPainterPath:
         self.cubicTo(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy)
 
     def arcTo(self, *a):
-        """Approximate Qt's arcTo with a line-segment polyline. Args:
-        (QRectF, startAngle, sweepLength) or (x, y, w, h, startAngle, sweep).
-        Angles in degrees, CCW from 3 o'clock (Qt convention)."""
+        """Add an elliptical arc to the path as cubic Bezier segments.
+
+        Args: (QRectF, startAngle, sweepLength) or
+        (x, y, w, h, startAngle, sweep).  Angles are in degrees, measured
+        counter-clockwise from the 3 o'clock position (Qt's convention).
+        This matches Qt's ``QPainterPath::arcTo`` semantics: the current
+        subpath is connected to the arc start with a lineTo (or the arc
+        start becomes a moveTo if the path is empty).
+
+        The arc is split into segments of at most 90 degrees, each
+        approximated by a cubic Bezier using the standard analytic
+        control-point formula for an elliptical arc.  This reproduces the
+        true ellipse far more accurately than a coarse polyline.
+        """
         if len(a) == 3:
             r, start, sweep = a
             x, y, w, h = r.x(), r.y(), r.width(), r.height()
@@ -862,20 +873,71 @@ class QPainterPath:
             x, y, w, h, start, sweep = a
         cx, cy = x + w / 2.0, y + h / 2.0
         rx, ry = w / 2.0, h / 2.0
-        nseg = max(2, int(abs(sweep) / 6.0) + 1)
 
+        # Qt uses a y-axis that grows downwards while angles grow
+        # counter-clockwise, so a point at angle theta is
+        #   (cx + rx*cos(theta), cy - ry*sin(theta)).
         def pt(deg):
             t = math.radians(deg)
             return (cx + rx * math.cos(t), cy - ry * math.sin(t))
 
+        # Connect to the arc start, matching Qt semantics.
         sx, sy = pt(start)
         if self._els:
             self.lineTo(sx, sy)
         else:
             self.moveTo(sx, sy)
-        for i in range(1, nseg + 1):
-            px, py = pt(start + sweep * i / nseg)
-            self.lineTo(px, py)
+
+        # Degenerate sweep: nothing more to add (start point already placed).
+        if sweep == 0 or rx == 0 or ry == 0:
+            return
+
+        # Split the sweep into segments of <= 90 degrees.
+        nseg = max(1, int(math.ceil(abs(sweep) / 90.0)))
+        seg_sweep = sweep / nseg
+
+        # Work in radians for the Bezier control-point computation.  Note
+        # the y-down/CCW convention is folded in by negating the angular
+        # quantities for the y component (handled below by computing the
+        # tangents from the same pt() parameterisation analytically).
+        t0 = math.radians(start)
+        dt = math.radians(seg_sweep)
+
+        # Magic factor for a unit-circle arc of half-angle dt/2:
+        #   alpha = 4/3 * tan(dt/4)
+        # The control points are offset along the tangent by this factor
+        # times the radius.
+        for i in range(nseg):
+            a0 = t0 + i * dt
+            a1 = a0 + dt
+            seg = a1 - a0
+            if seg == 0:
+                continue
+            # Classic control-point offset for a Bezier approximation of a
+            # circular/elliptical arc spanning angle ``seg`` (in radians):
+            #   alpha = 4/3 * tan(seg/4)
+            alpha = (4.0 / 3.0) * math.tan(seg / 4.0)
+
+            # Endpoint and tangent (derivative wrt angle) of the
+            # y-down/CCW ellipse parameterisation:
+            #   P(a)  = (cx + rx*cos a,  cy - ry*sin a)
+            #   P'(a) = (-rx*sin a,      -ry*cos a)
+            p0x = cx + rx * math.cos(a0)
+            p0y = cy - ry * math.sin(a0)
+            p1x = cx + rx * math.cos(a1)
+            p1y = cy - ry * math.sin(a1)
+
+            d0x = -rx * math.sin(a0)
+            d0y = -ry * math.cos(a0)
+            d1x = -rx * math.sin(a1)
+            d1y = -ry * math.cos(a1)
+
+            c1x = p0x + alpha * d0x
+            c1y = p0y + alpha * d0y
+            c2x = p1x - alpha * d1x
+            c2y = p1y - alpha * d1y
+
+            self.cubicTo(c1x, c1y, c2x, c2y, p1x, p1y)
 
     def addPolygon(self, poly):
         first = True
