@@ -10,6 +10,15 @@
  * and adapts its message protocol to the `Transport` interface — nothing
  * downstream (store, client, components) changes.
  *
+ * ONE WORKER PER PAGE. The worker is a module-level, ref-counted SINGLETON:
+ * every `<veusz-figure>` on the page shares it, so Pyodide + the veusz wheel
+ * boot exactly once regardless of how many figures there are (the old model
+ * spawned one worker — one whole Pyodide — per figure, i.e. N× memory). Each
+ * figure gets a unique `bridgeId`; its `workerTransport` tags traffic with that
+ * id so the shared worker routes calls/notifications to the right Bridge.
+ * `VeuszRuntime.dispose()` drops that figure's bridge and decrements the
+ * refcount; the worker is terminated only when the LAST figure goes away.
+ *
  * The heavy runtime (Pyodide core, numpy, the veusz wheel, fonttools) loads
  * from a CDN by default so an author's page hosts only their `.vsz` + a small
  * loader; pass explicit URLs to vendor it for a self-contained bundle.
@@ -54,44 +63,93 @@ export interface VeuszRuntime {
 }
 
 /**
- * Spawn the Pyodide worker and complete its init handshake.
+ * Page-level worker singleton + refcount.
+ *
+ * `_worker` is created lazily on the first figure and reused by every later
+ * one; `_refcount` tracks how many live figures (bridges) hold it. The worker
+ * is terminated and the singleton cleared when the count returns to zero, so a
+ * page that adds then removes all its figures leaves no orphan thread, and a
+ * later figure spins a fresh worker.
+ *
+ * MANUAL VERIFICATION (can't run real Pyodide in jsdom):
+ *  1. Put TWO `<veusz-figure>` on a page (both eager / both clicked). In
+ *     DevTools → Sources → Threads (or `performance.memory`), confirm exactly
+ *     ONE pyodideWorker thread exists — not two. Both figures render.
+ *  2. Remove one figure from the DOM (e.g. `el.remove()`). The other keeps
+ *     rendering/editing; the worker thread is STILL present (refcount 2 → 1).
+ *  3. Remove the LAST figure. The worker thread disappears (refcount 1 → 0 →
+ *     `terminate()`), freeing the Pyodide heap.
+ *  4. Add a figure again afterwards → a fresh worker is spawned and boots
+ *     Pyodide once more.
+ *  5. (indexURL cache) Set `pyodide-index` to the same dist a co-hosted
+ *     notebook's Pyodide uses → the Pyodide core download is served from the
+ *     browser cache (one network fetch shared), not fetched twice.
+ */
+let _worker: Worker | null = null;
+let _refcount = 0;
+let _bridgeSeq = 0;
+
+/** Get (creating on first use) the shared Pyodide worker.
  *
  * Vite's module-worker form `new Worker(new URL('./pyodideWorker.ts',
  * import.meta.url), { type: 'module' })` makes Vite emit the worker as a
- * separate chunk and rewrite the URL — both in dev and in the library build.
- * We pass all Pyodide config in the `init` message (the worker can't read the
- * DOM) and resolve once it posts `ready`, or reject with the real boot error
- * on `init-error` (so the embed UI shows a meaningful message).
+ * separate chunk and rewrite the URL — both in dev and in the library build. */
+function getSharedWorker(): Worker {
+  if (!_worker) {
+    _worker = new Worker(new URL('./pyodideWorker.ts', import.meta.url), {
+      type: 'module',
+    });
+  }
+  return _worker;
+}
+
+/** Drop a reference to the shared worker; terminate it at zero. */
+function releaseSharedWorker(): void {
+  _refcount = Math.max(0, _refcount - 1);
+  if (_refcount === 0 && _worker) {
+    _worker.terminate();
+    _worker = null;
+  }
+}
+
+/**
+ * Add this figure's Bridge to the shared worker and complete its init
+ * handshake. We post `{bridgeId, type:'init', config}` and resolve once the
+ * worker replies `{bridgeId, type:'ready'}`, or reject with the real boot error
+ * on `{bridgeId, type:'init-error'}` (so the embed UI shows a meaningful
+ * message). Only messages tagged with THIS bridgeId settle the handshake, so
+ * concurrent figures booting at once don't cross wires. A worker-level `error`
+ * (module failed to load/parse) carries no bridgeId, so it fails the first
+ * pending handshake.
  */
-function spawnWorker(config: WorkerInitConfig): Promise<Worker> {
-  const worker = new Worker(new URL('./pyodideWorker.ts', import.meta.url), {
-    type: 'module',
-  });
-  return new Promise<Worker>((resolve, reject) => {
+function initBridge(
+  worker: Worker,
+  bridgeId: string,
+  config: WorkerInitConfig,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+    };
     const onMessage = (e: MessageEvent) => {
-      const msg = e.data as { type?: string; message?: string };
+      const msg = e.data as { bridgeId?: string; type?: string; message?: string };
+      if (msg.bridgeId !== bridgeId) return;
       if (msg.type === 'ready') {
-        worker.removeEventListener('message', onMessage);
-        worker.removeEventListener('error', onError);
-        resolve(worker);
+        cleanup();
+        resolve();
       } else if (msg.type === 'init-error') {
-        worker.removeEventListener('message', onMessage);
-        worker.removeEventListener('error', onError);
-        worker.terminate();
+        cleanup();
         reject(new Error(msg.message || 'Pyodide worker failed to start'));
       }
     };
-    // A worker-level `error` (e.g. the module failed to load / parse) never
-    // reaches the init promise via a message, so surface it here too.
     const onError = (e: ErrorEvent) => {
-      worker.removeEventListener('message', onMessage);
-      worker.removeEventListener('error', onError);
-      worker.terminate();
+      cleanup();
       reject(new Error(e.message || 'Pyodide worker error'));
     };
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
-    worker.postMessage({ type: 'init', config });
+    worker.postMessage({ bridgeId, type: 'init', config });
   });
 }
 
@@ -104,17 +162,32 @@ export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<Veusz
       opts.wasmBase;
   }
 
-  // Boot Pyodide + install the wheel inside the worker. We can't report the
-  // worker's fine-grained stages without an extra channel, so show coarse
-  // progress around the one long await.
-  progress('Loading runtime…');
-  const worker = await spawnWorker({
-    pyodideIndexUrl: opts.pyodideIndexUrl ?? DEFAULT_PYODIDE_INDEX,
-    veuszWheelUrl: opts.veuszWheelUrl,
-    extraWheels: opts.extraWheels,
-  });
+  // Grab the shared worker and reserve a slot up front. We bump the refcount
+  // BEFORE the async init so that a teardown racing an in-flight boot can't
+  // terminate the worker out from under us; if init throws we release it.
+  const worker = getSharedWorker();
+  _refcount += 1;
+  const bridgeId = `fig_${_bridgeSeq++}`;
+  let disposed = false;
 
-  const transport: WorkerTransport = workerTransport(worker);
+  // Boot Pyodide (first figure) + add this figure's Bridge inside the worker.
+  // We can't report the worker's fine-grained stages without an extra channel,
+  // so show coarse progress around the one long await.
+  progress('Loading runtime…');
+  try {
+    await initBridge(worker, bridgeId, {
+      pyodideIndexUrl: opts.pyodideIndexUrl ?? DEFAULT_PYODIDE_INDEX,
+      veuszWheelUrl: opts.veuszWheelUrl,
+      extraWheels: opts.extraWheels,
+    });
+  } catch (e) {
+    releaseSharedWorker();
+    throw e;
+  }
+
+  // Per-figure transport, tagged with this bridgeId so it only sees its own
+  // replies/notifications over the shared worker.
+  const transport: WorkerTransport = workerTransport(worker, bridgeId);
 
   const loadVsz = (text: string, dataFiles: LocalDataFile[] = []) =>
     // The .vsz text + sidecar bytes are written into the worker's in-memory FS
@@ -129,6 +202,19 @@ export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<Veusz
   return {
     transport,
     loadVsz,
-    dispose: () => worker.terminate(),
+    dispose: () => {
+      // Idempotent: a double dispose must not double-decrement the refcount.
+      if (disposed) return;
+      disposed = true;
+      // Tell the worker to drop this figure's Bridge, detach our transport,
+      // then release our hold on the shared worker (terminating it at zero).
+      try {
+        worker.postMessage({ bridgeId, type: 'dispose' });
+      } catch {
+        // Worker may already be terminated by a concurrent last-release; ignore.
+      }
+      transport.dispose();
+      releaseSharedWorker();
+    },
   };
 }

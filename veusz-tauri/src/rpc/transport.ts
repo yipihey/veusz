@@ -160,6 +160,10 @@ export function pyodideTransport(bridge: PyodideBridge): Transport {
 export interface WorkerLike {
   postMessage(message: unknown): void;
   addEventListener(type: 'message', listener: (e: MessageEvent) => void): void;
+  /** Detach this transport's listener on dispose, so a dropped bridge stops
+   *  reacting to the (shared) worker's messages. Optional: the real `Worker`
+   *  has it; a fake omitting it just keeps the listener attached. */
+  removeEventListener?(type: 'message', listener: (e: MessageEvent) => void): void;
   terminate?(): void;
 }
 
@@ -167,35 +171,56 @@ export interface WorkerLike {
  * Transport backed by the Veusz runtime running inside a Web Worker (see
  * `embed/pyodideWorker.ts`). This is the off-main-thread successor to
  * {@link pyodideTransport}: instead of calling `bridge.dispatch_json`
- * synchronously on the UI thread, it posts `{id, type:'call', method, params}`
- * to the worker and resolves the matching Promise when `{id, result|error}`
- * comes back. Push notifications arrive as `{type:'notify', payload}` (a JSON
- * string, same as the bridge's notify callback) and fan out to per-method
- * subscribers. Same `Transport` surface, so nothing downstream changes.
+ * synchronously on the UI thread, it posts `{bridgeId, id, type:'call', method,
+ * params}` to the worker and resolves the matching Promise when `{bridgeId, id,
+ * result|error}` comes back. Push notifications arrive as `{bridgeId,
+ * type:'notify', payload}` (a JSON string, same as the bridge's notify callback)
+ * and fan out to per-method subscribers. Same `Transport` surface, so nothing
+ * downstream changes.
+ *
+ * ONE WORKER, MANY BRIDGES. The worker is a page-level singleton shared by every
+ * figure (see `embed/runtime.ts`), so each figure's transport is created with a
+ * distinct `bridgeId`. The transport TAGS every outbound message with its
+ * `bridgeId` and IGNORES any inbound message tagged with a different one, so two
+ * figures multiplexed over one worker never see each other's replies or
+ * notifications. When `bridgeId` is omitted (e.g. the unit test's single
+ * fake worker), messages are neither tagged nor filtered — byte-for-byte the
+ * old single-bridge behaviour.
  *
  * The returned object also exposes `request(type, extra)` — a generic
  * id-correlated round-trip the runtime uses for the `loadVsz` message, so call
- * and loadVsz share one pending-id map and one error contract.
+ * and loadVsz share one pending-id map and one error contract — and `dispose()`,
+ * which detaches this transport's listener from the shared worker.
  */
 export interface WorkerTransport extends Transport {
   /** Generic id-correlated round-trip to the worker (used for `loadVsz`).
    *  Resolves with the worker's `result` or rejects with its `error`. */
   request(type: string, extra: Record<string, unknown>): Promise<unknown>;
+  /** Detach this transport from the shared worker (stop reacting to its
+   *  messages) and reject any still-pending calls. Does NOT terminate the
+   *  worker — other figures may still be using it. */
+  dispose(): void;
 }
 
-export function workerTransport(worker: WorkerLike): WorkerTransport {
+export function workerTransport(worker: WorkerLike, bridgeId?: string): WorkerTransport {
   const listeners = new Map<string, Set<NotificationListener>>();
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
   let nextId = 1;
 
-  worker.addEventListener('message', (e: MessageEvent) => {
+  const onMessage = (e: MessageEvent) => {
     const msg = e.data as {
+      bridgeId?: string;
       id?: number;
       result?: unknown;
       error?: { code?: number; message?: string; data?: unknown };
       type?: string;
       payload?: string;
     };
+    // Multiplexing filter: when this transport owns a bridgeId, only handle
+    // messages tagged with it (the shared worker fans every figure's traffic
+    // through one MessagePort). With no bridgeId we accept everything (legacy
+    // single-bridge mode used by the unit test fake).
+    if (bridgeId !== undefined && msg.bridgeId !== bridgeId) return;
     // Push notification (no id): fan out to per-method subscribers. `payload`
     // is the same JSON string the in-process bridge produced.
     if (msg.type === 'notify') {
@@ -224,13 +249,18 @@ export function workerTransport(worker: WorkerLike): WorkerTransport {
         p.resolve(msg.result);
       }
     }
-  });
+  };
+  worker.addEventListener('message', onMessage);
 
   const request = (type: string, extra: Record<string, unknown>): Promise<unknown> => {
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ id, type, ...extra });
+      // Tag with bridgeId when multiplexing; omit it in legacy single-bridge
+      // mode so the on-the-wire shape is unchanged for that case.
+      worker.postMessage(
+        bridgeId !== undefined ? { bridgeId, id, type, ...extra } : { id, type, ...extra },
+      );
     });
   };
 
@@ -245,6 +275,13 @@ export function workerTransport(worker: WorkerLike): WorkerTransport {
       }
       ls.add(fn);
       return () => { ls!.delete(fn); };
+    },
+    dispose: () => {
+      worker.removeEventListener?.('message', onMessage);
+      // Reject anything still in flight so callers don't hang forever.
+      for (const p of pending.values()) p.reject(new Error('transport disposed'));
+      pending.clear();
+      listeners.clear();
     },
   };
 }
