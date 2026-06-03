@@ -35,6 +35,7 @@ on a real change (new view, edited data).
 
 import numpy as N
 
+from . import wire
 from .commonfn import _
 from .oned import Dataset1DBase
 from .twod import Dataset2DBase, Dataset2D
@@ -62,6 +63,53 @@ class InProcessProvider:
 
     def histogram2d(self, **kwargs):
         return self.service.histogram2d(**kwargs)
+
+
+class RemoteProvider:
+    """A data provider that reaches a :class:`DataService` across a boundary.
+
+    ``transport`` is the only thing that differs per boundary: a callable
+    ``transport(request_dict) -> response_dict``. The requests/responses are the
+    JSON-safe wire forms (:mod:`veusz.datasets.wire`) — base64 float32 for
+    grids/arrays, plain JSON for the rest — so only reduced results cross; the
+    raw data never leaves the service's process. Transports:
+
+      * in-process (tests / standalone): ``local_transport(service)`` runs
+        ``wire.dispatch`` directly;
+      * server: a synchronous RPC to a remote ``veuszd`` holding the data;
+      * notebook kernel: the response is delivered asynchronously and read from
+        a cache primed by the runtime (a thin async wrapper over this).
+
+    The provider surface matches :class:`InProcessProvider`, so the datasets
+    above don't care which side of a boundary the data lives on.
+    """
+
+    def __init__(self, transport):
+        self._transport = transport
+
+    def _rpc(self, _method, /, **params):
+        # _method positional-only: histogram2d's params include one named
+        # 'method' (the binning mode), so it must not collide with the RPC name.
+        return wire.decode_response(
+            _method, self._transport(wire.encode_request(_method, **params)))
+
+    def describe(self, ref):
+        return self._rpc('describe', ref=ref)
+
+    def reduce(self, ref, op):
+        return self._rpc('reduce', ref=ref, op=op)
+
+    def fetch(self, ref, **kwargs):
+        return self._rpc('fetch', ref=ref, **kwargs)
+
+    def histogram2d(self, **kwargs):
+        return self._rpc('histogram2d', **kwargs)
+
+
+def local_transport(service):
+    """A synchronous in-process transport over a DataService — for tests, the
+    standalone embed, and as the reference the comm/server transports mirror."""
+    return lambda request: wire.dispatch(service, request)
 
 
 class Dataset1DKernel(Dataset1DBase):

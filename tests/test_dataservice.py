@@ -153,6 +153,44 @@ def test_fetch_decimation_caps_points():
     assert out2.min() >= 10 and out2.max() <= 19 and out2.size == 10
 
 
+def test_remote_provider_full_wire_path_matches_local():
+    # The out-of-process proof: a kernel histogram over a RemoteProvider whose
+    # transport JSON-round-trips through the wire codec equals the local density
+    # grid. Only the encoded grid crosses the (simulated) boundary, never raw.
+    from veusz import document
+    from veusz.document.commandinterface import CommandInterface
+    from veusz.datasets.kernel import (
+        RemoteProvider, Dataset2DKernelHisto, Dataset1DKernel, local_transport)
+    from veusz.datasets import wire
+
+    rng = N.random.default_rng(7)
+    x, y = rng.normal(size=60000), 0.5 * rng.normal(size=60000)
+
+    ci = CommandInterface(document.Document())
+    ci.SetData('x', x)
+    ci.SetData('y', y)
+    ci.CreateHistogram2D('x', 'y', 'local', binparamsx=BPX, binparamsy=BPY,
+                         method='counts')
+    local = ci.document.data['local'].data
+
+    svc = _service(x, y)
+    boundary = lambda req: json.loads(json.dumps(
+        wire.dispatch(svc, json.loads(json.dumps(req)))))
+
+    kds = Dataset2DKernelHisto(RemoteProvider(boundary), 'x', 'y',
+                               binparamsx=BPX, binparamsy=BPY, method='counts')
+    assert N.allclose(N.nan_to_num(kds.data), N.nan_to_num(local), atol=1e-3)
+
+    # 1D fetch over the same boundary
+    d1 = Dataset1DKernel(RemoteProvider(boundary), 'x', max_points=1000)
+    assert len(d1.data) <= 1000
+
+    # local_transport convenience matches too
+    k2 = Dataset2DKernelHisto(RemoteProvider(local_transport(svc)), 'x', 'y',
+                              binparamsx=BPX, binparamsy=BPY)
+    assert N.allclose(N.nan_to_num(k2.data), N.nan_to_num(local), atol=1e-3)
+
+
 def test_kernel_1d_fetch_decimate_and_cache():
     from veusz.datasets.kernel import Dataset1DKernel, InProcessProvider
     s = _service(N.arange(1_000_000.0), N.arange(1_000_000.0))
