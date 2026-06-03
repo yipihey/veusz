@@ -27,6 +27,8 @@ from .date import *
 from .filtered import *
 from .histo import *
 from .histo2d import *
+from .dataservice import *
+from .kernel import *
 from .expression import *
 from .plugin import *
 

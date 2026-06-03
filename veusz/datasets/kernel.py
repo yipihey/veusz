@@ -1,0 +1,155 @@
+#    Copyright (C) 2026 Veusz contributors
+#
+#    This file is part of Veusz.
+#
+#    Veusz is free software: you can redistribute it and/or modify it
+#    under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    Veusz is distributed in the hope that it will be useful, but
+#    WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+#    General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with Veusz. If not, see <https://www.gnu.org/licenses/>.
+#
+##############################################################################
+
+"""Plotting-side handle to a :class:`~veusz.datasets.dataservice.DataService`,
+and Veusz datasets backed by it.
+
+The plotting thread (a separate Pyodide from the notebook kernel) holds a
+*provider* — its window onto data resident elsewhere. In-process the provider
+wraps a DataService directly (the call is a plain method call); over a Jupyter
+comm a future provider serialises the same calls and ships binary results.
+Either way the datasets here are **reduction-aware**: a density plot asks the
+provider to bin, and only the small grid crosses back — the raw array never
+leaves the kernel.
+
+The provider's method surface mirrors DataService's reductions, and the
+datasets cache results against the source ``version`` so a re-bin happens only
+on a real change (new view, edited data).
+"""
+
+import numpy as N
+
+from .commonfn import _
+from .twod import Dataset2DBase, Dataset2D
+
+
+class InProcessProvider:
+    """A data provider backed by an in-process :class:`DataService`.
+
+    Used for tests and for standalone embeds (no kernel) — the reduction runs
+    in the same interpreter, so there's no copy and no serialisation. A
+    comm-backed provider implements the same surface over a worker boundary.
+    """
+
+    def __init__(self, service):
+        self.service = service
+
+    def describe(self, ref):
+        return self.service.describe(ref)
+
+    def reduce(self, ref, op):
+        return self.service.reduce(ref, op)
+
+    def fetch(self, ref, **kwargs):
+        return self.service.fetch(ref, **kwargs)
+
+    def histogram2d(self, **kwargs):
+        return self.service.histogram2d(**kwargs)
+
+
+class Dataset2DKernelHisto(Dataset2DBase):
+    """A 2D-histogram dataset whose grid is computed by a provider over data
+    resident elsewhere (the notebook kernel).
+
+    The binning is pushed to the provider; only the grid crosses back. Results
+    are cached against the bin parameters + reduction method, so re-binning
+    happens only when the view changes (call :meth:`setBins`) or the data
+    changes (call :meth:`invalidate`, e.g. from a kernel data-changed signal).
+    The grid is wrapped in a plain :class:`Dataset2D` so it inherits the
+    regular-grid collapse and renders through the image widget on every backend
+    — identical to a local density plot, just fed from elsewhere.
+    """
+
+    dstype = _('2D histogram (kernel)')
+    editable = False
+
+    def __init__(self, provider, xref, yref, weightref=None,
+                 binparamsx=None, binparamsy=None,
+                 binmanualx=None, binmanualy=None, method='counts'):
+        Dataset2DBase.__init__(self)
+        self.provider = provider
+        self.xref = xref
+        self.yref = yref
+        self.weightref = weightref
+        self.binparamsx = binparamsx
+        self.binparamsy = binparamsy
+        self.binmanualx = binmanualx
+        self.binmanualy = binmanualy
+        self.method = method
+        self.linked = None
+        self._frozen = None
+        self._key = None
+
+    def setBins(self, binparamsx=None, binparamsy=None,
+                binmanualx=None, binmanualy=None):
+        """Update the bin parameters (e.g. on zoom) and drop the cache so the
+        next access re-bins at the provider for the new view."""
+        self.binparamsx = binparamsx
+        self.binparamsy = binparamsy
+        self.binmanualx = binmanualx
+        self.binmanualy = binmanualy
+        self._frozen = None
+
+    def invalidate(self):
+        """Drop the cached grid — call when the source data changed."""
+        self._frozen = None
+
+    def _binkey(self):
+        tup = lambda v: tuple(v) if v is not None else None
+        return (self.xref, self.yref, self.weightref, self.method,
+                tup(self.binparamsx), tup(self.binparamsy),
+                tup(self.binmanualx), tup(self.binmanualy))
+
+    def _get(self):
+        key = self._binkey()
+        if self._frozen is None or key != self._key:
+            grid, xe, ye, _version = self.provider.histogram2d(
+                xref=self.xref, yref=self.yref, weightref=self.weightref,
+                binparamsx=self.binparamsx, binmanualx=self.binmanualx,
+                binparamsy=self.binparamsy, binmanualy=self.binmanualy,
+                method=self.method)
+            self._frozen = Dataset2D(N.array(grid), xedge=xe, yedge=ye)
+            self._key = key
+        return self._frozen
+
+    # proxy the coordinate attributes off the frozen Dataset2D
+    data = property(lambda self: self._get().data)
+    xrange = property(lambda self: self._get().xrange)
+    yrange = property(lambda self: self._get().yrange)
+    xedge = property(lambda self: self._get().xedge)
+    yedge = property(lambda self: self._get().yedge)
+    xcent = property(lambda self: self._get().xcent)
+    ycent = property(lambda self: self._get().ycent)
+
+    def canUnlink(self):
+        return False
+
+    def linkedInformation(self):
+        wt = (_(' weighted by %s') % self.weightref) if self.weightref else ''
+        return _("2D histogram of kernel data %s vs %s (%s%s)") % (
+            self.xref, self.yref, self.method, wt)
+
+    def saveDataDumpToText(self, fileobj, name):
+        pass
+
+    def saveDataDumpToHDF5(self, group, name):
+        pass
+
+    def returnCopy(self):
+        return self._get().returnCopy()

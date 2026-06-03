@@ -93,6 +93,71 @@ def binEdges(binmanual, binparams, data):
         return N.exp(N.arange(numbins + 1) * delta + lmin)
 
 
+def jointFiniteMask(x, y, weight=None):
+    """Trim x, y (and optional weight) to a shared finite mask.
+
+    Returns ``(x, y, weight_or_None)`` as float64 arrays, or ``None`` when there
+    is no finite data. Factored out so the local density dataset and the kernel
+    data service (which bins resident arrays in another Pyodide) apply identical
+    masking."""
+    if x is None or y is None:
+        return None
+    x = N.asarray(x, dtype=N.float64).ravel()
+    y = N.asarray(y, dtype=N.float64).ravel()
+    n = min(len(x), len(y))
+    w = None if weight is None else N.asarray(weight, dtype=N.float64).ravel()
+    if w is not None:
+        n = min(n, len(w))
+    if n == 0:
+        return None
+    x, y = x[:n], y[:n]
+    finite = N.isfinite(x) & N.isfinite(y)
+    if w is not None:
+        w = w[:n]
+        finite &= N.isfinite(w)
+        w = w[finite]
+    x, y = x[finite], y[finite]
+    if len(x) == 0:
+        return None
+    return x, y, w
+
+
+def histogram2dGrid(x, y, weight, xedges, yedges, method):
+    """Bin masked ``(x, y[, weight])`` into a 2D grid given bin edges.
+
+    Returns the grid with shape ``(ny, nx)`` (row = y, column = x — what
+    Dataset2D / the image widget expect). Empty bins are NaN (rendered
+    transparent, not colormap-zero) for count/sum/density. This is the numeric
+    core shared by :class:`DatasetHisto2DGenerator` (local document data) and
+    the kernel :class:`~veusz.datasets.dataservice.DataService` (data resident
+    in the notebook kernel) — so a phase diagram bins identically whether the
+    data lives here or is reduced where it lives."""
+    if x is None or len(x) == 0 or len(xedges) < 2 or len(yedges) < 2:
+        return N.zeros((0, 0)), xedges, yedges
+
+    counts, _xe, _ye = N.histogram2d(x, y, bins=[xedges, yedges])
+    counts = counts.astype(N.float64)
+
+    if method == 'density':
+        grid, _xe, _ye = N.histogram2d(x, y, bins=[xedges, yedges], density=True)
+    elif method in ('sum', 'mean') and weight is not None:
+        wsum, _xe, _ye = N.histogram2d(x, y, bins=[xedges, yedges], weights=weight)
+        if method == 'sum':
+            grid = wsum
+        else:
+            with N.errstate(invalid='ignore', divide='ignore'):
+                grid = N.where(counts > 0, wsum / counts, N.nan)
+    else:
+        # counts, or sum/mean with no weight -> counts
+        grid = counts
+
+    # blank empty bins for count/sum/density so they don't read as a real 0
+    if method in ('counts', 'sum', 'density'):
+        grid = N.where(counts > 0, grid, N.nan)
+
+    return grid.T, xedges, yedges
+
+
 class DatasetHisto2DGenerator:
     """Computes (and caches) a 2D histogram of two expressions."""
 
@@ -140,27 +205,10 @@ class DatasetHisto2DGenerator:
         document changeset so repeated renders don't re-evaluate.
         """
         if self.document.changeset != self.changeset:
-            x = self._evalFinite(self.exprx)
-            y = self._evalFinite(self.expry)
-            w = self._evalFinite(self.exprweight)
-
-            result = None
-            if x is not None and y is not None:
-                n = min(len(x), len(y))
-                if w is not None:
-                    n = min(n, len(w))
-                if n > 0:
-                    x, y = x[:n], y[:n]
-                    finite = N.isfinite(x) & N.isfinite(y)
-                    if w is not None:
-                        w = w[:n]
-                        finite &= N.isfinite(w)
-                        w = w[finite]
-                    x, y = x[finite], y[finite]
-                    if len(x) > 0:
-                        result = (x, y, w)
-
-            self._cacheddata = result
+            self._cacheddata = jointFiniteMask(
+                self._evalFinite(self.exprx),
+                self._evalFinite(self.expry),
+                self._evalFinite(self.exprweight))
             self.changeset = self.document.changeset
         return self._cacheddata
 
@@ -182,39 +230,10 @@ class DatasetHisto2DGenerator:
         """
         data = self.getData()
         xe, ye = self.getEdges()
-        if data is None or len(xe) < 2 or len(ye) < 2:
+        if data is None:
             return N.zeros((0, 0)), xe, ye
-
         x, y, w = data
-
-        # histogram2d returns H with shape (nx, ny); transpose to (ny, nx).
-        counts, _xe, _ye = N.histogram2d(x, y, bins=[xe, ye])
-        counts = counts.astype(N.float64)
-
-        if self.method == 'counts':
-            grid = counts
-        elif self.method == 'density':
-            grid, _xe, _ye = N.histogram2d(x, y, bins=[xe, ye], density=True)
-        elif self.method in ('sum', 'mean'):
-            if w is None:
-                # no weight given: sum/mean of "nothing" — fall back to counts
-                grid = counts
-            else:
-                wsum, _xe, _ye = N.histogram2d(x, y, bins=[xe, ye], weights=w)
-                if self.method == 'sum':
-                    grid = wsum
-                else:
-                    # mean = sum(weight) / count, NaN where empty
-                    with N.errstate(invalid='ignore', divide='ignore'):
-                        grid = N.where(counts > 0, wsum / counts, N.nan)
-        else:
-            grid = counts
-
-        # blank empty bins for count/sum/density so they don't read as a real 0
-        if self.method in ('counts', 'sum', 'density'):
-            grid = N.where(counts > 0, grid, N.nan)
-
-        return grid.T, xe, ye
+        return histogram2dGrid(x, y, w, xe, ye, self.method)
 
     def generateDataset(self):
         self.dataset = Dataset2DHisto(self, self.document)
