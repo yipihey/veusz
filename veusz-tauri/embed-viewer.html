@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veusz figure</title>
+<!--
+  Per-figure viewer. Deployed next to veusz-embed.js (as embed/v<VERSION>/
+  figure.html), it turns a query string into a full-bleed interactive figure, so
+  any HTML host — notably a MyST `{iframe}`, which sanitises inline custom
+  elements — can embed a Veusz figure by iframing:
+
+      embed/v<VERSION>/figure.html?src=<URL-to-.vsz>&width=720&height=520
+
+  Params: src (required — a .vsz URL the viewer can fetch, same-origin or
+  CORS-enabled), width, height, eager, poster.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; }
+  veusz-figure { display: block; width: 100%; height: 100%; }
+  #msg { font: 14px/1.5 system-ui, sans-serif; color: #666; padding: 1rem; }
+</style>
+<script type="module" src="./veusz-embed.js"></script>
+<body>
+  <p id="msg">Loading figure…</p>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const src = q.get('src');
+    const msg = document.getElementById('msg');
+    if (!src) {
+      msg.textContent =
+        'No figure: pass ?src=<URL to a .vsz>, ' +
+        'e.g. figure.html?src=phase.vsz&width=720&height=520';
+    } else {
+      const fig = document.createElement('veusz-figure');
+      fig.setAttribute('src', src);
+      for (const a of ['width', 'height', 'eager', 'poster']) {
+        const v = q.get(a);
+        if (v != null) fig.setAttribute(a, v);
+      }
+      msg.remove();
+      document.body.appendChild(fig);
+    }
+  </script>
+</body>

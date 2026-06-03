@@ -26,23 +26,20 @@ print(f"log T   in [{logT.min():.2f}, {logT.max():.2f}]")
 
 ## Plot, with Veusz
 
-The figure below is a **real, live Veusz figure**, rendered interactively in the
-browser via WebGPU — pinch to zoom, drag to pan, tap to open the editor; it
-exports to a publication-quality vector PDF. It's embedded as an `{iframe}`,
-the mechanism MyST renders safely (MyST sanitizes inline custom elements). It
-loads from the deployed embed runtime, so it works here, on a phone, with
-nothing installed.
+The figure below is a **real Veusz `density` widget** — a 2D histogram (phase
+diagram) of the two columns above — rendered interactively in the browser via
+WebGPU. Pinch to zoom, drag to pan, tap to open the editor; it exports to a
+publication-quality vector PDF. It's written with the `myst-veusz` `veusz`
+directive, which embeds it as an `{iframe}` to the deployed per-figure viewer
+(`figure.html?src=…`) — the mechanism MyST renders safely (it sanitizes inline
+custom elements). It works here, on a phone, with nothing installed.
 
-:::{iframe} https://yipihey.github.io/veusz/example/
-:width: 100%
-:label: veusz-figure
-A live, interactive Veusz figure served from the in-browser embed runtime.
+:::{veusz} https://yipihey.github.io/veusz/notebook/phase.vsz
+:width: 720
+:height: 520
 :::
 
-> **Where this is going:** the `myst-veusz` directive will point this iframe at a
-> per-figure viewer (`figure.html?src=<your>.vsz`) so you write
-> `:::{veusz} figures/phase.vsz:::` and get the density phase diagram. And the
-> repo's `DataService` / `RemoteProvider` layer lets the figure read arrays from
-> *this notebook's* kernel — binning where the data lives, shipping back only the
-> grid — so the figure and the cell share one dataset and one Pyodide, no copy
-> across the thread.
+> **Where this is going:** the `DataService` / `RemoteProvider` layer in the repo
+> lets the figure read arrays straight from *this notebook's* kernel — binning
+> where the data lives, shipping back only the grid — so the figure and the cell
+> above share one dataset and one Pyodide, with no copy across the thread.

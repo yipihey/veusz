@@ -43,47 +43,37 @@
 // poster image (no web component at all), or `:interactive:` (default) for both.
 
 const DEFAULTS = {
-  // Override per-project in myst.yml options or via directive options below.
-  embedScript: undefined, // e.g. 'https://yipihey.github.io/veusz/embed/v1/veusz-embed.js'
+  // The deployed embed runtime that hosts figure.html (the per-figure viewer)
+  // and veusz-embed.js. Override per figure with the `:cdn:` option, or fork
+  // this constant for your own deployment.
+  cdn: 'https://yipihey.github.io/veusz/embed/v4.5.0',
 };
 
-/** Escape a string for safe inclusion inside an HTML double-quoted attribute. */
-function attr(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 /**
- * Build the raw HTML for the `<veusz-figure>` web component.
+ * Build the viewer URL the iframe points at: the deployed `figure.html` with the
+ * figure's `.vsz` (and size/poster) as query params. Embedding via an iframe to
+ * a viewer — rather than an inline `<veusz-figure>` element — is deliberate:
+ * MyST sanitises inline custom elements out of the HTML, but renders `{iframe}`
+ * natively. `src` must be a URL the viewer can fetch (same-origin or CORS).
  *
  * @param {object} a
- * @param {string} a.src
+ * @param {string} a.src   URL of the .vsz document
+ * @param {string} a.cdn   embed runtime base (hosts figure.html + veusz-embed.js)
  * @param {string|number} [a.width]
  * @param {string|number} [a.height]
  * @param {string} [a.poster]
  * @param {boolean} [a.eager]
- * @param {string} [a.alt]
  * @returns {string}
  */
-export function buildVeuszFigureHtml({ src, width, height, poster, eager, alt }) {
-  const parts = [`src="${attr(src)}"`];
-  if (width != null && width !== '') parts.push(`width="${attr(width)}"`);
-  if (height != null && height !== '') parts.push(`height="${attr(height)}"`);
-  if (poster) parts.push(`poster="${attr(poster)}"`);
-  if (eager) parts.push(`eager`);
-
-  // Poster placed inside the component as graceful fallback: it shows before the
-  // script upgrades the custom element, and gives non-JS readers a static image.
-  const fallback = poster
-    ? `<img src="${attr(poster)}"${alt ? ` alt="${attr(alt)}"` : ''}${
-        width ? ` width="${attr(width)}"` : ''
-      }${height ? ` height="${attr(height)}"` : ''} />`
-    : '';
-
-  return `<veusz-figure ${parts.join(' ')}>${fallback}</veusz-figure>`;
+export function buildViewerUrl({ src, cdn, width, height, poster, eager }) {
+  const base = String(cdn).replace(/\/+$/, '');
+  const q = new URLSearchParams();
+  q.set('src', src);
+  if (width != null && width !== '') q.set('width', String(width));
+  if (height != null && height !== '') q.set('height', String(height));
+  if (poster) q.set('poster', poster);
+  if (eager) q.set('eager', '1');
+  return `${base}/figure.html?${q.toString()}`;
 }
 
 /**
@@ -112,59 +102,62 @@ const veuszDirective = {
   options: {
     width: { type: String, doc: 'Figure width in pixels, e.g. `700`.' },
     height: { type: String, doc: 'Figure height in pixels, e.g. `500`.' },
+    cdn: {
+      type: String,
+      doc: 'Embed runtime base URL hosting figure.html + veusz-embed.js. Defaults to the pinned deploy.',
+    },
     poster: {
       type: String,
-      doc: 'Path or URL to a static poster image (PNG/SVG). Required for PDF/Typst/LaTeX export and used as the pre-script fallback on the web.',
+      doc: 'Path or URL to a static poster image (PNG/SVG). Used as the boot fallback in the viewer and as the static image on PDF/Typst/LaTeX export.',
     },
     alt: { type: String, doc: 'Alternative text for the static poster image.' },
     eager: {
       type: Boolean,
-      doc: 'If set, render the figure eagerly instead of lazily when scrolled into view.',
+      doc: 'If set, boot the figure eagerly instead of deferring until interaction.',
     },
     static: {
       type: Boolean,
-      doc: 'If set, emit ONLY the static poster image (no interactive web component).',
-    },
-    interactive: {
-      type: Boolean,
-      doc: 'Force the interactive web component (default behaviour).',
+      doc: 'If set, emit ONLY the static poster image (no interactive iframe) — for print-only pages.',
     },
   },
   run(data, vfile) {
     const src = data.arg;
     const opts = data.options ?? {};
     const { width, height, poster, alt, eager } = opts;
+    const cdn = opts.cdn || DEFAULTS.cdn;
     const staticOnly = !!opts.static;
 
     if (!src) {
-      // vfile is provided for error reporting in current mystmd; guard for tests.
       if (vfile && typeof vfile.message === 'function') {
         vfile.message('veusz: a .vsz source argument is required');
       }
       return [];
     }
 
+    // Static-only (print pages): just the poster image.
+    if (staticOnly) {
+      if (!poster && vfile && typeof vfile.message === 'function') {
+        vfile.message('veusz: :static: with no :poster: — nothing to render');
+      }
+      return [buildPosterImageNode({ poster, src, width, height, alt })];
+    }
+
     if (!poster && vfile && typeof vfile.message === 'function') {
       vfile.message(
-        'veusz: no :poster: given — PDF/Typst/LaTeX export will have no static image for this figure',
+        'veusz: no :poster: given — PDF/Typst/LaTeX export of this figure will fall back to a link, not an image',
       );
     }
 
-    const imageNode = buildPosterImageNode({ poster, src, width, height, alt });
-
-    if (staticOnly) {
-      return [imageNode];
-    }
-
-    const htmlNode = {
-      type: 'html',
-      value: buildVeuszFigureHtml({ src, width, height, poster, eager, alt }),
+    // The interactive figure, embedded as an iframe to the per-figure viewer —
+    // the mechanism MyST renders (inline custom elements are sanitised away).
+    const iframe = {
+      type: 'iframe',
+      src: buildViewerUrl({ src, cdn, width, height, poster, eager }),
+      width: width ? String(width) : '100%',
     };
-
-    // Return the live web component first (HTML output) and the poster image
-    // second (static export). HTML renders both; static exporters skip the
-    // `html` node and render only the image.
-    return [htmlNode, imageNode];
+    if (height) iframe.height = String(height);
+    if (alt) iframe.title = alt;
+    return [iframe];
   },
 };
 
