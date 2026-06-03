@@ -102,8 +102,7 @@ class Density(Image):
             usertext=_('Max. X')), 6 )
         s.add( setting.Bool(
             'logX', False,
-            descr=_('Log-spaced X bins (renders on desktop; for the browser '
-                    'bin in log space by taking log of the data)'),
+            descr=_('Log-spaced X bins'),
             usertext=_('Log X bins')), 7 )
 
         s.add( setting.Int(
@@ -120,8 +119,7 @@ class Density(Image):
             usertext=_('Max. Y')), 10 )
         s.add( setting.Bool(
             'logY', False,
-            descr=_('Log-spaced Y bins (renders on desktop; for the browser '
-                    'bin in log space by taking log of the data)'),
+            descr=_('Log-spaced Y bins'),
             usertext=_('Log Y bins')), 11 )
 
         # colour scale (mirrors the image widget's value-range controls)
@@ -148,6 +146,10 @@ class Density(Image):
 
         # shared colormap + draw-mode controls (colorMap, invert, etc.)
         klass.addColormapSettings(s)
+        # Log-spaced bins (or a log display axis) make this a non-linear image;
+        # default to the resample path so it draws as one image on every
+        # backend — including the browser — rather than the heavy box path.
+        s.get('drawMode').newDefault('resample-pixels')
 
     @property
     def userdescription(self):

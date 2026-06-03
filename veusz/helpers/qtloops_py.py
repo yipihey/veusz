@@ -447,12 +447,76 @@ class LineLabeller:
         pass
 
 
-def resampleNonlinearImage(image, *a, **k):
-    # Nonlinear-axis image resampling is out of scope headless; pass through.
-    return image
+def resampleNonlinearImage(image, x0, y0, x1, y1, xedge, yedge):
+    """Resample a per-bin colour image onto a uniform pixel grid covering the
+    plotter rect [x0,x1]x[y0,y1], using the (non-uniform) pixel edges. Returns a
+    single QImage, so a non-linearly-binned image (e.g. log-spaced histogram
+    bins, or any image on a log axis) is drawn as one image op rather than
+    thousands of rectangles. Mirrors ``resampleNonlinearImage`` in qtloops.cpp;
+    this is the pure-Python fallback used in the browser / headless, where the
+    C++ extension is absent.
+    """
+    sw, sh = image.width(), image.height()
+    pix = getattr(image, '_pixels', None)
+    if pix is None or sw == 0 or sh == 0:
+        return image
+
+    x0, x1 = (int(x0), int(x1)) if x0 <= x1 else (int(x1), int(x0))
+    y0, y1 = (int(y0), int(y1)) if y0 <= y1 else (int(y1), int(y0))
+    xw, yw = x1 - x0, y1 - y0
+    if xw <= 0 or yw <= 0:
+        return image
+
+    src = N.frombuffer(pix, dtype=N.uint8).reshape(sh, sw, 4)
+    xe = N.asarray(xedge, dtype=float)
+    ye = N.asarray(yedge, dtype=float)
+
+    # output pixel centres, in plotter coordinates
+    px = N.arange(xw) + x0 + 0.5
+    py = N.arange(yw) + y0 + 0.5
+
+    # source column: bin whose [xedge[ix], xedge[ix+1]) contains px (ascending)
+    ix = N.clip(N.searchsorted(xe, px, side='right') - 1, 0, sw - 1)
+    # source row: C++ scans the reversed y edges (yedge runs high→low in plotter
+    # coords for a normal upward axis, so its reverse is ascending)
+    yr = ye[::-1]
+    iy = N.clip(N.searchsorted(yr, py, side='right') - 1, 0, sh - 1)
+
+    out = src[iy[:, None], ix[None, :], :]
+    img = qt.QImage(xw, yw, image.format())
+    img._pixels = N.ascontiguousarray(out, dtype=N.uint8).tobytes()
+    return img
 
 
-def plotNonlinearImageAsBoxes(painter, *a, **k):
+def plotNonlinearImageAsBoxes(painter, image, xedge, yedge):
+    """Draw a per-bin colour image as filled rectangles at the given pixel
+    edges. Used for drawMode='default'/'rectangles' on non-linear images. This
+    emits one rect per cell, so it is heavier than ``resampleNonlinearImage``
+    (which density defaults to); provided so existing image widgets with the
+    default draw mode still render headless / in the browser.
+    """
+    sw, sh = image.width(), image.height()
+    pix = getattr(image, '_pixels', None)
+    if pix is None or sw == 0 or sh == 0:
+        return None
+
+    src = N.frombuffer(pix, dtype=N.uint8).reshape(sh, sw, 4)
+    xe = N.asarray(xedge, dtype=float)
+    ye = N.asarray(yedge, dtype=float)
+
+    for col in range(sw):
+        xa, xb = xe[col], xe[col + 1]
+        # image column `col` maps to x bin `col`; image row `row` (top-down)
+        # maps to the y edge pair (reversed, as in resampleNonlinearImage)
+        for row in range(sh):
+            b, g, r, a = (int(v) for v in src[row, col])
+            if a == 0:
+                continue
+            ya, yb = ye[sh - 1 - row], ye[sh - row]
+            painter.fillRect(
+                qt.QRectF(min(xa, xb), min(ya, yb),
+                          abs(xb - xa), abs(yb - ya)),
+                qt.QColor(r, g, b, a))
     return None
 
 

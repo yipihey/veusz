@@ -125,6 +125,27 @@ def test_weighted_mean_mode():
     assert N.allclose(N.nan_to_num(grid), N.nan_to_num(ref))
 
 
+def test_log_bins_render_as_single_image():
+    # Log-spaced bins are a non-linear image; they must still capture to one
+    # image op (via the resample path), not thousands of rectangles.
+    from veusz.paint.qt_capture import capture_document_scene
+    ci = _doc()
+    rng = N.random.default_rng(7)
+    ci.SetData('x', 10 ** rng.uniform(0, 3, size=80000))
+    ci.SetData('y', 10 ** rng.uniform(0, 3, size=80000))
+    _build(ci, xData='x', yData='y', numBinsX=40, numBinsY=40,
+           logX=True, logY=True)
+    scene = capture_document_scene(ci.document, page=0, pagesize_px=(480, 420),
+                                   dpi=(96.0, 96.0))
+    raw = bytes(scene) if isinstance(scene, (bytes, bytearray)) else scene.encode()
+    ops = json.loads(raw)['ops']
+
+    def opname(o):
+        return o if isinstance(o, str) else next(iter(o.keys()), '')
+    assert sum('DrawImage' in opname(o) for o in ops) == 1
+    assert len(ops) < 500
+
+
 def test_schema_exposes_natural_interface():
     from veusz.daemon import schema
     names = {x['name'] for x in schema.extract_class_schema('density')['settings']}

@@ -33,12 +33,12 @@ the 1D widget exactly so the two stay consistent.
 
 Cross-backend note: with *linear* bins the generated dataset has uniform edges,
 which Dataset2D collapses to a plain (xrange, yrange) so the image widget uses
-its fast linear path — rendered identically on every backend (Qt, tiny-skia,
-Vello native, Vello/WebGPU in the browser) as a single image op. *Log-spaced*
-bin edges (``islog`` in binparams) are non-uniform and need the image widget's
-non-linear path, which the browser's pure-Python qtloops fallback does not yet
-implement; for the browser, bin in log space by logging the data first (the
-usual phase-diagram workflow) so the bins stay linear.
+its fast linear path. *Log-spaced* bin edges (``islog`` in binparams) are
+non-uniform and take the image widget's non-linear path, which resamples the
+grid to one image (``qtloops`` C++ on the desktop, the pure-Python
+``resampleNonlinearImage`` fallback in the browser / headless). Either way the
+result is a single image op rendered identically on every backend (Qt,
+tiny-skia, Vello native, Vello/WebGPU in the browser).
 """
 
 import numpy as N
