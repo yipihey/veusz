@@ -273,7 +273,16 @@ function buildSelfContained(args) {
 function copyTree(srcDir, dstDir, filter = () => true) {
   mkdirSync(dstDir, { recursive: true });
   for (const f of readdirSync(srcDir)) {
-    if (filter(f)) copyFileSync(join(srcDir, f), join(dstDir, f));
+    const src = join(srcDir, f);
+    if (statSync(src).isDirectory()) {
+      // Recurse so nested build output is preserved — notably
+      // dist-embed/assets/, which holds the Pyodide worker chunk that
+      // veusz-embed.js loads via a relative `assets/…` URL. A flat copy
+      // dropped it and the vendored (--bundle) embed 404'd on the worker.
+      copyTree(src, join(dstDir, f), filter);
+    } else if (filter(f)) {
+      copyFileSync(src, join(dstDir, f));
+    }
   }
 }
 
