@@ -29,11 +29,14 @@ use peniko::kurbo::{Affine as KAffine, BezPath, Point};
 use veusz_paint_vello_common::{build_vello_scene, vcolor_to_peniko, TextRenderer};
 
 /// Vendored TTF used for SceneOp::DrawText in WASM. Liberation Sans
-/// Regular (SIL OFL 1.1). Replaces fontique system-discovery, which is
-/// fontconfig-bound and doesn't work in browsers. ~402 KB; sits next to
-/// the 1.8 MB Vello wasm in pkg/. Acceptable for the phase-4 deliverable;
-/// production should ship a smaller subset.
-static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/LiberationSans-Regular.ttf");
+/// (SIL OFL 1.1), subset to the glyphs scientific plots use — Latin
+/// (+extended), Greek, Cyrillic, punctuation, super/subscripts, currency,
+/// letterlike, arrows, math operators, geometric shapes — which cuts the
+/// embedded font ~411 KB -> ~107 KB. Regenerate with
+/// `scripts/subset-embed-font.sh <full LiberationSans-Regular.ttf>` if wider
+/// coverage is ever needed. Replaces fontique system-discovery (fontconfig-
+/// bound, unavailable in browsers).
+static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/LiberationSans-Subset.ttf");
 
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene as VelloScene};
 

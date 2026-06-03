@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn embedded_font_engine_lays_out_without_system_fonts() {
         static FONT: &[u8] =
-            include_bytes!("../../veusz-paint-wasm/assets/LiberationSans-Regular.ttf");
+            include_bytes!("../../veusz-paint-wasm/assets/LiberationSans-Subset.ttf");
         let engine = TextEngine::with_embedded_font(FONT)
             .expect("embedded font must register");
         // Single line: a glyph per visible character, advancing in +x.
