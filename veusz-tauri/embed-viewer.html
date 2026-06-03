@@ -36,6 +36,18 @@
         const v = q.get(a);
         if (v != null) fig.setAttribute(a, v);
       }
+      // Point the runtime at THIS deploy dir (.../embed/vX.Y.Z/): the wheel +
+      // wasm sit next to figure.html, and the version is in the path. Without
+      // this the worker boots Pyodide but never installs the veusz wheel
+      // ("No module named 'veusz'"). Absolute URLs so they resolve correctly
+      // when the worker (a different origin-relative base) fetches them.
+      const here = new URL('.', location.href);
+      fig.setAttribute('wasm-base', q.get('wasm-base') || new URL('wasm', here).href);
+      const wheel = q.get('wheel');
+      const ver = here.pathname.match(/\/v(\d+\.\d+\.\d+)\//);
+      if (wheel) fig.setAttribute('veusz-wheel', wheel);
+      else if (ver) fig.setAttribute('veusz-wheel',
+        new URL('veusz-' + ver[1] + '-py3-none-any.whl', here).href);
       msg.remove();
       document.body.appendChild(fig);
     }
