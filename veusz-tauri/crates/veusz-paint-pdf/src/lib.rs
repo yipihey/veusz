@@ -10,25 +10,29 @@
 //! * Page size, white-or-coloured background.
 //! * Path operations: stroke, fill (non-zero / even-odd), with current
 //!   stroke/fill state.
-//! * Solid fills and stroke colors. (Gradients fall back to the gradient's
-//!   *first* stop colour as a single solid in this phase — see TODO list
-//!   below; PDF axial / radial shading is a deeper integration.)
+//! * Solid fills and stroke colors.
+//! * Gradient fills: linear (axial / type 2) and radial (type 3) as real
+//!   PDF shading patterns, with an Exponential (2-stop) or Stitching
+//!   (multi-stop) tint function. The pattern `/Matrix` bakes in the live CTM
+//!   so the gradient lands in the same user space as the path.
 //! * Dash patterns, line caps, line joins, miter limit, line width.
 //! * Transforms: full affine concatenation. PDF's `cm` operator takes our
-//!   `Affine` directly.
+//!   `Affine` directly; we also track the accumulated CTM for gradients.
 //! * Clipping: rect and arbitrary path, using PDF's `W` (clip) operator.
 //!   `save`/`restore` honor PDF's `q`/`Q` graphics-state stack.
 //! * Image embedding: RGBA8 -> 8-bit-per-channel RGB image with a
-//!   Flate-compressed SMask alpha channel.
+//!   Flate-compressed SMask alpha channel. The `src` crop rect is honored
+//!   by copying out the cropped pixels (PDF has no source sampler).
+//! * Blend modes: SourceOver (Normal) and Multiply via per-mode ExtGState
+//!   resources. `Plus` (additive) has no PDF separable-blend equivalent and
+//!   degrades to Normal — see `apply_blend_mode`.
 //!
 //! What's deferred
 //! ---------------
-//! * Text. Mirrors the tiny-skia placeholder: a dashed bounding-box stroke
-//!   so the layout is visible. Real glyph embedding (subsetted Type0 with
-//!   ToUnicode) lands with the Parley + Swash integration (plan §5).
-//! * Gradients as shading objects. Listed in TODO.
-//! * Blend modes other than Normal. The audit shows Veusz rarely needs
-//!   anything else; SourceOver is the default in PDF.
+//! * Text. Real glyphs are drawn as filled paths via Parley + skrifa, with
+//!   a dashed bounding-box placeholder when no font is found. Subsetted
+//!   Type0/CIDFont embedding (smaller streams, selectable text) lands with
+//!   the font-embedding integration (plan §5).
 //!
 //! PDF conventions
 //! ---------------
@@ -39,12 +43,12 @@
 
 #![forbid(unsafe_code)]
 
-use pdf_writer::types::{LineCapStyle, LineJoinStyle};
+use pdf_writer::types::{BlendMode, FunctionShadingType, LineCapStyle, LineJoinStyle};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect as PdfRect, Ref, TextStr};
 
 use veusz_paint_core::{
-    Affine, Color, Fill, FillRule, Paint, Path, PathVerb, Scene, SceneOp, Stroke, TextLayout,
-    Rect as VRect, LineCap, LineJoin,
+    Affine, BlendMode as VBlendMode, Color, Fill, FillRule, Paint, Path, PathVerb, Scene,
+    SceneOp, Stroke, TextLayout, Rect as VRect, LineCap, LineJoin,
 };
 
 /// Render a [`Scene`] into a single-page PDF.
@@ -66,18 +70,41 @@ pub fn render_scene_to_pdf(
 // Emitter
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct GraphicsState {
-    /// Current paint (used by stroke_path / fill_path).
-    has_fill_color: bool,
+    /// Current fill: solid colour (eager `rg`), a gradient shading pattern
+    /// (set lazily at fill time, since it needs the live CTM), or none.
+    fill: FillState,
     has_stroke_color: bool,
     /// Number of clip frames pushed at this save level. Restored on pop.
     clips_in_frame: usize,
+    /// Accumulated CTM (including the page's base y-flip). Tracked so a
+    /// gradient pattern can bake the live transform into its `/Matrix` —
+    /// PDF pattern matrices map pattern space to the page's *default*
+    /// coordinate system, not through the CTM in force at fill time.
+    ctm: Affine,
 }
 
-impl Default for GraphicsState {
-    fn default() -> Self {
-        Self { has_fill_color: false, has_stroke_color: false, clips_in_frame: 0 }
+/// What the current paint's fill is, if any.
+#[derive(Clone, Debug)]
+enum FillState {
+    None,
+    /// A solid colour was already emitted with `rg`.
+    Solid,
+    /// A gradient; the shading objects are written at `finish()`. Carries
+    /// the gradient plus the CTM captured when the paint was applied, so the
+    /// pattern's `/Matrix` reproduces the user space the coords were given in.
+    Gradient(Box<Fill>, Affine),
+}
+
+impl GraphicsState {
+    fn new(ctm: Affine) -> Self {
+        Self {
+            fill: FillState::None,
+            has_stroke_color: false,
+            clips_in_frame: 0,
+            ctm,
+        }
     }
 }
 
@@ -88,6 +115,13 @@ struct PdfEmitter {
     states: Vec<GraphicsState>,
     images: Vec<EmbeddedImage>, // collected during run, written at finish
     text_engine: Option<veusz_paint_text::TextEngine>,
+    /// Gradient shading patterns collected during run, written + named
+    /// (`/Sh0`, `/Sh1`, ...) at finish. Each carries the gradient and the
+    /// pattern `/Matrix` (the captured CTM).
+    gradients: Vec<(Fill, Affine)>,
+    /// Distinct non-Normal blend modes seen, written as ExtGState resources
+    /// (`/Gs0`, ...) at finish.
+    blend_states: Vec<BlendMode>,
 }
 
 struct EmbeddedImage {
@@ -100,7 +134,10 @@ struct EmbeddedImage {
 impl PdfEmitter {
     fn new(width: f64, height: f64, background: (f32, f32, f32, f32)) -> Self {
         let mut content = Content::new();
-        // Flip the y-axis so screen-style coords work.
+        // Flip the y-axis so screen-style coords work. This is the page's
+        // base CTM; we track it so gradient pattern matrices land in the
+        // same coordinate system the paths are drawn in.
+        let base_ctm = Affine { a: 1.0, b: 0.0, c: 0.0, d: -1.0, e: 0.0, f: height };
         content.transform([1.0, 0.0, 0.0, -1.0, 0.0, height as f32]);
         // Paint the page background.
         content.save_state();
@@ -113,10 +150,16 @@ impl PdfEmitter {
             width,
             height,
             content,
-            states: vec![GraphicsState::default()],
+            states: vec![GraphicsState::new(base_ctm)],
             images: Vec::new(),
             text_engine: None,
+            gradients: Vec::new(),
+            blend_states: Vec::new(),
         }
+    }
+
+    fn cur(&self) -> &GraphicsState {
+        self.states.last().expect("state stack underflow")
     }
 
     fn cur_mut(&mut self) -> &mut GraphicsState {
@@ -133,7 +176,11 @@ impl PdfEmitter {
         match op {
             SceneOp::Save => {
                 self.content.save_state();
-                self.states.push(GraphicsState::default());
+                // Inherit the parent's fill / stroke / CTM (PDF's `q` saves
+                // the whole graphics state); only the clip counter resets.
+                let mut cloned = self.cur().clone();
+                cloned.clips_in_frame = 0;
+                self.states.push(cloned);
             }
             SceneOp::Restore => {
                 self.content.restore_state();
@@ -174,26 +221,46 @@ impl PdfEmitter {
                 *n = n.saturating_sub(1);
             }
             SceneOp::SetPaint(p) => self.apply_paint(p),
-            SceneOp::SetBlendMode(_) => {
-                // Deferred; see crate-level docs. Default Normal is fine
-                // for the documents the audit shows.
-            }
+            SceneOp::SetBlendMode(m) => self.apply_blend_mode(*m),
             SceneOp::SetQuality(_) => { /* PDF doesn't have raster hints */ }
             SceneOp::StrokePath(p) => {
-                if !self.cur_mut().has_stroke_color { return; }
+                if !self.cur().has_stroke_color { return; }
                 emit_path(&mut self.content, p);
                 self.content.stroke();
             }
             SceneOp::FillPath { path, rule } => {
-                if !self.cur_mut().has_fill_color { return; }
-                emit_path(&mut self.content, path);
-                match rule {
-                    FillRule::NonZero => self.content.fill_nonzero(),
-                    FillRule::EvenOdd => self.content.fill_even_odd(),
-                };
+                match self.cur().fill.clone() {
+                    FillState::None => {}
+                    FillState::Solid => {
+                        emit_path(&mut self.content, path);
+                        match rule {
+                            FillRule::NonZero => self.content.fill_nonzero(),
+                            FillRule::EvenOdd => self.content.fill_even_odd(),
+                        };
+                    }
+                    FillState::Gradient(fill, ctm) => {
+                        let name = self.register_gradient(*fill, ctm);
+                        self.content.save_state();
+                        self.content.set_fill_color_space(pdf_writer::types::ColorSpaceOperand::Pattern);
+                        self.content.set_fill_pattern(
+                            std::iter::empty::<f32>(),
+                            Name(name.as_bytes()),
+                        );
+                        emit_path(&mut self.content, path);
+                        match rule {
+                            FillRule::NonZero => self.content.fill_nonzero(),
+                            FillRule::EvenOdd => self.content.fill_even_odd(),
+                        };
+                        self.content.restore_state();
+                    }
+                }
             }
-            SceneOp::DrawImage { image, dst, .. } => {
-                let id = self.embed_image(image);
+            SceneOp::DrawImage { image, dst, src } => {
+                // Honor the `src` crop rect: PDF can't sample a sub-rectangle
+                // of an XObject the way the raster backends do, so we embed
+                // only the cropped pixels and map *those* onto `dst`. Matches
+                // vello / tiny-skia (which crop the source then scale to dst).
+                let id = self.embed_image(image, *src);
                 // Place the image: PDF's image operator expects a unit
                 // square mapped via CTM.
                 self.content.save_state();
@@ -208,8 +275,23 @@ impl PdfEmitter {
                 self.emit_text(layout, *x, *y);
             }
             SceneOp::DrawMarkers { path, xs, ys, scales, fill, stroke } => {
-                let has_fill = self.cur_mut().has_fill_color;
-                let has_stroke = self.cur_mut().has_stroke_color;
+                // Markers with a gradient fill: register the pattern once and
+                // set it as the fill colour before instancing (the gradient
+                // is shared across markers; matrix is the captured CTM).
+                let fill_pattern = match self.cur().fill.clone() {
+                    FillState::Gradient(g, ctm) => Some(self.register_gradient(*g, ctm)),
+                    _ => None,
+                };
+                let has_fill = *fill && !matches!(self.cur().fill, FillState::None);
+                let has_stroke = self.cur().has_stroke_color;
+                if has_fill {
+                    if let Some(name) = &fill_pattern {
+                        self.content.set_fill_color_space(
+                            pdf_writer::types::ColorSpaceOperand::Pattern);
+                        self.content.set_fill_pattern(
+                            std::iter::empty::<f32>(), Name(name.as_bytes()));
+                    }
+                }
                 let n = xs.len().min(ys.len());
                 for i in 0..n {
                     let s = scales.as_ref()
@@ -222,7 +304,12 @@ impl PdfEmitter {
                     self.content.transform([
                         s as f32, 0.0, 0.0, s as f32, xs[i] as f32, ys[i] as f32,
                     ]);
-                    if *fill && has_fill {
+                    // NOTE: a gradient marker fill samples one page-space
+                    // shading shared by all instances (a shading pattern's
+                    // matrix is fixed to the captured CTM, so it can't follow
+                    // each marker's per-instance scale/translate). Veusz
+                    // markers are effectively always solid, so this is fine.
+                    if has_fill {
                         emit_path(&mut self.content, path);
                         self.content.fill_nonzero();
                     }
@@ -241,15 +328,27 @@ impl PdfEmitter {
             m.a as f32, m.b as f32, m.c as f32, m.d as f32,
             m.e as f32, m.f as f32,
         ]);
+        // PDF `cm` premultiplies the operand onto the CTM (row-vector
+        // convention): CTM' = m · CTM.
+        let cur = self.cur().ctm;
+        self.cur_mut().ctm = m.then(cur);
     }
 
     fn apply_paint(&mut self, p: &Paint) {
-        if let Some(fill) = &p.fill {
-            let c = primary_color(fill);
-            self.content.set_fill_rgb(c.r, c.g, c.b);
-            self.cur_mut().has_fill_color = true;
-        } else {
-            self.cur_mut().has_fill_color = false;
+        match &p.fill {
+            Some(Fill::Solid(c)) => {
+                self.content.set_fill_rgb(c.r, c.g, c.b);
+                self.cur_mut().fill = FillState::Solid;
+            }
+            Some(grad @ (Fill::Linear(_) | Fill::Radial(_))) => {
+                // Defer: the shading pattern + its `/Matrix` (the live CTM)
+                // are emitted at fill time, since `cm` may still change.
+                let ctm = self.cur().ctm;
+                self.cur_mut().fill = FillState::Gradient(Box::new(grad.clone()), ctm);
+            }
+            None => {
+                self.cur_mut().fill = FillState::None;
+            }
         }
         if let Some(stroke) = &p.stroke {
             self.apply_stroke(stroke);
@@ -257,6 +356,41 @@ impl PdfEmitter {
         } else {
             self.cur_mut().has_stroke_color = false;
         }
+    }
+
+    /// Register a gradient as a shading pattern, returning the resource name
+    /// (`Sh0`, `Sh1`, ...) to reference with `scn`. The shading + tint
+    /// function objects are written at `finish()`; here we just record the
+    /// gradient and its pattern matrix.
+    fn register_gradient(&mut self, fill: Fill, ctm: Affine) -> String {
+        let idx = self.gradients.len();
+        self.gradients.push((fill, ctm));
+        format!("Sh{idx}")
+    }
+
+    /// Apply a blend mode. SourceOver is PDF's default (Normal) — no op.
+    /// Multiply maps directly. `Plus` (additive) has no PDF separable blend
+    /// equivalent, so we leave it Normal (documented limitation); the audit
+    /// shows Veusz uses Plus only in a couple of niche overlays.
+    fn apply_blend_mode(&mut self, m: VBlendMode) {
+        let pdf_mode = match m {
+            VBlendMode::SourceOver => BlendMode::Normal,
+            VBlendMode::Multiply => BlendMode::Multiply,
+            VBlendMode::Plus => BlendMode::Normal, // no PDF additive blend
+        };
+        // Normal is the default graphics state; skip the resource churn.
+        if matches!(pdf_mode, BlendMode::Normal) {
+            return;
+        }
+        // Reuse an ExtGState resource if we've already emitted this mode.
+        let idx = match self.blend_states.iter().position(|b| *b == pdf_mode) {
+            Some(i) => i,
+            None => {
+                self.blend_states.push(pdf_mode);
+                self.blend_states.len() - 1
+            }
+        };
+        self.content.set_parameters(Name(format!("Gs{idx}").as_bytes()));
     }
 
     fn apply_stroke(&mut self, s: &Stroke) {
@@ -281,19 +415,46 @@ impl PdfEmitter {
         }
     }
 
-    fn embed_image(&mut self, image: &veusz_paint_core::Image) -> usize {
-        let n = (image.width * image.height) as usize;
+    fn embed_image(&mut self, image: &veusz_paint_core::Image, src: Option<VRect>) -> usize {
+        // Resolve the source crop into integer pixel bounds (the raster
+        // backends sample a `src` sub-rectangle of the image before scaling
+        // to `dst`; PDF has no equivalent sampler, so we copy the crop out).
+        // `src` is in image pixel space; clamp to the image and round to
+        // whole pixels so we copy a well-defined block.
+        let (cx, cy, cw, ch) = match src {
+            Some(s) => {
+                let x0 = s.x.max(0.0).min(image.width as f64);
+                let y0 = s.y.max(0.0).min(image.height as f64);
+                let x1 = (s.x + s.w).max(0.0).min(image.width as f64);
+                let y1 = (s.y + s.h).max(0.0).min(image.height as f64);
+                let x0 = x0.floor() as u32;
+                let y0 = y0.floor() as u32;
+                // ceil the far edge so a fractional crop still includes the
+                // partially-covered pixel, then guarantee at least 1px.
+                let w = ((x1.ceil() as u32).saturating_sub(x0)).max(1)
+                    .min(image.width - x0.min(image.width.saturating_sub(1)));
+                let h = ((y1.ceil() as u32).saturating_sub(y0)).max(1)
+                    .min(image.height - y0.min(image.height.saturating_sub(1)));
+                (x0.min(image.width.saturating_sub(1)), y0.min(image.height.saturating_sub(1)), w, h)
+            }
+            None => (0, 0, image.width, image.height),
+        };
+
+        let n = (cw * ch) as usize;
         let mut rgb = Vec::with_capacity(3 * n);
         let mut alpha = Vec::with_capacity(n);
-        for px in image.pixels.chunks_exact(4) {
-            rgb.push(px[0]);
-            rgb.push(px[1]);
-            rgb.push(px[2]);
-            alpha.push(px[3]);
+        for row in cy..cy + ch {
+            for col in cx..cx + cw {
+                let i = ((row * image.width + col) * 4) as usize;
+                rgb.push(image.pixels[i]);
+                rgb.push(image.pixels[i + 1]);
+                rgb.push(image.pixels[i + 2]);
+                alpha.push(image.pixels[i + 3]);
+            }
         }
         let id = self.images.len();
         self.images.push(EmbeddedImage {
-            width: image.width, height: image.height, rgb, alpha,
+            width: cw, height: ch, rgb, alpha,
         });
         id
     }
@@ -361,6 +522,21 @@ impl PdfEmitter {
             image_refs.push((img_ref, smask_ref));
         }
 
+        // Pre-allocate gradient refs: one shading-pattern object + one tint
+        // function object per gradient.
+        let mut gradient_refs: Vec<(Ref, Ref)> = Vec::new();
+        for _ in &self.gradients {
+            let pattern_ref = alloc();
+            let func_ref = alloc();
+            gradient_refs.push((pattern_ref, func_ref));
+        }
+
+        // Pre-allocate one ExtGState object per distinct blend mode.
+        let mut blend_refs: Vec<Ref> = Vec::new();
+        for _ in &self.blend_states {
+            blend_refs.push(alloc());
+        }
+
         pdf.catalog(catalog_id).pages(page_tree_id);
         pdf.pages(page_tree_id).count(1).kids([page_id]);
 
@@ -369,13 +545,32 @@ impl PdfEmitter {
             .media_box(PdfRect::new(0.0, 0.0, self.width as f32, self.height as f32))
             .contents(content_id);
 
-        if !self.images.is_empty() {
+        let has_resources = !self.images.is_empty()
+            || !gradient_refs.is_empty()
+            || !blend_refs.is_empty();
+        if has_resources {
             let mut resources = page.resources();
-            let mut x_objects = resources.x_objects();
-            for (i, (img_ref, _)) in image_refs.iter().enumerate() {
-                x_objects.pair(Name(format!("Im{}", i).as_bytes()), *img_ref);
+            if !self.images.is_empty() {
+                let mut x_objects = resources.x_objects();
+                for (i, (img_ref, _)) in image_refs.iter().enumerate() {
+                    x_objects.pair(Name(format!("Im{}", i).as_bytes()), *img_ref);
+                }
+                x_objects.finish();
             }
-            x_objects.finish();
+            if !gradient_refs.is_empty() {
+                let mut patterns = resources.patterns();
+                for (i, (pattern_ref, _)) in gradient_refs.iter().enumerate() {
+                    patterns.pair(Name(format!("Sh{}", i).as_bytes()), *pattern_ref);
+                }
+                patterns.finish();
+            }
+            if !blend_refs.is_empty() {
+                let mut ext = resources.ext_g_states();
+                for (i, gs_ref) in blend_refs.iter().enumerate() {
+                    ext.pair(Name(format!("Gs{}", i).as_bytes()), *gs_ref);
+                }
+                ext.finish();
+            }
             resources.finish();
         }
         page.finish();
@@ -416,11 +611,128 @@ impl PdfEmitter {
             sm.finish();
         }
 
+        // Gradient objects: tint function + axial/radial shading + the
+        // shading pattern that the content stream references by `/ShN`.
+        for (i, (fill, ctm)) in self.gradients.iter().enumerate() {
+            let (pattern_ref, func_ref) = gradient_refs[i];
+            let stops = match fill {
+                Fill::Linear(g) => &g.stops,
+                Fill::Radial(g) => &g.stops,
+                Fill::Solid(_) => continue, // never registered as a gradient
+            };
+            // Sub-function refs for the >2-stop stitching case. Allocated
+            // lazily so the common 2-stop path stays at one function object.
+            let mut sub_refs: Vec<Ref> = Vec::new();
+            if stops.len() > 2 {
+                for _ in 0..stops.len().saturating_sub(1) {
+                    sub_refs.push(alloc());
+                }
+            }
+            write_tint_function(&mut pdf, func_ref, stops, &sub_refs);
+            for (seg, sub_ref) in sub_refs.iter().enumerate() {
+                // Each segment interpolates between two adjacent stops.
+                write_exponential_segment(
+                    &mut pdf, *sub_ref, stops[seg].color, stops[seg + 1].color);
+            }
+
+            // Shading dictionary (carried inline on the pattern).
+            let (kind, coords): (FunctionShadingType, Vec<f32>) = match fill {
+                Fill::Linear(g) => (
+                    FunctionShadingType::Axial,
+                    vec![g.start.0 as f32, g.start.1 as f32,
+                         g.end.0 as f32, g.end.1 as f32],
+                ),
+                Fill::Radial(g) => (
+                    FunctionShadingType::Radial,
+                    // Concentric circles: inner radius 0 at the centre out to
+                    // `radius`.
+                    vec![g.center.0 as f32, g.center.1 as f32, 0.0,
+                         g.center.0 as f32, g.center.1 as f32, g.radius as f32],
+                ),
+                Fill::Solid(_) => unreachable!(),
+            };
+            let mut pattern = pdf.shading_pattern(pattern_ref);
+            // Bake the captured CTM into the pattern matrix so the gradient
+            // lands in the same user space the path coords were given in.
+            pattern.matrix([
+                ctm.a as f32, ctm.b as f32, ctm.c as f32,
+                ctm.d as f32, ctm.e as f32, ctm.f as f32,
+            ]);
+            let mut shading = pattern.function_shading();
+            shading.shading_type(kind);
+            shading.color_space().device_rgb();
+            shading.coords(coords);
+            shading.function(func_ref);
+            // Clamp (pad) beyond the gradient endpoints, matching the raster
+            // backends' Extend::Pad.
+            shading.extend([true, true]);
+            shading.finish();
+        }
+
+        // Blend-mode ExtGState objects.
+        for (i, mode) in self.blend_states.iter().enumerate() {
+            pdf.ext_graphics(blend_refs[i]).blend_mode(*mode);
+        }
+
         pdf.document_info(alloc())
             .producer(TextStr("veusz-paint-pdf"));
 
         Ok(pdf.finish())
     }
+}
+
+/// Write the tint function that maps the shading parameter t in [0,1] to an
+/// RGB colour. Two stops collapse to a single Exponential (type 2); more
+/// stops use a Stitching function (type 3) over per-segment Exponentials.
+fn write_tint_function(pdf: &mut Pdf, func_ref: Ref,
+                       stops: &[veusz_paint_core::GradientStop], sub_refs: &[Ref]) {
+    if stops.len() <= 1 {
+        // Degenerate: a constant colour. Emit a flat exponential.
+        let c = stops.first().map(|s| s.color).unwrap_or(Color::BLACK);
+        let mut f = pdf.exponential_function(func_ref);
+        f.domain([0.0, 1.0]);
+        f.range([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+        f.c0([c.r, c.g, c.b]);
+        f.c1([c.r, c.g, c.b]);
+        f.n(1.0);
+        return;
+    }
+    if stops.len() == 2 {
+        let (a, b) = (stops[0].color, stops[1].color);
+        let mut f = pdf.exponential_function(func_ref);
+        f.domain([0.0, 1.0]);
+        f.range([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+        f.c0([a.r, a.g, a.b]);
+        f.c1([b.r, b.g, b.b]);
+        f.n(1.0);
+        return;
+    }
+    // Multi-stop: stitch the per-segment exponentials at the stop offsets.
+    let mut f = pdf.stitching_function(func_ref);
+    f.domain([0.0, 1.0]);
+    f.range([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+    f.functions(sub_refs.iter().copied());
+    // Interior stop offsets are the stitch boundaries.
+    let bounds: Vec<f32> = stops[1..stops.len() - 1].iter().map(|s| s.offset).collect();
+    f.bounds(bounds);
+    // Each sub-function spans the full [0,1] domain.
+    let mut encode = Vec::with_capacity(sub_refs.len() * 2);
+    for _ in sub_refs {
+        encode.push(0.0);
+        encode.push(1.0);
+    }
+    f.encode(encode);
+}
+
+/// One linear RGB interpolation segment between two colours, as an
+/// Exponential function with n = 1.
+fn write_exponential_segment(pdf: &mut Pdf, id: Ref, a: Color, b: Color) {
+    let mut f = pdf.exponential_function(id);
+    f.domain([0.0, 1.0]);
+    f.range([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+    f.c0([a.r, a.g, a.b]);
+    f.c1([b.r, b.g, b.b]);
+    f.n(1.0);
 }
 
 fn emit_path(content: &mut Content, p: &Path) {
@@ -487,17 +799,6 @@ fn current_point(p: &Path, idx: usize) -> (f32, f32) {
     last
 }
 
-fn primary_color(f: &Fill) -> Color {
-    // Until gradient shading is wired up, fall back to the first stop's
-    // colour. The diff harness flags any document that materially relies on
-    // gradient interpolation.
-    match f {
-        Fill::Solid(c) => *c,
-        Fill::Linear(g) => g.stops.first().map(|s| s.color).unwrap_or(Color::BLACK),
-        Fill::Radial(g) => g.stops.first().map(|s| s.color).unwrap_or(Color::BLACK),
-    }
-}
-
 fn compress(data: &[u8]) -> Vec<u8> {
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
@@ -505,12 +806,6 @@ fn compress(data: &[u8]) -> Vec<u8> {
     let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).expect("zlib encode (in-memory write)");
     enc.finish().expect("zlib finish")
-}
-
-// Helpful unused import suppressors
-#[allow(dead_code)]
-fn _unused_imports_keepalive() {
-    let _: Option<VRect> = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +943,115 @@ mod tests {
             .filter(|w| *w == b"/Subtype /Image").count();
         // One image + one SMask = 2 image XObjects.
         assert!(count >= 2, "expected >=2 image xobjects, got {count}");
+    }
+
+    #[test]
+    fn image_src_crop_shrinks_embedded_dimensions() {
+        // 4x4 image; crop the top-left 2x2. The embedded XObject must report
+        // Width 2 / Height 2, not 4/4 (proves the src rect is honored).
+        let pixels: Vec<u8> = (0..4 * 4 * 4).map(|i| (i % 256) as u8).collect();
+        let scene = scene_with(|rec| {
+            rec.draw_image(
+                &Image { width: 4, height: 4, pixels },
+                Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 },
+                Some(Rect { x: 0.0, y: 0.0, w: 2.0, h: 2.0 }),
+            );
+        });
+        let pdf = render_scene_to_pdf(&scene, 100.0, 100.0,
+                                      (1.0, 1.0, 1.0, 1.0)).unwrap();
+        // The RGB XObject (the larger of the two streams) carries the crop
+        // dimensions. Look for "/Width 2" and "/Height 2", and confirm the
+        // uncropped "/Width 4" is absent.
+        assert!(pdf.windows(b"/Width 2".len()).any(|w| w == b"/Width 2"),
+                "cropped image should report /Width 2");
+        assert!(pdf.windows(b"/Height 2".len()).any(|w| w == b"/Height 2"),
+                "cropped image should report /Height 2");
+        assert!(!pdf.windows(b"/Width 4".len()).any(|w| w == b"/Width 4"),
+                "no XObject should still report the uncropped /Width 4");
+    }
+
+    #[test]
+    fn linear_gradient_emits_shading_pattern() {
+        let scene = scene_with(|rec| {
+            rec.set_paint(&Paint {
+                fill: Some(Fill::Linear(LinearGradient {
+                    start: (0.0, 0.0),
+                    end: (10.0, 0.0),
+                    stops: vec![
+                        GradientStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
+                        GradientStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
+                    ],
+                })),
+                stroke: None, anti_alias: true,
+            });
+            rec.fill_path(&Path::rect(Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
+                          FillRule::NonZero);
+        });
+        let pdf = render_scene_to_pdf(&scene, 100.0, 100.0,
+                                      (1.0, 1.0, 1.0, 1.0)).unwrap();
+        // A type-2 (axial) shading must be present, plus a Pattern XObject.
+        assert!(pdf.windows(b"/ShadingType 2".len())
+                    .any(|w| w == b"/ShadingType 2"),
+                "expected an axial shading dictionary");
+        assert!(pdf.windows(b"/PatternType".len())
+                    .any(|w| w == b"/PatternType"),
+                "expected a shading pattern");
+        // And the content stream selects the Pattern colour space + scn.
+        let body = decompress_first_stream(&pdf).expect("first stream");
+        assert!(body.windows(b"/Pattern".len()).any(|w| w == b"/Pattern"),
+                "expected /Pattern color space in content");
+        assert!(body.windows(b"scn".len()).any(|w| w == b"scn"),
+                "expected scn pattern-fill operator");
+    }
+
+    #[test]
+    fn radial_gradient_emits_type3_shading() {
+        let scene = scene_with(|rec| {
+            rec.set_paint(&Paint {
+                fill: Some(Fill::Radial(RadialGradient {
+                    center: (5.0, 5.0),
+                    radius: 5.0,
+                    stops: vec![
+                        GradientStop { offset: 0.0, color: Color::rgba8(255, 255, 255, 255) },
+                        GradientStop { offset: 0.5, color: Color::rgba8(128, 128, 0, 255) },
+                        GradientStop { offset: 1.0, color: Color::rgba8(0, 0, 0, 255) },
+                    ],
+                })),
+                stroke: None, anti_alias: true,
+            });
+            rec.fill_path(&Path::rect(Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
+                          FillRule::NonZero);
+        });
+        let pdf = render_scene_to_pdf(&scene, 100.0, 100.0,
+                                      (1.0, 1.0, 1.0, 1.0)).unwrap();
+        assert!(pdf.windows(b"/ShadingType 3".len())
+                    .any(|w| w == b"/ShadingType 3"),
+                "expected a radial shading dictionary");
+        // 3 stops -> a stitching tint function (type 3) over exponentials.
+        assert!(pdf.windows(b"/FunctionType 3".len())
+                    .any(|w| w == b"/FunctionType 3"),
+                "multi-stop gradient should use a stitching function");
+    }
+
+    #[test]
+    fn multiply_blend_mode_emits_ext_gstate() {
+        let scene = scene_with(|rec| {
+            rec.set_blend_mode(VBlendMode::Multiply);
+            rec.set_paint(&Paint {
+                fill: Some(Fill::Solid(Color::rgba8(255, 0, 0, 255))),
+                stroke: None, anti_alias: true,
+            });
+            rec.fill_path(&Path::rect(Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
+                          FillRule::NonZero);
+        });
+        let pdf = render_scene_to_pdf(&scene, 100.0, 100.0,
+                                      (1.0, 1.0, 1.0, 1.0)).unwrap();
+        assert!(pdf.windows(b"/BM /Multiply".len())
+                    .any(|w| w == b"/BM /Multiply"),
+                "expected a Multiply blend ExtGState");
+        let body = decompress_first_stream(&pdf).expect("first stream");
+        assert!(body.windows(b"gs".len()).any(|w| w == b"gs"),
+                "expected gs (set graphics state) operator");
     }
 
     // ---- helpers ---------------------------------------------------------
