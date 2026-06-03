@@ -137,8 +137,15 @@ impl SvgEmitter {
             SceneOp::SetBlendMode(_) | SceneOp::SetQuality(_) => {}
             SceneOp::StrokePath(p) => self.draw_path(p, FillRule::NonZero, false, true),
             SceneOp::FillPath { path, rule } => self.draw_path(path, *rule, true, false),
-            SceneOp::DrawImage { image, dst, .. } => {
-                if let Ok(uri) = png_data_uri(image) {
+            SceneOp::DrawImage { image, dst, src } => {
+                // Honour the source crop rect (as the raster/PDF backends do):
+                // embed only the sampled sub-region, mapped onto dst.
+                let cropped;
+                let img = match src {
+                    Some(s) => { cropped = crop_image_to_src(image, s); &cropped }
+                    None => image,
+                };
+                if let Ok(uri) = png_data_uri(img) {
                     let _ = write!(self.body,
                         "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" \
                          preserveAspectRatio=\"none\" href=\"{uri}\"/>",
@@ -343,6 +350,32 @@ fn xml_attr(s: &str) -> String {
     xml_text(s).replace('"', "&quot;")
 }
 
+/// Crop an RGBA image to the `src` pixel rectangle (clamped to integer pixel
+/// bounds), so the embedded `<image>` carries only the sampled sub-region —
+/// matching how the raster and PDF backends honour the source crop. A
+/// degenerate crop falls back to the whole image.
+fn crop_image_to_src(
+    image: &veusz_paint_core::Image, src: &veusz_paint_core::Rect,
+) -> veusz_paint_core::Image {
+    let iw = image.width as i64;
+    let ih = image.height as i64;
+    let x0 = (src.x.floor() as i64).clamp(0, iw);
+    let y0 = (src.y.floor() as i64).clamp(0, ih);
+    let x1 = ((src.x + src.w).ceil() as i64).clamp(x0, iw);
+    let y1 = ((src.y + src.h).ceil() as i64).clamp(y0, ih);
+    let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    if w == 0 || h == 0 {
+        return image.clone();
+    }
+    let stride = image.width as usize * 4;
+    let mut pixels = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        let start = (y0 as usize + row) * stride + x0 as usize * 4;
+        pixels.extend_from_slice(&image.pixels[start..start + w * 4]);
+    }
+    veusz_paint_core::Image { width: w as u32, height: h as u32, pixels }
+}
+
 /// Encode an RGBA8 image as a `data:image/png;base64,...` URI.
 fn png_data_uri(image: &veusz_paint_core::Image) -> Result<String, String> {
     let mut buf: Vec<u8> = Vec::new();
@@ -477,6 +510,20 @@ mod tests {
         let svg = render_scene_to_svg(&s, 20.0, 10.0, (1.0, 1.0, 1.0, 0.0));
         assert!(svg.contains("<image x=\"0\" y=\"0\" width=\"20\" height=\"10\""));
         assert!(svg.contains("href=\"data:image/png;base64,"));
+    }
+
+    #[test]
+    fn crop_image_to_src_extracts_subregion() {
+        // 3x3 image; crop to the centre pixel.
+        let mut pixels = Vec::new();
+        for v in 0..9u8 { pixels.extend_from_slice(&[v, v, v, 255]); }
+        let img = Image { width: 3, height: 3, pixels };
+        let c = crop_image_to_src(&img, &Rect { x: 1.0, y: 1.0, w: 1.0, h: 1.0 });
+        assert_eq!((c.width, c.height), (1, 1));
+        assert_eq!(c.pixels, vec![4, 4, 4, 255]); // centre pixel (row 1, col 1)
+        // a degenerate crop falls back to the whole image
+        let whole = crop_image_to_src(&img, &Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        assert_eq!((whole.width, whole.height), (3, 3));
     }
 
     #[test]
