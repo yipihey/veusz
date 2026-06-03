@@ -9,6 +9,12 @@ import react from '@vitejs/plugin-react';
 // loaded at runtime from a CDN/bundle, not included here.
 export default defineConfig({
   plugins: [react()],
+  // Emit asset URLs (notably the Pyodide Web Worker chunk, referenced via
+  // `new URL('./pyodideWorker.ts', import.meta.url)`) RELATIVE to veusz-embed.js
+  // rather than as absolute `/assets/…`. Authors self-host the embed under a
+  // versioned sub-path (e.g. `…/embed/v4.4.0/`), so an origin-root `/assets/…`
+  // would 404; `./` resolves the worker against the script's own location.
+  base: './',
   // Library mode (unlike an app build) does NOT replace process.env.NODE_ENV,
   // so React/zustand's `process.env.NODE_ENV === "production"` checks reference
   // the Node global `process`, which is undefined in a plain browser <script>
