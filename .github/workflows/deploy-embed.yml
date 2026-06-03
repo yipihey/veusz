@@ -136,6 +136,25 @@ jobs:
           node veusz-tauri/scripts/veusz-embed.mjs build \
             veusz-tauri/example/url-demo.vsz -o site/url-example --no-poster
           cp veusz-tauri/example/url-data.csv site/url-example/data.csv
+          # Per-figure viewer: figure.html?src=<.vsz URL> mounts <veusz-figure>.
+          # Lets any HTML host (notably a MyST {iframe}, which sanitises inline
+          # custom elements) embed a Veusz figure by iframing this page.
+          cp veusz-tauri/embed-viewer.html "$DEST/figure.html"
+          # Browser-native MyST notebook: prose + a live JupyterLite (Pyodide)
+          # code cell + a live Veusz figure (via the veusz directive -> the
+          # figure.html viewer above). Builds a static site; mystmd exits after
+          # building. The figure's phase.vsz is staged at notebook/phase.vsz,
+          # which is the URL the directive's iframe fetches.
+          rm -rf site/notebook
+          if ( cd integrations/myst-veusz/example && rm -rf _build \
+               && npx --yes mystmd build --html ) \
+             && [ -f integrations/myst-veusz/example/_build/html/index.html ]; then
+            mkdir -p site/notebook
+            cp -r integrations/myst-veusz/example/_build/html/. site/notebook/
+            cp integrations/myst-veusz/example/figures/phase.vsz site/notebook/phase.vsz
+          else
+            echo "::warning::MyST notebook build failed — skipping /notebook/ this run"
+          fi
           touch site/.nojekyll
           printf '%s\n' \
             '<!doctype html><meta charset=utf-8><title>Veusz embed runtime</title>' \
@@ -145,6 +164,7 @@ jobs:
             '<ul>' \
             '<li><a href="./example/">/example/</a> &mdash; <code>fit.vsz</code> with data baked into the .vsz</li>' \
             '<li><a href="./url-example/">/url-example/</a> &mdash; <code>ImportFileURL(&quot;data.csv&quot;)</code>: the figure fetches its data from a URL at load (and re-fetches on change when <code>poll_seconds&gt;0</code>)</li>' \
+            '<li><a href="./notebook/">/notebook/</a> &mdash; a browser-native <strong>MyST notebook</strong>: prose + a live JupyterLite (Pyodide) code cell + a live Veusz density figure, all client-side. Opens on a phone.</li>' \
             '</ul>' \
             '<p>Versioned runtime assets live under <code>/embed/v&lt;version&gt;/</code>.</p>' \
             > site/index.html
