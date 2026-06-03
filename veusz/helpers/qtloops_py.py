@@ -302,31 +302,499 @@ def clipPolyline(clip, poly):
 # Approximations for rarely-used helpers (cosmetic / edge-case features).
 # ---------------------------------------------------------------------------
 
-def _straight_cubics(pts):
-    """Build group-of-4 cubic control points tracing straight segments through
-    the data points — a faithful-enough stand-in for the C++ Bézier fitters
-    (the 'bezier' line option degrades to straight segments)."""
-    out = qt.QPolygonF()
-    for i in range(len(pts) - 1):
-        p0, p1 = pts[i], pts[i + 1]
-        c1 = qt.QPointF(p0.x() + (p1.x() - p0.x()) / 3.0,
-                        p0.y() + (p1.y() - p0.y()) / 3.0)
-        c2 = qt.QPointF(p0.x() + 2.0 * (p1.x() - p0.x()) / 3.0,
-                        p0.y() + 2.0 * (p1.y() - p0.y()) / 3.0)
-        out.append(p0); out.append(c1); out.append(c2); out.append(p1)
+# ---------------------------------------------------------------------------
+# Cubic Bezier fitting (port of src/qtloops/beziers.cpp + beziers_qtwrap.cpp).
+#
+# These power Veusz's 'bezier' / 'tight-Bezier' line styles. Each fitter
+# returns a flat list of (x, y) control points in groups of four
+#   [anchor0, ctrl1, ctrl2, anchor1, anchor1', ctrl1', ...]
+# exactly as ``addCubicsToPainterPath`` consumes them. The single/multi
+# fitters reproduce Schneider's least-squares algorithm ("An Algorithm for
+# Automatically Fitting Digitized Curves", Graphics Gems, 1990); the tight
+# fitter reproduces the MS-Excel-like control-point construction.
+# ---------------------------------------------------------------------------
+
+import math as _math
+
+# tangent value used by Schneider's code to mean "estimate me"
+_UNCONSTRAINED = (0.0, 0.0)
+
+
+def _pts_as_tuples(data):
+    """Coerce a QPolygonF/iterable of QPointF (or (x, y) tuples) to a list of
+    (x, y) float tuples."""
+    out = []
+    for p in data:
+        if hasattr(p, "x"):
+            out.append((float(p.x()), float(p.y())))
+        else:
+            out.append((float(p[0]), float(p[1])))
     return out
 
 
-def bezier_fit_cubic_multi(data, error, *a, **k):
-    return _straight_cubics(list(data))
+def _polyf(groups):
+    """Build a QPolygonF from a flat list of (x, y) control-point tuples."""
+    out = qt.QPolygonF()
+    for x, y in groups:
+        out.append(qt.QPointF(x, y))
+    return out
 
 
-def bezier_fit_cubic_tight(data, looseness, *a, **k):
-    return _straight_cubics(list(data))
+def _vsub(a, b):
+    return (a[0] - b[0], a[1] - b[1])
+
+
+def _vadd(a, b):
+    return (a[0] + b[0], a[1] + b[1])
+
+
+def _vscale(a, s):
+    return (a[0] * s, a[1] * s)
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1]
+
+
+def _l2(p):
+    return _math.hypot(p[0], p[1])
+
+
+def _is_zero(p):
+    return p[0] == 0.0 and p[1] == 0.0
+
+
+def _unit(p):
+    m = _math.hypot(p[0], p[1])
+    if m == 0:
+        return (0.0, 0.0)
+    return (p[0] / m, p[1] / m)
+
+
+def _rot90(p):
+    return (-p[1], p[0])
+
+
+def _B0(u):
+    return (1.0 - u) ** 3
+
+
+def _B1(u):
+    return 3.0 * u * (1.0 - u) ** 2
+
+
+def _B2(u):
+    return 3.0 * u * u * (1.0 - u)
+
+
+def _B3(u):
+    return u ** 3
+
+
+def _bezier_pt(degree, V, t):
+    """Evaluate a Bezier of given degree (control points V) at parameter t."""
+    pascal = [[1], [1, 1], [1, 2, 1], [1, 3, 3, 1]]
+    s = 1.0 - t
+    spow = [1.0, s, 0.0, 0.0]
+    tpow = [1.0, t, 0.0, 0.0]
+    for i in range(1, degree):
+        spow[i + 1] = spow[i] * s
+        tpow[i + 1] = tpow[i] * t
+    ret = _vscale(V[0], spow[degree])
+    for i in range(1, degree + 1):
+        coef = pascal[degree][i] * spow[degree - i] * tpow[i]
+        ret = _vadd(ret, _vscale(V[i], coef))
+    return ret
+
+
+def _copy_without_nans_or_dups(src):
+    """Drop NaN points and adjacent duplicates, keeping the first finite point.
+    Mirrors ``copy_without_nans_or_adjacent_duplicates``."""
+    out = []
+    seen_first = False
+    for p in src:
+        if _math.isnan(p[0]) or _math.isnan(p[1]):
+            continue
+        if not seen_first:
+            out.append(p)
+            seen_first = True
+        elif p != out[-1]:
+            out.append(p)
+    return out
+
+
+def _left_tangent(d, tol_sq):
+    n = len(d)
+    i = 1
+    while True:
+        t = _vsub(d[i], d[0])
+        distsq = _dot(t, t)
+        if tol_sq < distsq:
+            return _unit(t)
+        i += 1
+        if i == n:
+            return _unit(t) if distsq != 0 else _unit(_vsub(d[1], d[0]))
+
+
+def _right_tangent(d, tol_sq):
+    n = len(d)
+    last = n - 1
+    i = last - 1
+    while True:
+        t = _vsub(d[i], d[last])
+        distsq = _dot(t, t)
+        if tol_sq < distsq:
+            return _unit(t)
+        if i == 0:
+            return _unit(t) if distsq != 0 else _unit(_vsub(d[last - 1], d[last]))
+        i -= 1
+
+
+def _center_tangent(d, center):
+    if d[center + 1] == d[center - 1]:
+        diff = _vsub(d[center], d[center - 1])
+        ret = _rot90(diff)
+    else:
+        ret = _vsub(d[center - 1], d[center + 1])
+    return _unit(ret)
+
+
+def _chord_length_parameterize(d):
+    n = len(d)
+    u = [0.0] * n
+    for i in range(1, n):
+        u[i] = u[i - 1] + _l2(_vsub(d[i], d[i - 1]))
+    tot = u[n - 1]
+    if tot == 0:
+        return u, False
+    if _math.isfinite(tot):
+        for i in range(1, n):
+            u[i] /= tot
+    else:
+        for i in range(1, n):
+            u[i] = i / (n - 1)
+    u[n - 1] = 1.0
+    return u, True
+
+
+def _estimate_lengths(bezier, data, uPrime, tHat1, tHat2):
+    C = [[0.0, 0.0], [0.0, 0.0]]
+    X = [0.0, 0.0]
+    n = len(data)
+    bezier[0] = data[0]
+    bezier[3] = data[n - 1]
+    for i in range(n):
+        b0, b1, b2, b3 = _B0(uPrime[i]), _B1(uPrime[i]), _B2(uPrime[i]), _B3(uPrime[i])
+        a1 = _vscale(tHat1, b1)
+        a2 = _vscale(tHat2, b2)
+        C[0][0] += _dot(a1, a1)
+        C[0][1] += _dot(a1, a2)
+        C[1][0] = C[0][1]
+        C[1][1] += _dot(a2, a2)
+        shortfall = _vsub(
+            _vsub(data[i], _vscale(bezier[0], b0 + b1)),
+            _vscale(bezier[3], b2 + b3))
+        X[0] += _dot(a1, shortfall)
+        X[1] += _dot(a2, shortfall)
+    det_C0_C1 = C[0][0] * C[1][1] - C[1][0] * C[0][1]
+    if det_C0_C1 != 0:
+        det_C0_X = C[0][0] * X[1] - C[0][1] * X[0]
+        det_X_C1 = X[0] * C[1][1] - X[1] * C[0][1]
+        alpha_l = det_X_C1 / det_C0_C1
+        alpha_r = det_C0_X / det_C0_C1
+    else:
+        c0 = C[0][0] + C[0][1]
+        if c0 != 0:
+            alpha_l = alpha_r = X[0] / c0
+        else:
+            c1 = C[1][0] + C[1][1]
+            if c1 != 0:
+                alpha_l = alpha_r = X[1] / c1
+            else:
+                alpha_l = alpha_r = 0.0
+    if alpha_l < 1.0e-6 or alpha_r < 1.0e-6:
+        alpha_l = alpha_r = _l2(_vsub(data[n - 1], data[0])) * (1.0 / 3.0)
+    bezier[1] = _vadd(_vscale(tHat1, alpha_l), bezier[0])
+    bezier[2] = _vadd(_vscale(tHat2, alpha_r), bezier[3])
+
+
+def _estimate_bi(bezier, ei, data, u):
+    oi = 3 - ei
+    num = (0.0, 0.0)
+    den = 0.0
+    for i in range(len(data)):
+        ui = u[i]
+        b = [_B0(ui), _B1(ui), _B2(ui), _B3(ui)]
+        nx = b[ei] * (b[0] * bezier[0][0] + b[oi] * bezier[0][0]
+                      + b[3] * bezier[3][0] - data[i][0])
+        ny = b[ei] * (b[0] * bezier[0][1] + b[oi] * bezier[0][1]
+                      + b[3] * bezier[3][1] - data[i][1])
+        num = (num[0] + nx, num[1] + ny)
+        den -= b[ei] * b[ei]
+    if den != 0:
+        bezier[ei] = (num[0] / den, num[1] / den)
+    else:
+        bezier[ei] = _vscale(_vadd(_vscale(bezier[0], oi),
+                                   _vscale(bezier[3], ei)), 1.0 / 3.0)
+
+
+def _generate_bezier(data, u, tHat1, tHat2, tolerance_sq):
+    bezier = [None, None, None, None]
+    est1 = _is_zero(tHat1)
+    est2 = _is_zero(tHat2)
+    et1 = _left_tangent(data, tolerance_sq) if est1 else tHat1
+    et2 = _right_tangent(data, tolerance_sq) if est2 else tHat2
+    _estimate_lengths(bezier, data, u, et1, et2)
+    if est1:
+        _estimate_bi(bezier, 1, data, u)
+        if bezier[1] != bezier[0]:
+            et1 = _unit(_vsub(bezier[1], bezier[0]))
+        _estimate_lengths(bezier, data, u, et1, et2)
+    return bezier
+
+
+def _newton_raphson(Q, P, u):
+    Q1 = [_vscale(_vsub(Q[i + 1], Q[i]), 3.0) for i in range(3)]
+    Q2 = [_vscale(_vsub(Q1[i + 1], Q1[i]), 2.0) for i in range(2)]
+    Q_u = _bezier_pt(3, Q, u)
+    Q1_u = _bezier_pt(2, Q1, u)
+    Q2_u = _bezier_pt(1, Q2, u)
+    diff = _vsub(Q_u, P)
+    numerator = _dot(diff, Q1_u)
+    denominator = _dot(Q1_u, Q1_u) + _dot(diff, Q2_u)
+    if denominator > 0:
+        improved_u = u - (numerator / denominator)
+    else:
+        if numerator > 0:
+            improved_u = u * 0.98 - 0.01
+        elif numerator < 0:
+            improved_u = 0.031 + u * 0.98
+        else:
+            improved_u = u
+    if not _math.isfinite(improved_u):
+        improved_u = u
+    elif improved_u < 0.0:
+        improved_u = 0.0
+    elif improved_u > 1.0:
+        improved_u = 1.0
+    diff_lensq = _dot(diff, diff)
+    proportion = 0.125
+    while True:
+        if _dot(_vsub(_bezier_pt(3, Q, improved_u), P),
+                _vsub(_bezier_pt(3, Q, improved_u), P)) > diff_lensq:
+            if proportion > 1.0:
+                improved_u = u
+                break
+            improved_u = (1 - proportion) * improved_u + proportion * u
+            proportion += 0.125
+        else:
+            break
+    return improved_u
+
+
+def _reparameterize(d, u, bezCurve):
+    last = len(d) - 1
+    for i in range(1, last):
+        u[i] = _newton_raphson(bezCurve, d[i], u[i])
+
+
+def _compute_hook(a, b, u, bezCurve, tolerance):
+    P = _bezier_pt(3, bezCurve, u)
+    diff = _vsub(_vscale(_vadd(a, b), 0.5), P)
+    dist = _l2(diff)
+    if dist < tolerance:
+        return 0.0
+    allowed = _l2(_vsub(b, a)) * 0.2 + tolerance
+    return dist / allowed
+
+
+def _compute_max_error_ratio(d, u, bezCurve, tolerance):
+    n = len(d)
+    last = n - 1
+    maxDistsq = 0.0
+    max_hook_ratio = 0.0
+    snap_end = 0
+    splitPoint = last  # default
+    prev = bezCurve[0]
+    for i in range(1, last + 1):
+        curr = _bezier_pt(3, bezCurve, u[i])
+        dd = _vsub(curr, d[i])
+        distsq = _dot(dd, dd)
+        if distsq > maxDistsq:
+            maxDistsq = distsq
+            splitPoint = i
+        hook_ratio = _compute_hook(prev, curr, 0.5 * (u[i - 1] + u[i]),
+                                   bezCurve, tolerance)
+        if max_hook_ratio < hook_ratio:
+            max_hook_ratio = hook_ratio
+            snap_end = i
+        prev = curr
+    dist_ratio = _math.sqrt(maxDistsq) / tolerance
+    if max_hook_ratio <= dist_ratio:
+        ret = dist_ratio
+    else:
+        ret = -max_hook_ratio
+        splitPoint = snap_end - 1
+    return ret, splitPoint
+
+
+def _fit_cubic_full(out, data, tHat1, tHat2, error, max_beziers):
+    """Append fitted cubic segments (each 4 control points) to ``out``.
+    Returns the number of segments, or -1 on error. Mirrors
+    ``sp_bezier_fit_cubic_full``."""
+    maxIterations = 4
+    n = len(data)
+    if n < 2:
+        return 0
+
+    if n == 2:
+        b0 = data[0]
+        b3 = data[n - 1]
+        dist = _l2(_vsub(data[n - 1], data[0])) * (1.0 / 3.0)
+        if _math.isnan(dist):
+            b1, b2 = b0, b3
+        else:
+            b1 = (_vscale(_vadd(_vscale(b0, 2), b3), 1.0 / 3.0)
+                  if _is_zero(tHat1) else _vadd(b0, _vscale(tHat1, dist)))
+            b2 = (_vscale(_vadd(b0, _vscale(b3, 2)), 1.0 / 3.0)
+                  if _is_zero(tHat2) else _vadd(b3, _vscale(tHat2, dist)))
+        out.extend([b0, b1, b2, b3])
+        return 1
+
+    u, ok = _chord_length_parameterize(data)
+    if not ok:
+        return 0
+    bezier = _generate_bezier(data, u, tHat1, tHat2, error)
+    _reparameterize(data, u, bezier)
+    tolerance = _math.sqrt(error + 1e-9)
+    maxErrorRatio, splitPoint = _compute_max_error_ratio(data, u, bezier, tolerance)
+
+    if abs(maxErrorRatio) <= 1.0:
+        out.extend(bezier)
+        return 1
+
+    if 0.0 <= maxErrorRatio <= 3.0:
+        for _ in range(maxIterations):
+            bezier = _generate_bezier(data, u, tHat1, tHat2, error)
+            _reparameterize(data, u, bezier)
+            maxErrorRatio, splitPoint = _compute_max_error_ratio(
+                data, u, bezier, tolerance)
+            if abs(maxErrorRatio) <= 1.0:
+                out.extend(bezier)
+                return 1
+
+    is_corner = maxErrorRatio < 0
+
+    if is_corner:
+        if splitPoint == 0:
+            if _is_zero(tHat1):
+                splitPoint += 1
+            else:
+                return _fit_cubic_full(out, data, _UNCONSTRAINED, tHat2,
+                                       error, max_beziers)
+        elif splitPoint == n - 1:
+            if _is_zero(tHat2):
+                splitPoint -= 1
+            else:
+                return _fit_cubic_full(out, data, tHat1, _UNCONSTRAINED,
+                                       error, max_beziers)
+
+    if max_beziers > 1:
+        if is_corner:
+            recTHat1 = recTHat2 = _UNCONSTRAINED
+        else:
+            recTHat2 = _center_tangent(data, splitPoint)
+            recTHat1 = _vscale(recTHat2, -1.0)
+        nsegs1 = _fit_cubic_full(out, data[:splitPoint + 1], tHat1, recTHat2,
+                                 error, max_beziers - 1)
+        if nsegs1 < 0:
+            return -1
+        nsegs2 = _fit_cubic_full(out, data[splitPoint:], recTHat1, tHat2,
+                                 error, max_beziers - nsegs1)
+        if nsegs2 < 0:
+            return -1
+        return nsegs1 + nsegs2
+    return -1
 
 
 def bezier_fit_cubic_single(data, error, *a, **k):
-    return _straight_cubics(list(data))
+    """Fit a single cubic Bezier segment to ``data`` (Schneider). Returns a
+    QPolygonF of 4 control points, or empty on failure. Mirrors
+    ``bezier_fit_cubic_single`` in beziers_qtwrap.cpp."""
+    pts = _pts_as_tuples(data)
+    uniqued = _copy_without_nans_or_dups(pts)
+    out = []
+    if len(uniqued) >= 2:
+        retn = _fit_cubic_full(out, uniqued, _UNCONSTRAINED, _UNCONSTRAINED,
+                               error, 1)
+        if retn < 0:
+            return qt.QPolygonF()
+    return _polyf(out)
+
+
+def bezier_fit_cubic_multi(data, error, max_beziers=None, *a, **k):
+    """Fit a multi-segment Bezier curve to ``data`` (Schneider, recursive).
+    Returns a QPolygonF of 4*nsegs control points. Mirrors
+    ``bezier_fit_cubic_multi`` / ``sp_bezier_fit_cubic_r``."""
+    pts = _pts_as_tuples(data)
+    if max_beziers is None:
+        max_beziers = len(pts) + 1
+    max_beziers = max(int(max_beziers), 1)
+    uniqued = _copy_without_nans_or_dups(pts)
+    out = []
+    if len(uniqued) >= 2:
+        retn = _fit_cubic_full(out, uniqued, _UNCONSTRAINED, _UNCONSTRAINED,
+                               error, max_beziers)
+        if retn < 0:
+            return qt.QPolygonF()
+    return _polyf(out)
+
+
+def bezier_fit_cubic_tight(data, looseness, *a, **k):
+    """MS-Excel-like tight cubic Bezier fit. Returns a QPolygonF of 4*(len-1)
+    control points. Mirrors ``bezier_fit_cubic_tight`` in beziers_qtwrap.cpp."""
+    pts = _pts_as_tuples(data)
+    n = len(pts)
+    if n < 2:
+        return qt.QPolygonF()
+    if n == 2:
+        return _polyf([pts[0], pts[0], pts[1], pts[1]])
+
+    out = []
+    for i in range(1, n):
+        pt1 = pts[i - 1]
+        pt2 = pts[i]
+        if i == 1:
+            pt0 = pts[i - 1]
+            pt3 = pts[i + 1]
+            f1 = looseness / 1.5
+            f2 = looseness / 3.0
+        elif i == n - 1:
+            pt0 = pts[i - 2]
+            pt3 = pts[i]
+            f1 = looseness / 3.0
+            f2 = looseness / 1.5
+        else:
+            pt0 = pts[i - 2]
+            pt3 = pts[i + 1]
+            f1 = looseness / 3.0
+            f2 = looseness / 3.0
+        d02 = _l2(_vsub(pt2, pt0))
+        d12 = _l2(_vsub(pt2, pt1))
+        d13 = _l2(_vsub(pt3, pt1))
+        b1 = d02 < d12 * 3.0
+        b2 = d13 < d12 * 3.0
+        if not (b1 and b2):
+            f1 = (d12 / d02 / 2.0) if d02 != 0 else 0.0
+            f2 = (d12 / d13 / 2.0) if d13 != 0 else 0.0
+            if b1:
+                f1 = f2
+            if b2:
+                f2 = f1
+        c1 = _vadd(pt1, _vscale(_vsub(pt2, pt0), f1))
+        c2 = _vadd(pt2, _vscale(_vsub(pt1, pt3), f2))
+        out.extend([pt1, c1, c2, pt2])
+    return _polyf(out)
 
 
 # ---------------------------------------------------------------------------
