@@ -6,12 +6,21 @@ description = "Text layout + glyph-to-path conversion for Veusz paint backends. 
 
 [dependencies]
 veusz-paint-core = { path = "../veusz-paint-core" }
-parley = "0.9"
-fontique = "0.9"
+# parley/fontique default to the `system` feature (fontconfig / CoreText /
+# DirectWrite font discovery), which can't run in a browser. We turn defaults
+# off here and re-enable system discovery via our own `system-fonts` feature,
+# so the wasm target can build a discovery-free `std`-only parley and seed it
+# with an embedded font instead.
+parley = { version = "0.9", default-features = false, features = ["std"] }
+fontique = { version = "0.9", default-features = false, features = ["std"] }
 skrifa = "0.42"
-# fontconfig-dlopen avoids linking libfontconfig at build time; it loads
-# the shared library at runtime if available. Lets the crate build on
-# minimal containers but pick up system fonts when present.
+
 [features]
-default = ["fontconfig-dlopen"]
-fontconfig-dlopen = ["fontique/fontconfig-dlopen"]
+default = ["system-fonts"]
+# Native font discovery via fontique. `fontconfig-dlopen` avoids linking
+# libfontconfig at build time — it dlopens the shared library at runtime if
+# available, so the crate still builds on minimal containers but picks up
+# system fonts when present.
+system-fonts = ["parley/system", "fontique/system", "fontique/fontconfig-dlopen"]
+# Back-compat alias for the old feature name.
+fontconfig-dlopen = ["system-fonts"]

@@ -4969,6 +4969,7 @@ dependencies = [
  "vello",
  "veusz-paint-core",
  "veusz-paint-svg",
+ "veusz-paint-text",
  "veusz-paint-vello-common",
  "wasm-bindgen",
  "wasm-bindgen-futures",

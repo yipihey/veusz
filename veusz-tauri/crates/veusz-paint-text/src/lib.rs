@@ -32,9 +32,10 @@
 use std::borrow::Cow;
 
 use parley::{
-    Alignment, FontContext, FontFamily, FontStyle, FontWeight, Layout, LayoutContext,
-    PositionedLayoutItem, StyleProperty,
+    Alignment, FontContext, FontFamily, FontStyle, FontWeight, GenericFamily, Layout,
+    LayoutContext, PositionedLayoutItem, StyleProperty,
 };
+use parley::fontique::Blob;
 use skrifa::{
     instance::{LocationRef, Size},
     outline::{DrawSettings, OutlinePen},
@@ -56,6 +57,12 @@ type Brush = ();
 pub struct TextEngine {
     font_cx: std::sync::Mutex<FontContext>,
     layout_cx: std::sync::Mutex<LayoutContext<Brush>>,
+    /// When seeded via [`TextEngine::with_embedded_font`], the registered
+    /// family name of that font. Layout then requests this family (rather than
+    /// the style's family name) so it resolves even with no system fonts — the
+    /// browser case, where fontique discovers nothing. `None` for the native
+    /// engine, which honours the requested family via system discovery.
+    embedded_family: Option<String>,
 }
 
 impl Default for TextEngine {
@@ -68,12 +75,60 @@ impl TextEngine {
     pub fn new() -> Self {
         // FontContext::new pulls system fonts via fontique when the
         // `system` feature is enabled (default). We rely on that to find
-        // DejaVu / Noto / Arial on host systems; the wgpu/wasm target
-        // will need a different bootstrap.
+        // DejaVu / Noto / Arial on host systems; the wgpu/wasm target uses
+        // [`with_embedded_font`] instead (fontique finds nothing there).
         Self {
             font_cx: std::sync::Mutex::new(FontContext::new()),
             layout_cx: std::sync::Mutex::new(LayoutContext::new()),
+            embedded_family: None,
         }
+    }
+
+    /// Build an engine seeded with a single in-memory font, with **no**
+    /// reliance on system font discovery. Intended for `wasm32`, where
+    /// fontique's fontconfig/CoreText path can't run, so `FontContext::new()`
+    /// yields an empty collection and layout produces no glyphs.
+    ///
+    /// The font is registered into the collection and wired up as the default
+    /// for every generic family (serif / sans-serif / monospace / …), so a
+    /// `TextStyle` asking for any of those — or for the embedded family by
+    /// name — resolves to it. Returns `None` if the bytes don't parse as a
+    /// font (no family registered).
+    pub fn with_embedded_font(font_bytes: &'static [u8]) -> Option<Self> {
+        let mut font_cx = FontContext::new();
+        let registered =
+            font_cx.collection.register_fonts(Blob::new(std::sync::Arc::new(font_bytes)), None);
+        // `register_fonts` returns the (family, fonts) pairs it added; take the
+        // first family as our single embedded face.
+        let family_id = registered.first().map(|(id, _)| *id)?;
+        let family_name = font_cx.collection.family_name(family_id)?.to_string();
+        // Point the generic families at the embedded face so styles requesting
+        // "sans-serif" / "serif" / "monospace" (Veusz's families) all land on
+        // it instead of resolving to nothing.
+        for generic in [
+            GenericFamily::Serif,
+            GenericFamily::SansSerif,
+            GenericFamily::Monospace,
+            GenericFamily::Cursive,
+            GenericFamily::Fantasy,
+            GenericFamily::SystemUi,
+            GenericFamily::UiSerif,
+            GenericFamily::UiSansSerif,
+            GenericFamily::UiMonospace,
+            GenericFamily::UiRounded,
+            GenericFamily::Emoji,
+            GenericFamily::Math,
+            GenericFamily::FangSong,
+        ] {
+            font_cx
+                .collection
+                .set_generic_families(generic, std::iter::once(family_id));
+        }
+        Some(Self {
+            font_cx: std::sync::Mutex::new(font_cx),
+            layout_cx: std::sync::Mutex::new(LayoutContext::new()),
+            embedded_family: Some(family_name),
+        })
     }
 
     /// Lay out `layout` and return a list of `(Path, Affine, Color)` triples
@@ -90,7 +145,8 @@ impl TextEngine {
         let parley_layout = {
             let mut font_cx = self.font_cx.lock().unwrap();
             let mut layout_cx = self.layout_cx.lock().unwrap();
-            build_layout(&mut font_cx, &mut layout_cx, &layout.text, style)
+            build_layout(&mut font_cx, &mut layout_cx, &layout.text, style,
+                         self.embedded_family.as_deref())
         };
         let mut out = Vec::new();
         let (origin_x, origin_y) = baseline_xy;
@@ -153,7 +209,8 @@ impl TextEngine {
         let mut font_cx = self.font_cx.lock().unwrap();
         let mut layout_cx = self.layout_cx.lock().unwrap();
         let parley_layout = build_layout(&mut font_cx, &mut layout_cx,
-                                          &layout.text, &layout.style);
+                                          &layout.text, &layout.style,
+                                          self.embedded_family.as_deref());
         (parley_layout.width() as f64, parley_layout.height() as f64)
     }
 }
@@ -163,10 +220,15 @@ fn build_layout(
     layout_cx: &mut LayoutContext<Brush>,
     text: &str,
     style: &TextStyle,
+    embedded_family: Option<&str>,
 ) -> Layout<Brush> {
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+    // With an embedded-only collection (wasm), the style's family name won't be
+    // discoverable, so request the one registered embedded family instead;
+    // otherwise honour the requested family via system discovery.
+    let family = embedded_family.unwrap_or(style.family.as_str());
     builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-        Cow::Owned(style.family.clone()),
+        Cow::Owned(family.to_string()),
     )));
     builder.push_default(StyleProperty::FontSize(style.size_pt as f32));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
@@ -351,5 +413,39 @@ mod tests {
         let engine = TextEngine::new();
         let layout = TextLayout { text: String::new(), style: TextStyle::default() };
         assert_eq!(engine.layout_to_glyph_paths(&layout, (0.0, 0.0)).len(), 0);
+    }
+
+    /// The embedded-font engine must lay out glyphs with NO system fonts — the
+    /// wasm bootstrap. We feed it the same Liberation Sans the wasm crate
+    /// vendors; this also exercises the multi-line baseline advance, which the
+    /// bespoke wasm renderer lacked.
+    #[test]
+    fn embedded_font_engine_lays_out_without_system_fonts() {
+        static FONT: &[u8] =
+            include_bytes!("../../veusz-paint-wasm/assets/LiberationSans-Regular.ttf");
+        let engine = TextEngine::with_embedded_font(FONT)
+            .expect("embedded font must register");
+        // Single line: a glyph per visible character, advancing in +x.
+        let layout = TextLayout {
+            text: "Veusz".into(),
+            style: TextStyle { size_pt: 16.0, ..TextStyle::default() },
+        };
+        let glyphs = engine.layout_to_glyph_paths(&layout, (0.0, 20.0));
+        assert!(glyphs.len() >= 5, "expected >=5 glyphs, got {}", glyphs.len());
+        for g in &glyphs {
+            assert!(!g.path.verbs.is_empty(), "glyph must have an outline");
+        }
+
+        // Multi-line: the second line's baseline sits BELOW the first, so the
+        // max glyph-y must exceed the first line's baseline by a line height.
+        let multiline = TextLayout {
+            text: "line1\nline2".into(),
+            style: TextStyle { size_pt: 16.0, ..TextStyle::default() },
+        };
+        let mg = engine.layout_to_glyph_paths(&multiline, (0.0, 20.0));
+        assert!(!mg.is_empty());
+        let max_y = mg.iter().map(|g| g.position.f).fold(f64::MIN, f64::max);
+        assert!(max_y > 20.0 + 8.0,
+            "second line must advance the baseline well below 20.0, got max_y={max_y}");
     }
 }

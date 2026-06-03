@@ -16,11 +16,17 @@ veusz-paint-core = { path = "../veusz-paint-core" }
 # same way the WASM canvas path uses the embedded-font renderer.
 veusz-paint-svg = { path = "../veusz-paint-svg", default-features = false }
 # The shared Scene -> vello::Scene translator. We depend on this rather than
-# veusz-paint-vello directly because that crate pulls in veusz-paint-text ->
-# fontique (fontconfig at runtime; no system fontconfig in a browser). The
-# common crate is backend-agnostic: we inject a wasm TextRenderer (embedded
-# font + skrifa) and the degenerate-image pad hook.
+# veusz-paint-vello directly because that crate pulls in veusz-paint-text with
+# system font discovery. The common crate is backend-agnostic: we inject a wasm
+# TextRenderer (embedded-font veusz-paint-text) and the degenerate-image pad
+# hook.
 veusz-paint-vello-common = { path = "../veusz-paint-vello-common" }
+# Real text layout (Parley shaping + skrifa outlines + multi-line), shared with
+# the native backends. `default-features = false` drops the `system-fonts`
+# feature (fontique's fontconfig/CoreText discovery, which can't run in a
+# browser); parley/fontique then build std-only and we seed the engine with the
+# vendored Liberation Sans via TextEngine::with_embedded_font.
+veusz-paint-text = { path = "../veusz-paint-text", default-features = false }
 vello = "0.3"
 wgpu = "22"
 peniko = "0.2"

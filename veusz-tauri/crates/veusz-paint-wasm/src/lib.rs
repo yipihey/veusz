@@ -8,12 +8,15 @@
 //!
 //! Text in WASM
 //! ------------
-//! Parley's font-discovery layer (fontique) calls into fontconfig at
-//! runtime, which doesn't exist in the browser, so we can't reuse the
-//! native `veusz-paint-text` path. Instead [`WasmTextRenderer`] lays text
-//! out directly against one vendored TTF (Liberation Sans) via skrifa:
-//! cmap lookup + glyph outlines, single-line horizontal runs. That's all
-//! Veusz's pre-broken widget text needs.
+//! Parley's font *discovery* layer (fontique) calls into fontconfig /
+//! CoreText, which don't exist in the browser. But that discovery is the
+//! only browser-hostile part: with `veusz-paint-text`'s `system-fonts`
+//! feature turned off, parley + fontique build std-only for wasm32, and we
+//! seed the engine with one vendored TTF (Liberation Sans) via
+//! [`veusz_paint_text::TextEngine::with_embedded_font`]. So [`WasmTextRenderer`]
+//! now delegates to the SAME layout engine the native backends use — gaining
+//! real shaping and multi-line text — instead of the old bespoke
+//! single-line cmap+skrifa path.
 //!
 //! Build (called from `scripts/build_paint_wasm.sh`):
 //!     cargo build -p veusz-paint-wasm --target wasm32-unknown-unknown --release
@@ -22,12 +25,6 @@
 
 use peniko::{Brush, Color as PenikoColor, Fill as PenikoFill};
 use peniko::kurbo::{Affine as KAffine, BezPath, Point};
-use skrifa::{
-    instance::{LocationRef, Size as SkSize},
-    outline::{DrawSettings, OutlinePen},
-    raw::FontRef,
-    GlyphId, MetadataProvider,
-};
 
 use veusz_paint_vello_common::{build_vello_scene, vcolor_to_peniko, TextRenderer};
 
@@ -249,13 +246,24 @@ impl RendererInner {
 // Scene translation — shared dispatch + the WASM-specific text/image paths.
 // ---------------------------------------------------------------------------
 
+/// Process-wide embedded-font text engine. Built once (registering the
+/// vendored TTF is not free) and reused across renders. wasm is single
+/// threaded, so a `thread_local` is the natural home; `Rc` lets the
+/// per-call renderer borrow it without re-registering the font.
+thread_local! {
+    static TEXT_ENGINE: std::rc::Rc<Option<veusz_paint_text::TextEngine>> =
+        std::rc::Rc::new(veusz_paint_text::TextEngine::with_embedded_font(EMBEDDED_FONT));
+}
+
 /// Translate a Scene into a `vello::Scene`. The dispatch loop + the
 /// kurbo/peniko conversions live in `veusz-paint-vello-common` (shared with
 /// the native `veusz-paint-vello` backend); this crate only supplies the two
 /// browser-specific bits: the embedded-font text path ([`WasmTextRenderer`])
 /// and the degenerate-image pad ([`pad_degenerate_image`]).
 fn build_scene(scene: &VScene) -> VelloScene {
-    build_vello_scene(scene, &WasmTextRenderer, &pad_degenerate_image)
+    let engine = TEXT_ENGINE.with(|e| e.clone());
+    let text = WasmTextRenderer { engine: engine.as_ref().as_ref() };
+    build_vello_scene(scene, &text, &pad_degenerate_image)
 }
 
 /// vello 0.3 / wgpu 22 has a WebGPU blit bug that drops 1xN / Nx1 images
@@ -281,85 +289,75 @@ fn pad_degenerate_image(img: &Image) -> std::borrow::Cow<'_, Image> {
     std::borrow::Cow::Owned(Image { width: new_w, height: new_h, pixels })
 }
 
-/// `TextRenderer` for the browser backend. Minimal WASM-friendly text
-/// layout: looks each character up in the embedded font's cmap, fetches the
-/// outline + advance via skrifa, concatenates left-to-right at the requested
-/// baseline.
+/// `TextRenderer` for the browser backend. Delegates to the shared
+/// `veusz-paint-text` engine (Parley shaping + skrifa outlines), seeded with
+/// the vendored embedded font — the SAME layout path the native backends use.
+/// This replaces the old bespoke single-line cmap walk, so the browser now
+/// gets real shaping and multi-line text (the engine advances the baseline
+/// per line).
 ///
-/// No Parley layer (no line breaking, no bidi, no fallback) — Veusz widgets
-/// pre-break their text, the audit shows we only need single-line horizontal
-/// runs, and pulling Parley into WASM also pulls in fontique/harfrust which
-/// don't compile cleanly here.
-///
-/// If the cmap doesn't have a glyph for some character (font subset gap), the
-/// character is silently dropped — same behaviour skrifa-driven text has in
-/// the native backends.
-struct WasmTextRenderer;
+/// `engine` is `None` only if the embedded font failed to register (it
+/// shouldn't — the asset is vendored and tested); then text is skipped, the
+/// same graceful no-op the native backends fall back to when no fonts exist.
+struct WasmTextRenderer<'a> {
+    engine: Option<&'a veusz_paint_text::TextEngine>,
+}
 
-impl TextRenderer for WasmTextRenderer {
+impl TextRenderer for WasmTextRenderer<'_> {
     fn draw_text(&self, out: &mut VelloScene, transform: KAffine,
                  layout: &TextLayout, x: f64, y: f64) {
-        let font = match FontRef::new(EMBEDDED_FONT) {
-            Ok(f) => f,
-            Err(_) => return,  // embedded font corrupt — shouldn't happen
-        };
-        let size = SkSize::new(layout.style.size_pt as f32);
-        let cmap = font.charmap();
-        let glyph_metrics = font.glyph_metrics(size, LocationRef::default());
-        let outlines = font.outline_glyphs();
+        let engine = match self.engine { Some(e) => e, None => return };
+        // `(x, y)` is the first line's baseline (Qt's drawText convention); the
+        // engine anchors it there and offsets later lines by the line height.
+        let glyphs = engine.layout_to_glyph_paths(layout, (x, y));
+        if glyphs.is_empty() {
+            return;
+        }
         let brush = Brush::Solid(vcolor_to_peniko(layout.style.color));
-
-        let mut cursor_x = x;
-        for ch in layout.text.chars() {
-            let gid = cmap.map(ch).unwrap_or(GlyphId::new(0));
-            let outline = match outlines.get(gid) { Some(o) => o, None => continue };
-
-            let mut pen = OutlineToPath::default();
-            let _ = outline.draw(
-                DrawSettings::unhinted(size, LocationRef::default()),
-                &mut pen,
-            );
-            if !pen.path.elements().is_empty() {
-                let glyph_xf = transform * KAffine::translate((cursor_x, y));
-                out.fill(PenikoFill::NonZero, glyph_xf, &brush, None, &pen.path);
-            }
-            cursor_x += glyph_metrics.advance_width(gid).unwrap_or(0.0) as f64;
+        for g in glyphs {
+            // The engine's glyph paths are already in screen-y-down outline
+            // coordinates; `g.position` carries the per-glyph translate. Fold
+            // both into the current transform and fill.
+            let glyph_xf = transform * vpath_affine_to_kurbo(g.position);
+            let bez = vpath_to_kurbo_bez(&g.path);
+            out.fill(PenikoFill::NonZero, glyph_xf, &brush, None, &bez);
         }
     }
 }
 
-/// skrifa OutlinePen sink that builds a kurbo BezPath in y-flipped (screen)
-/// coordinates. Glyph outlines come out y-up (PostScript); we flip on the
-/// fly to match the rest of the pipeline's y-down convention.
-#[derive(Default)]
-struct OutlineToPath {
-    path: BezPath,
+/// Convert a [`veusz_paint_core::Affine`] (glyph baseline transform) to kurbo.
+fn vpath_affine_to_kurbo(m: veusz_paint_core::Affine) -> KAffine {
+    KAffine::new([m.a, m.b, m.c, m.d, m.e, m.f])
 }
 
-impl OutlinePen for OutlineToPath {
-    fn move_to(&mut self, gx: f32, gy: f32) {
-        self.path.move_to(Point::new(gx as f64, -gy as f64));
+/// Convert a [`veusz_paint_core::Path`] (glyph outline) to a kurbo `BezPath`.
+fn vpath_to_kurbo_bez(p: &veusz_paint_core::Path) -> BezPath {
+    use veusz_paint_core::PathVerb;
+    let mut out = BezPath::new();
+    let mut i = 0;
+    for v in &p.verbs {
+        match v {
+            PathVerb::MoveTo => { out.move_to(Point::new(p.points[i], p.points[i + 1])); i += 2; }
+            PathVerb::LineTo => { out.line_to(Point::new(p.points[i], p.points[i + 1])); i += 2; }
+            PathVerb::QuadTo => {
+                out.quad_to(
+                    Point::new(p.points[i], p.points[i + 1]),
+                    Point::new(p.points[i + 2], p.points[i + 3]),
+                );
+                i += 4;
+            }
+            PathVerb::CubicTo => {
+                out.curve_to(
+                    Point::new(p.points[i], p.points[i + 1]),
+                    Point::new(p.points[i + 2], p.points[i + 3]),
+                    Point::new(p.points[i + 4], p.points[i + 5]),
+                );
+                i += 6;
+            }
+            PathVerb::Close => out.close_path(),
+        }
     }
-    fn line_to(&mut self, gx: f32, gy: f32) {
-        self.path.line_to(Point::new(gx as f64, -gy as f64));
-    }
-    fn quad_to(&mut self, cx: f32, cy: f32, gx: f32, gy: f32) {
-        self.path.quad_to(
-            Point::new(cx as f64, -cy as f64),
-            Point::new(gx as f64, -gy as f64),
-        );
-    }
-    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32,
-                gx: f32, gy: f32) {
-        self.path.curve_to(
-            Point::new(c1x as f64, -c1y as f64),
-            Point::new(c2x as f64, -c2y as f64),
-            Point::new(gx as f64, -gy as f64),
-        );
-    }
-    fn close(&mut self) {
-        self.path.close_path();
-    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -376,59 +374,49 @@ mod tests {
     use veusz_paint_core::*;
 
     #[test]
-    fn embedded_font_is_present_and_parses() {
+    fn embedded_font_is_present() {
         assert!(EMBEDDED_FONT.len() > 10_000, "font asset must be present");
-        let font = FontRef::new(EMBEDDED_FONT).expect("font must parse");
-        // Must have a usable cmap and a few well-known glyphs.
-        let cmap = font.charmap();
-        for ch in ['A', 'a', '0', ' '] {
-            let gid = cmap.map(ch).unwrap_or(GlyphId::new(0));
-            assert_ne!(gid.to_u32(), 0,
-                       "embedded font is missing a basic Latin glyph for {ch:?}");
+    }
+
+    #[test]
+    fn embedded_font_engine_registers_and_lays_out() {
+        // The wasm text path: build the engine from the embedded font with NO
+        // system fonts, and confirm it produces real glyph outlines.
+        let engine = veusz_paint_text::TextEngine::with_embedded_font(EMBEDDED_FONT)
+            .expect("embedded font must register");
+        let layout = TextLayout {
+            text: "Hello".into(),
+            style: TextStyle { size_pt: 16.0, ..TextStyle::default() },
+        };
+        let glyphs = engine.layout_to_glyph_paths(&layout, (0.0, 20.0));
+        assert!(glyphs.len() >= 5, "expected >=5 glyphs, got {}", glyphs.len());
+        for g in &glyphs {
+            assert!(!g.path.verbs.is_empty(), "glyph 'Hello' must have outlines");
         }
     }
 
     #[test]
-    fn embedded_font_yields_non_empty_outlines() {
-        let font = FontRef::new(EMBEDDED_FONT).expect("font parses");
-        let size = SkSize::new(16.0);
-        let cmap = font.charmap();
-        let outlines = font.outline_glyphs();
-        let gid = cmap.map('A').unwrap();
-        let outline = outlines.get(gid).expect("glyph 'A' has an outline");
-        let mut pen = OutlineToPath::default();
-        outline
-            .draw(DrawSettings::unhinted(size, LocationRef::default()), &mut pen)
-            .expect("draw");
-        let elements: Vec<_> = pen.path.elements().iter().collect();
-        assert!(elements.len() >= 4,
-                "glyph 'A' outline must have several path elements, got {}",
-                elements.len());
-    }
-
-    #[test]
-    fn glyph_advance_widths_are_positive() {
-        let font = FontRef::new(EMBEDDED_FONT).unwrap();
-        let size = SkSize::new(12.0);
-        let cmap = font.charmap();
-        let metrics = font.glyph_metrics(size, LocationRef::default());
-        let mut total = 0.0_f32;
-        for ch in "Hello".chars() {
-            let gid = cmap.map(ch).unwrap();
-            let adv = metrics.advance_width(gid).unwrap_or(0.0);
-            assert!(adv > 0.0, "advance width for {ch:?} should be > 0");
-            total += adv;
-        }
-        // 'Hello' at 12pt should occupy somewhere between 25 and 60 user-space units.
-        assert!(total > 25.0 && total < 60.0,
-                "total width for 'Hello' at 12pt out of range: {total}");
+    fn embedded_font_engine_handles_multiline() {
+        // Multi-line is the headline win over the old bespoke renderer: the
+        // second line's baseline must sit below the first.
+        let engine = veusz_paint_text::TextEngine::with_embedded_font(EMBEDDED_FONT)
+            .expect("embedded font registers");
+        let layout = TextLayout {
+            text: "ab\ncd".into(),
+            style: TextStyle { size_pt: 16.0, ..TextStyle::default() },
+        };
+        let glyphs = engine.layout_to_glyph_paths(&layout, (0.0, 20.0));
+        assert!(!glyphs.is_empty());
+        let max_y = glyphs.iter().map(|g| g.position.f).fold(f64::MIN, f64::max);
+        assert!(max_y > 20.0 + 8.0,
+                "second line must advance the baseline, got max_y={max_y}");
     }
 
     #[test]
     fn build_scene_with_text_does_not_panic() {
         // A scene with a single DrawText; we don't run the GPU — just
         // confirm the WASM-side scene builder reaches text emission and
-        // calls into the skrifa outline path successfully.
+        // delegates to veusz-paint-text successfully.
         let mut rec = SceneRecorder::new();
         rec.draw_text(
             &TextLayout {

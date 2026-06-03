@@ -45,8 +45,10 @@
 use std::fmt::Write as _;
 
 use base64::Engine as _;
+#[cfg(feature = "text")]
+use veusz_paint_core::Affine;
 use veusz_paint_core::{
-    Affine, Color, Fill, FillRule, LineCap, LineJoin, Paint, Path, PathVerb, Rect, Scene,
+    Color, Fill, FillRule, LineCap, LineJoin, Paint, Path, PathVerb, Rect, Scene,
     SceneOp, Stroke, TextLayout,
 };
 
@@ -404,7 +406,9 @@ fn path_d(p: &Path) -> String {
 /// Like [`path_d`], but maps every coordinate through `m` first. Used for glyph
 /// outlines, whose [`Affine`] from the layout engine is a pure baseline
 /// translation; baking it into the `d` keeps text as flat `<path>` data with no
-/// per-glyph `<g transform>` wrapper.
+/// per-glyph `<g transform>` wrapper. Only the `text` feature emits glyph
+/// outlines, so this is gated to avoid a dead-code warning when it's off.
+#[cfg(feature = "text")]
 fn path_d_transformed(p: &Path, m: Affine) -> String {
     // (x, y) -> (a·x + c·y + e, b·x + d·y + f), matching Affine's convention.
     let tx = |x: f64, y: f64| (m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f);
