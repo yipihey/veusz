@@ -8,9 +8,13 @@ and nothing to install**. Open it on a laptop or a phone.
 
 ## Compute, in the browser
 
-The Python cell runs in a JupyterLite (Pyodide) kernel — click **run** and edit
-it. It builds the kind of two-phase distribution a simulation produces: a warm
-diffuse component and a cool dense ridge.
+The Python cell below is **live and editable**. First press the **power button
+(⏻) at the top of the page** to start the in-browser kernel (JupyterLite /
+Pyodide — this downloads the runtime once, on demand). Then each cell shows a
+**▶ run** button and becomes an editable input — change the numbers, re-run,
+and watch the output update, entirely on your device. It builds the kind of
+two-phase distribution a simulation produces: a warm diffuse component and a
+cool dense ridge.
 
 ```{code-cell} python
 import numpy as np
