@@ -36,6 +36,7 @@ on a real change (new view, edited data).
 import numpy as N
 
 from .commonfn import _
+from .oned import Dataset1DBase
 from .twod import Dataset2DBase, Dataset2D
 
 
@@ -61,6 +62,67 @@ class InProcessProvider:
 
     def histogram2d(self, **kwargs):
         return self.service.histogram2d(**kwargs)
+
+
+class Dataset1DKernel(Dataset1DBase):
+    """A 1D dataset fetched from a provider over data resident elsewhere.
+
+    The everyday "plot a kernel column" path: the values are pulled via
+    ``provider.fetch`` — optionally filtered to a value range and decimated to a
+    display-resolution point budget, so a huge column never crosses whole.
+    Cached against the fetch parameters; call :meth:`setView` when the axis
+    range/resolution changes and :meth:`invalidate` when the source changes.
+    """
+
+    dstype = _('Kernel data')
+    editable = False
+    serr = perr = nerr = None
+
+    def __init__(self, provider, ref, lo=None, hi=None,
+                 max_points=None, decimate='stride'):
+        Dataset1DBase.__init__(self)
+        self.provider = provider
+        self.ref = ref
+        self.lo = lo
+        self.hi = hi
+        self.max_points = max_points
+        self.decimate = decimate
+        self.linked = None
+        self._cache = None
+        self._key = None
+
+    def setView(self, lo=None, hi=None, max_points=None):
+        """Update the value-range / point budget (e.g. on zoom) and drop the
+        cache so the next access re-fetches a decimation for the new view."""
+        self.lo, self.hi, self.max_points = lo, hi, max_points
+        self._cache = None
+
+    def invalidate(self):
+        self._cache = None
+
+    def _get(self):
+        key = (self.ref, self.lo, self.hi, self.max_points, self.decimate)
+        if self._cache is None or key != self._key:
+            arr, _version = self.provider.fetch(
+                self.ref, lo=self.lo, hi=self.hi,
+                max_points=self.max_points, decimate=self.decimate)
+            self._cache = N.asarray(arr, dtype=N.float64)
+            self._key = key
+        return self._cache
+
+    data = property(lambda self: self._get())
+
+    def canUnlink(self):
+        return False
+
+    def linkedInformation(self):
+        return _("Kernel data '%s'") % self.ref
+
+    def saveDataDumpToText(self, fileobj, name):
+        pass
+
+    def saveDataDumpToHDF5(self, group, name):
+        pass
 
 
 class Dataset2DKernelHisto(Dataset2DBase):

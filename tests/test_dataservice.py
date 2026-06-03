@@ -153,6 +153,59 @@ def test_fetch_decimation_caps_points():
     assert out2.min() >= 10 and out2.max() <= 19 and out2.size == 10
 
 
+def test_kernel_1d_fetch_decimate_and_cache():
+    from veusz.datasets.kernel import Dataset1DKernel, InProcessProvider
+    s = _service(N.arange(1_000_000.0), N.arange(1_000_000.0))
+    prov = InProcessProvider(s)
+
+    d = Dataset1DKernel(prov, 'x', max_points=2000, decimate='stride')
+    assert d.dimensions == 1 and d.serr is None
+    assert len(d.data) <= 2000
+
+    calls = {'n': 0}
+    orig = s.fetch
+
+    def counting(*a, **k):
+        calls['n'] += 1
+        return orig(*a, **k)
+    s.fetch = counting
+    d2 = Dataset1DKernel(prov, 'x', max_points=500)
+    _ = d2.data
+    _ = d2.data
+    assert calls['n'] == 1            # cached
+    d2.setView(lo=0.0, hi=100.0, max_points=500)
+    _ = d2.data
+    assert calls['n'] == 2 and d2.data.max() <= 100
+
+
+def test_kernel_1d_renders_in_xy_plot():
+    from veusz import document
+    from veusz.document.commandinterface import CommandInterface
+    from veusz.datasets.kernel import Dataset1DKernel, InProcessProvider
+    from veusz.paint.qt_capture import capture_document_scene
+
+    s = _service(N.linspace(0, 10, 5000), N.sin(N.linspace(0, 10, 5000)))
+    prov = InProcessProvider(s)
+    ci = CommandInterface(document.Document())
+    ci.document.setData('kx', Dataset1DKernel(prov, 'x'))
+    ci.document.setData('ky', Dataset1DKernel(prov, 'y'))
+    ci.To(ci.Add('page'))
+    ci.To(ci.Add('graph'))
+    ci.To(ci.Add('xy'))
+    ci.Set('xData', 'kx')
+    ci.Set('yData', 'ky')
+    ci.To('..')
+    scene = capture_document_scene(ci.document, page=0, pagesize_px=(500, 400),
+                                   dpi=(96.0, 96.0))
+    raw = bytes(scene) if isinstance(scene, (bytes, bytearray)) else scene.encode()
+    ops = json.loads(raw)['ops']
+
+    def opname(o):
+        return o if isinstance(o, str) else next(iter(o.keys()), '')
+    assert any(k in opname(o) for o in ops
+               for k in ('DrawMarkers', 'StrokePath', 'DrawPath'))
+
+
 def test_kernel_histo_renders_single_image_op():
     from veusz import document
     from veusz.document.commandinterface import CommandInterface
