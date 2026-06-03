@@ -1,0 +1,14 @@
+version: 1
+project:
+  id: myst-veusz-example
+  title: Veusz figures in a browser-native MyST notebook
+  # In-browser compute (JupyterLite + Pyodide): the code cells below run
+  # client-side, no server. This is the runtime the Veusz figure will share
+  # once the kernel-data bridge lands (see the repo's dataservice/kernel work).
+  jupyter:
+    lite: true
+  # The myst-veusz directive (the `veusz` directive that embeds <veusz-figure>).
+  plugins:
+    - ../src/index.mjs
+site:
+  template: book-theme
