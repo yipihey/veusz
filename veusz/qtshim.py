@@ -964,6 +964,37 @@ class QPainterPath:
     def fillRule(self): return self._fillrule
     def setFillRule(self, r): self._fillrule = r
 
+    def _copy(self):
+        out = QPainterPath()
+        out._els = [_PathEl(e.type, e.x, e.y) for e in self._els]
+        out._fillrule = self._fillrule
+        out._cx, out._cy = self._cx, self._cy
+        return out
+
+    def subtracted(self, other):
+        """Return ``self`` with ``other``'s subpaths punched out as holes.
+
+        A true geometric path difference needs a full polygon-boolean
+        engine; here we instead append ``other``'s subpaths and switch to
+        even-odd fill, which carves the (typically small, non-overlapping)
+        subtracted regions out as holes — exactly the case Veusz uses when
+        it subtracts contour-label rectangles from the line clip path. The
+        result is consumed only as a clip path, where even-odd "rect with
+        rectangular holes" gives the intended behaviour.
+        """
+        out = self._copy()
+        out._els.extend(_PathEl(e.type, e.x, e.y) for e in other._els)
+        out._fillrule = Qt.FillRule.OddEvenFill
+        return out
+
+    def __sub__(self, other):
+        return self.subtracted(other)
+
+    def __isub__(self, other):
+        self._els.extend(_PathEl(e.type, e.x, e.y) for e in other._els)
+        self._fillrule = Qt.FillRule.OddEvenFill
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Paint devices (data holders; never rasterised here)

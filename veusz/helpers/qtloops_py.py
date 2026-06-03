@@ -886,32 +886,103 @@ class RectangleOverlapTester:
         return any(_polys_overlap(r, corners) for r in self._rects)
 
 
+# Candidate fractional positions along a contour line at which a label may be
+# placed, tried in order (matches NUM_LABEL_POSITIONS in polylineclip.cpp).
+_LABEL_POSITIONS = (0.5, 1.0 / 3.0, 2.0 / 3.0, 0.4, 0.6, 0.25, 0.75)
+
+
 class LineLabeller:
-    """Pure-Python contour line labeller. Unlike the C++ extension it does not
-    place text or break lines around labels — it simply passes the added
-    polylines straight through so contour *lines* render. The painter clips to
-    ``clippath`` (the plot rect, set by the subclass), so lines stay inside the
-    graph; label text is drawn by the subclass's ``drawAt`` (a no-op here, since
-    ``process`` doesn't compute label rectangles)."""
+    """Pure-Python contour line labeller, mirroring ``polylineclip.cpp``.
+
+    ``addLine`` clips each contour polyline to the clip rectangle and stores
+    the clipped pieces as one *polyset*. ``process`` walks every polyset and,
+    for each clipped polyline long enough to hold a label, finds the first
+    candidate position whose (rotated) label rectangle does not overlap an
+    already-placed label, then calls ``drawAt(polyset_index, rect)``. The
+    subclass (``ContourLineLabeller`` in contour.py) overrides ``drawAt`` to
+    actually render the numeric label and subtract its rectangle from the line
+    clip path, so contour LINES *and* their inline LABELS both render headless.
+    """
 
     def __init__(self, cliprect=None, rotatelabels=False):
         self._cliprect = cliprect
-        self._rotatelabels = rotatelabels
-        self._lines = []
+        self._rotatelabels = bool(rotatelabels)
+        # one PolyVector (list of clipped QPolygonF) per addLine call
+        self._polys = []
+        self._textsizes = []
 
     def addLine(self, poly, textsize):
-        self._lines.append(poly)
+        """Clip ``poly`` to the clip rect and store the pieces as one polyset.
+        ``textsize`` is a QSizeF giving the label box for this contour."""
+        if self._cliprect is not None:
+            pieces = clipPolyline(self._cliprect, poly)
+        else:
+            pieces = [poly]
+        self._polys.append(pieces)
+        self._textsizes.append(textsize)
+
+    def _find_line_position(self, poly, frac, size):
+        """Return a RotatedRectangle for a label centred at fractional length
+        ``frac`` along ``poly``, or an invalid (zero-size) one if the line is
+        too short. Mirrors ``LineLabeller::findLinePosition``."""
+        pts = [(p.x(), p.y()) for p in poly]
+        if len(pts) < 2:
+            return RotatedRectangle()
+
+        sw = size.width() if hasattr(size, "width") else size[0]
+        sh = size.height() if hasattr(size, "height") else size[1]
+
+        seglens = [_math.hypot(pts[i][0] - pts[i - 1][0],
+                               pts[i][1] - pts[i - 1][1])
+                   for i in range(1, len(pts))]
+        totlength = sum(seglens)
+
+        # don't label lines which are too short to hold the text
+        if totlength / 2.0 < max(sw, sh):
+            return RotatedRectangle()
+
+        target = totlength * frac
+        length = 0.0
+        for i in range(1, len(pts)):
+            seglength = seglens[i - 1]
+            if length + seglength >= target:
+                fseg = (target - length) / seglength if seglength else 0.0
+                xp = pts[i - 1][0] * (1 - fseg) + pts[i][0] * fseg
+                yp = pts[i - 1][1] * (1 - fseg) + pts[i][1] * fseg
+                angle = (_math.atan2(pts[i][1] - pts[i - 1][1],
+                                     pts[i][0] - pts[i - 1][0])
+                         if self._rotatelabels else 0.0)
+                return RotatedRectangle(xp, yp, sw, sh, angle)
+            length += seglength
+
+        return RotatedRectangle()
 
     def process(self):
-        pass
+        """Place at most one label per clipped polyline, avoiding overlaps,
+        invoking ``drawAt`` for each. Mirrors ``LineLabeller::process``."""
+        rtest = RectangleOverlapTester()
+        for polyseti, pv in enumerate(self._polys):
+            size = self._textsizes[polyseti]
+            for poly in pv:
+                for frac in _LABEL_POSITIONS:
+                    r = self._find_line_position(poly, frac, size)
+                    if not r.isValid():
+                        break
+                    if not rtest.willOverlap(r):
+                        self.drawAt(polyseti, r)
+                        rtest.addRect(r)
+                        break  # only add label once per polyline
 
     def getNumPolySets(self):
-        return len(self._lines)
+        return len(self._polys)
 
     def getPolySet(self, i):
-        return [self._lines[i]]
+        if 0 <= i < len(self._polys):
+            return self._polys[i]
+        return []
 
     def drawAt(self, idx, r):
+        """Overridden by subclasses to render the label; no-op by default."""
         pass
 
 
