@@ -10,9 +10,18 @@ Implements just the :class:`Cntr` API the contour widget uses:
 
 ``trace(level)`` does marching squares and returns a list of ``Nx2`` float
 arrays (polylines in data coordinates), joined where segments share an
-endpoint. Filled regions (``trace(level1, level2)``) are not implemented here
-and return ``[]`` — contour *lines* render in the browser, fills are skipped
-(the C extension is still used on the desktop).
+endpoint.
+
+``trace(level1, level2)`` returns the filled region between two levels as a
+list of closed ``Nx2`` polygons. The contour widget adds them all to one
+``QPainterPath`` (even-odd fill) and fills it, so the polygons only have to
+tile the band ``level1 <= z <= level2`` without overlap — they do not need to
+be merged into the big slit-connected polygons the C extension builds for
+rendering efficiency. We obtain that tiling by splitting every quad cell into
+two triangles (over which the interpolated field is planar) and clipping each
+triangle to the band in z-space (Sutherland-Hodgman on the two level planes).
+This reproduces the same filled area as the C ``_nc_cntr`` tracer, including
+saddle cells, using linear edge interpolation (as marching squares does).
 """
 
 import numpy as N
@@ -37,9 +46,43 @@ class Cntr:
 
     def trace(self, level, level2=None):
         if level2 is not None:
-            return []  # filled regions not supported in the pure-Python fallback
+            return self._fill(float(level), float(level2))
         segs = self._segments(float(level))
         return _join(segs)
+
+    def _fill(self, level1, level2):
+        """Return closed polygons tiling the region level1 <= z <= level2.
+
+        Each quad cell is split into two triangles; over a triangle the
+        field is planar, so clipping the triangle to z >= lo and z <= hi
+        (Sutherland-Hodgman against the two level planes, interpolating
+        position on cut edges) yields the exact linear isoband piece for
+        that triangle. The pieces tile the band without overlap.
+        """
+        lo, hi = (level1, level2) if level1 <= level2 else (level2, level1)
+        x, y, z, mask = self.x, self.y, self.z, self.mask
+        ny, nx = z.shape
+        polys = []
+
+        for j in range(ny - 1):
+            for i in range(nx - 1):
+                if mask is not None and (mask[j, i] or mask[j, i + 1]
+                                         or mask[j + 1, i + 1] or mask[j + 1, i]):
+                    continue
+                # corners: BL, BR, TR, TL as (x, y, z)
+                c0 = (x[j, i], y[j, i], z[j, i])
+                c1 = (x[j, i + 1], y[j, i + 1], z[j, i + 1])
+                c2 = (x[j + 1, i + 1], y[j + 1, i + 1], z[j + 1, i + 1])
+                c3 = (x[j + 1, i], y[j + 1, i], z[j + 1, i])
+                if not all(N.isfinite(c[2]) for c in (c0, c1, c2, c3)):
+                    continue
+                # split quad into triangles (BL, BR, TR) and (BL, TR, TL)
+                for tri in ((c0, c1, c2), (c0, c2, c3)):
+                    band = _clip_band(tri, lo, hi)
+                    if len(band) >= 3:
+                        polys.append(N.array([(p[0], p[1]) for p in band],
+                                             dtype=float))
+        return polys
 
     def _segments(self, level):
         x, y, z, mask = self.x, self.y, self.z, self.mask
@@ -76,6 +119,47 @@ class Cntr:
                 for a, b in pairs:
                     segs.append((edge[a](), edge[b]()))
         return segs
+
+
+def _clip_half(poly, keep_ge, thresh):
+    """Sutherland-Hodgman clip of a polygon of (x, y, z) vertices to the
+    half-space z >= thresh (keep_ge True) or z <= thresh (keep_ge False),
+    interpolating x, y, z linearly on cut edges."""
+    if not poly:
+        return []
+
+    def inside(p):
+        return p[2] >= thresh if keep_ge else p[2] <= thresh
+
+    def intersect(a, b):
+        da, db = a[2] - thresh, b[2] - thresh
+        denom = da - db
+        t = 0.5 if denom == 0 else da / denom
+        return (a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                thresh)
+
+    out = []
+    prev = poly[-1]
+    prev_in = inside(prev)
+    for cur in poly:
+        cur_in = inside(cur)
+        if cur_in:
+            if not prev_in:
+                out.append(intersect(prev, cur))
+            out.append(cur)
+        elif prev_in:
+            out.append(intersect(prev, cur))
+        prev, prev_in = cur, cur_in
+    return out
+
+
+def _clip_band(tri, lo, hi):
+    """Clip a triangle (list of (x, y, z)) to the band lo <= z <= hi,
+    returning the resulting convex polygon as a list of (x, y, z)."""
+    poly = _clip_half(list(tri), True, lo)   # z >= lo
+    poly = _clip_half(poly, False, hi)       # z <= hi
+    return poly
 
 
 def _key(pt):
