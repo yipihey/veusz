@@ -2,19 +2,26 @@
  * Boot the Veusz runtime inside Pyodide (CPython compiled to WebAssembly) so
  * the document model + the daemon's JSON-RPC handlers run entirely in the
  * browser — no server. Returns a `Transport` that the existing `Rpc`/store use
- * unchanged (see `pyodideTransport`), plus a `loadVsz` helper and the raw
- * Pyodide instance.
+ * unchanged (see `workerTransport`), plus a `loadVsz` helper.
+ *
+ * Pyodide now runs inside a dedicated Web Worker (`pyodideWorker.ts`) rather
+ * than on the page, so RPC calls no longer block the UI thread during
+ * render/edit. This module spawns that worker, performs the init handshake,
+ * and adapts its message protocol to the `Transport` interface — nothing
+ * downstream (store, client, components) changes.
  *
  * The heavy runtime (Pyodide core, numpy, the veusz wheel, fonttools) loads
  * from a CDN by default so an author's page hosts only their `.vsz` + a small
  * loader; pass explicit URLs to vendor it for a self-contained bundle.
  *
- * Rendering is NOT done here: handlers return the abstract Scene IR
- * (`render.scene`), which the Vello/WebGPU WASM renderer rasterises on a
- * canvas. We set `__VEUSZ_WASM_BASE__` so that renderer loads from `wasmBase`.
+ * Rendering is NOT done in the worker: handlers return the abstract Scene IR
+ * (`render.scene`), which the Vello/WebGPU WASM renderer rasterises on a canvas
+ * ON THE PAGE. We set `__VEUSZ_WASM_BASE__` (a page global) so that renderer
+ * loads from `wasmBase`; only the Pyodide bridge moved into the worker.
  */
 
-import { pyodideTransport, type PyodideBridge, type Transport } from '../rpc/transport';
+import { workerTransport, type Transport, type WorkerTransport } from '../rpc/transport';
+import type { WorkerInitConfig } from './pyodideWorker';
 import type { LocalDataFile } from './localData';
 
 const PYODIDE_VERSION = '0.26.4';
@@ -37,96 +44,91 @@ export interface RuntimeOptions {
 
 export interface VeuszRuntime {
   transport: Transport;
-  bridge: PyodideBridge;
   /** Load a .vsz from its text; resolves once the document + datasets exist.
    *  Sidecar data files (from `ImportFile`/`ImportFileCSV`/… relative paths)
    *  are written next to the document first so those imports resolve. */
   loadVsz: (text: string, dataFiles?: LocalDataFile[]) => Promise<unknown>;
-  /** The raw Pyodide instance (escape hatch). */
-  pyodide: PyodideLike;
+  /** Tear down the worker (and its Pyodide) — used by the custom element on
+   *  disconnect so a removed figure frees its background thread. */
+  dispose: () => void;
 }
 
-interface PyodideLike {
-  loadPackage(names: string[]): Promise<void>;
-  pyimport(name: string): unknown;
-  runPythonAsync(code: string): Promise<unknown>;
-  FS: { writeFile(path: string, data: string | Uint8Array): void };
-}
-
-// The heavy runtime (Pyodide + numpy + veusz + fonttools) is loaded once and
-// shared across every figure on the page; each figure gets its own Bridge
-// (its own document) below.
-let _sharedPyodide: Promise<PyodideLike> | null = null;
-
-async function ensurePyodide(opts: RuntimeOptions): Promise<PyodideLike> {
-  if (_sharedPyodide) return _sharedPyodide;
-  const indexUrl = opts.pyodideIndexUrl ?? DEFAULT_PYODIDE_INDEX;
-  const progress = opts.onProgress ?? (() => {});
-  _sharedPyodide = (async () => {
-    progress('Loading Pyodide…');
-    const pyMod = (await import(/* @vite-ignore */ `${indexUrl}pyodide.mjs`)) as {
-      loadPyodide(cfg: { indexURL: string }): Promise<PyodideLike>;
+/**
+ * Spawn the Pyodide worker and complete its init handshake.
+ *
+ * Vite's module-worker form `new Worker(new URL('./pyodideWorker.ts',
+ * import.meta.url), { type: 'module' })` makes Vite emit the worker as a
+ * separate chunk and rewrite the URL — both in dev and in the library build.
+ * We pass all Pyodide config in the `init` message (the worker can't read the
+ * DOM) and resolve once it posts `ready`, or reject with the real boot error
+ * on `init-error` (so the embed UI shows a meaningful message).
+ */
+function spawnWorker(config: WorkerInitConfig): Promise<Worker> {
+  const worker = new Worker(new URL('./pyodideWorker.ts', import.meta.url), {
+    type: 'module',
+  });
+  return new Promise<Worker>((resolve, reject) => {
+    const onMessage = (e: MessageEvent) => {
+      const msg = e.data as { type?: string; message?: string };
+      if (msg.type === 'ready') {
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+        resolve(worker);
+      } else if (msg.type === 'init-error') {
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+        worker.terminate();
+        reject(new Error(msg.message || 'Pyodide worker failed to start'));
+      }
     };
-    const py = await pyMod.loadPyodide({ indexURL: indexUrl });
-    progress('Loading numpy…');
-    await py.loadPackage(['numpy', 'micropip']);
-    progress('Installing Veusz…');
-    const micropip = py.pyimport('micropip') as {
-      install(reqs: string | string[]): Promise<void>;
+    // A worker-level `error` (e.g. the module failed to load / parse) never
+    // reaches the init promise via a message, so surface it here too.
+    const onError = (e: ErrorEvent) => {
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+      worker.terminate();
+      reject(new Error(e.message || 'Pyodide worker error'));
     };
-    // fonttools is pure-Python (font metrics for the qtshim); scipy is left
-    // out of the base boot — only the fit handler needs it (install lazily).
-    await micropip.install('fonttools');
-    if (opts.extraWheels?.length) await micropip.install(opts.extraWheels);
-    if (opts.veuszWheelUrl) await micropip.install(opts.veuszWheelUrl);
-    return py;
-  })().catch((e) => { _sharedPyodide = null; throw e; });
-  return _sharedPyodide;
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    worker.postMessage({ type: 'init', config });
+  });
 }
-
-let _vszSeq = 0;
 
 export async function bootVeuszRuntime(opts: RuntimeOptions = {}): Promise<VeuszRuntime> {
   const progress = opts.onProgress ?? (() => {});
   if (opts.wasmBase) {
+    // The Vello/WebGPU renderer runs on the PAGE (not the worker), so this
+    // global must be set here on the main thread.
     (globalThis as unknown as { __VEUSZ_WASM_BASE__?: string }).__VEUSZ_WASM_BASE__ =
       opts.wasmBase;
   }
 
-  const py = await ensurePyodide(opts);
+  // Boot Pyodide + install the wheel inside the worker. We can't report the
+  // worker's fine-grained stages without an extra channel, so show coarse
+  // progress around the one long await.
+  progress('Loading runtime…');
+  const worker = await spawnWorker({
+    pyodideIndexUrl: opts.pyodideIndexUrl ?? DEFAULT_PYODIDE_INDEX,
+    veuszWheelUrl: opts.veuszWheelUrl,
+    extraWheels: opts.extraWheels,
+  });
 
-  progress('Starting renderer…');
-  // Each figure gets its own bridge (registers widgets + a fresh document
-  // under qtshim), so multiple embeds on a page are independent. NB: Pyodide
-  // Python classes are instantiated by *calling* them, not with `new` (which
-  // returns a bare JS object lacking the Python methods).
-  const bridgeMod = py.pyimport('veusz.daemon.pyodide_bridge') as {
-    Bridge: () => PyodideBridge;
-  };
-  const bridge = bridgeMod.Bridge();
-  const transport = pyodideTransport(bridge);
+  const transport: WorkerTransport = workerTransport(worker);
 
-  // Each figure gets its own directory so sidecar data files (written by
-  // basename) from different figures never collide, and relative imports in
-  // the .vsz resolve against the document's own directory.
-  const figDir = `/veusz/fig_${_vszSeq++}`;
-  const vszPath = `${figDir}/figure.vsz`;
-  const loadVsz = async (text: string, dataFiles: LocalDataFile[] = []) => {
-    // Write into Pyodide's in-memory FS and reuse the file.open handler so
-    // recent-files + change notifications fire exactly like the desktop.
-    await py.runPythonAsync(`import os; os.makedirs(${JSON.stringify(figDir)}, exist_ok=True)`);
-    for (const f of dataFiles) {
-      const path = `${figDir}/${f.name}`;
-      const dir = path.slice(0, path.lastIndexOf('/'));
-      if (dir && dir !== figDir) {
-        await py.runPythonAsync(`import os; os.makedirs(${JSON.stringify(dir)}, exist_ok=True)`);
-      }
-      py.FS.writeFile(path, f.bytes);
-    }
-    py.FS.writeFile(vszPath, text);
-    return transport.call('file.open', { path: vszPath });
-  };
+  const loadVsz = (text: string, dataFiles: LocalDataFile[] = []) =>
+    // The .vsz text + sidecar bytes are written into the worker's in-memory FS
+    // there (it owns Pyodide); `request` correlates the reply by id like a
+    // normal call and resolves with the `file.open` result.
+    transport.request('loadVsz', {
+      text,
+      dataFiles: dataFiles.map((f) => ({ name: f.name, bytes: f.bytes })),
+    });
 
   progress('Ready');
-  return { transport, bridge, loadVsz, pyodide: py };
+  return {
+    transport,
+    loadVsz,
+    dispose: () => worker.terminate(),
+  };
 }

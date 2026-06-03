@@ -40,7 +40,7 @@ import { createElement } from 'react';
 import { createRpc } from '../rpc/client';
 import { createDocStore } from '../state/doc';
 import { webgpuAvailable } from '../components/plot/velloWasm';
-import { bootVeuszRuntime } from './runtime';
+import { bootVeuszRuntime, type VeuszRuntime } from './runtime';
 import { prefetchUrlsInVsz, wireUrlLinks, type UrlLinkController } from './urlLinks';
 import { fetchDataFiles } from './localData';
 import { VeuszFigure } from './VeuszFigure';
@@ -53,6 +53,7 @@ class VeuszFigureElement extends HTMLElement {
   private mounted = false;
   private noteEl: HTMLElement | null = null;
   private urlLinks: UrlLinkController | null = null;
+  private runtime: VeuszRuntime | null = null;
 
   connectedCallback() {
     if (this.mounted) return;
@@ -65,6 +66,9 @@ class VeuszFigureElement extends HTMLElement {
     this.urlLinks = null;
     this.root?.unmount();
     this.root = null;
+    // Free the background Pyodide worker for a removed figure.
+    this.runtime?.dispose();
+    this.runtime = null;
   }
 
   private status(text: string) {
@@ -172,6 +176,7 @@ class VeuszFigureElement extends HTMLElement {
         veuszWheelUrl: this.getAttribute('veusz-wheel') ?? undefined,
         onProgress: (s) => { if (poster) this.setNote(s); else this.status(s); },
       });
+      this.runtime = runtime;
 
       const resp = await fetch(src);
       if (!resp.ok) throw new Error(`fetch ${src}: ${resp.status}`);
