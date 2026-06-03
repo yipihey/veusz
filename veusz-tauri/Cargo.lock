@@ -4936,15 +4936,24 @@ dependencies = [
 name = "veusz-paint-vello"
 version = "0.0.0"
 dependencies = [
- "bytemuck",
- "kurbo",
  "peniko",
  "png 0.18.1",
  "pollster",
  "vello",
  "veusz-paint-core",
  "veusz-paint-text",
+ "veusz-paint-vello-common",
  "wgpu",
+]
+
+[[package]]
+name = "veusz-paint-vello-common"
+version = "0.0.0"
+dependencies = [
+ "kurbo",
+ "peniko",
+ "vello",
+ "veusz-paint-core",
 ]
 
 [[package]]
@@ -4959,6 +4968,7 @@ dependencies = [
  "vello",
  "veusz-paint-core",
  "veusz-paint-svg",
+ "veusz-paint-vello-common",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

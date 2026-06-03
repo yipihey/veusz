@@ -7,11 +7,12 @@ description = "Vello (wgpu) backend for Veusz's abstract Painter trait. GPU comp
 [dependencies]
 veusz-paint-core = { path = "../veusz-paint-core" }
 veusz-paint-text = { path = "../veusz-paint-text" }
+# Shared SceneOp -> vello::Scene translator (the dispatch loop + kurbo/peniko
+# conversions). This crate only supplies the native DrawText path on top.
+veusz-paint-vello-common = { path = "../veusz-paint-vello-common" }
 vello = "0.3"
 wgpu = "22"
 # peniko / kurbo are re-exported via vello; keep versions matched.
 peniko = "0.2"
-kurbo = "0.11.0"
 png = "0.18"
 pollster = "0.3"
-bytemuck = "1"

@@ -1,0 +1,12 @@
+[package]
+name = "veusz-paint-vello-common"
+version = "0.0.0"
+edition = "2021"
+description = "Shared Scene -> vello::Scene translator for the vello backends. Holds the single authoritative copy of the SceneOp dispatch loop + the kurbo/peniko conversions, parameterised over a TextRenderer trait and an image-preprocess hook so the native (veusz-paint-vello) and WebGPU (veusz-paint-wasm) backends share it. Deliberately depends only on wasm-clean crates (no veusz-paint-text/fontique)."
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+vello = "0.3"
+# peniko / kurbo are re-exported via vello; keep versions matched.
+peniko = "0.2"
+kurbo = "0.11.0"
