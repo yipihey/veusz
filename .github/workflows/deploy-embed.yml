@@ -51,11 +51,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Build headless veusz wheel
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          # Pure-Python wheel: no PyQt6 / numpy / C-extensions needed to build.
-          python scripts/build_embed_wheel.py
 
       - name: Set up Rust (with wasm target)
         uses: dtolnay/rust-toolchain@stable
@@ -74,6 +69,14 @@ jobs:
           cargo install wasm-bindgen-cli --version "$WBV" --locked
       - name: Build Vello WASM
         run: scripts/build_paint_wasm.sh
+
+      - name: Build headless veusz wheel
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          # Pure-Python wheel: no PyQt6 / numpy / C-extensions needed to build.
+          # Built AFTER the wasm so build_embed_wheel.py bundles the freshly-built
+          # veusz-paint-wasm renderer into the wheel (VeuszWidget then needs no CDN).
+          python scripts/build_embed_wheel.py
 
       - name: Set up Node + pnpm
         uses: pnpm/action-setup@v4

@@ -49,8 +49,27 @@ from ..daemon.pyodide_bridge import Bridge
 
 # Default CDN hosting the pure-Rust Scene-IR -> SVG wasm backend
 # (veusz_paint_wasm.js + veusz_paint_wasm_bg.wasm), published with CORS by
-# .github/workflows/deploy-embed.yml. Override per widget with `wasm_base`.
+# .github/workflows/deploy-embed.yml. Used only as a FALLBACK when the wasm is
+# not bundled in the wheel; override per widget with `wasm_base`.
 DEFAULT_WASM_BASE = "https://yipihey.github.io/veusz/embed/v4.5.0/wasm"
+
+
+def _load_bundled_wasm():
+    """The wasm renderer shipped inside the wheel (``notebook/_assets``), as
+    ``(glue_text, wasm_bytes)`` — or ``(None, b"")`` when absent (older wheels).
+    Handed to the frontend over the comm so rendering needs no network. Loaded
+    once and cached at module scope; the per-widget cost is the comm transfer."""
+    import pathlib
+    here = pathlib.Path(__file__).parent / "_assets"
+    try:
+        glue = (here / "veusz_paint_wasm.js").read_text(encoding="utf-8")
+        wasm = (here / "veusz_paint_wasm_bg.wasm").read_bytes()
+        return glue, wasm
+    except Exception:  # noqa: BLE001 - any miss => fall back to the CDN
+        return None, b""
+
+
+_BUNDLED_WASM_GLUE, _BUNDLED_WASM_BYTES = _load_bundled_wasm()
 
 # The anywidget frontend (ESM). Loads the wasm SVG backend lazily and redraws
 # whenever the kernel syncs a new Scene IR. Kept as an inline string so it ships
@@ -63,18 +82,50 @@ function base64ToBytes(b64) {
   return out;
 }
 
-// One wasm load per (base) per page; shared across widgets.
+// One instantiation per key per page, shared across widgets.
 const _moduleCache = new Map();
-function loadWasm(base) {
-  if (!_moduleCache.has(base)) {
+function _instantiate(key, glueUrl, initArg, revoke) {
+  if (!_moduleCache.has(key)) {
     const p = (async () => {
-      const mod = await import(/* webpackIgnore: true */ `${base}/veusz_paint_wasm.js`);
-      await mod.default({ module_or_path: `${base}/veusz_paint_wasm_bg.wasm` });
-      return mod;
-    })().catch((e) => { _moduleCache.delete(base); throw e; });
-    _moduleCache.set(base, p);
+      try {
+        const mod = await import(/* webpackIgnore: true */ glueUrl);
+        await mod.default(initArg);
+        return mod;
+      } finally { if (revoke) revoke(); }
+    })().catch((e) => { _moduleCache.delete(key); throw e; });
+    _moduleCache.set(key, p);
   }
-  return _moduleCache.get(base);
+  return _moduleCache.get(key);
+}
+
+// Prefer the wasm BUNDLED in the wheel and handed over the comm (glue text +
+// wasm bytes) — this needs ZERO network, so it works under VS Code's webview
+// CSP and fully offline. Fall back to the CDN `wasm_base` only when a widget
+// was created from a wheel that predates bundling.
+function getWasm(model) {
+  const glue = model.get("_wasm_glue");
+  const view = model.get("_wasm_bytes");
+  const len = view ? (view.byteLength || 0) : 0;
+  if (glue && len > 0) {
+    const key = "bundled:" + glue.length + ":" + len;
+    if (_moduleCache.has(key)) return _moduleCache.get(key);
+    // Copy to a standalone ArrayBuffer: a view over the comm buffer can read as
+    // empty by the time WebAssembly.instantiate consumes it.
+    let buf = null;
+    if (view instanceof DataView || ArrayBuffer.isView(view)) {
+      buf = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+    } else if (view instanceof ArrayBuffer) {
+      buf = view.slice(0);
+    }
+    if (buf && buf.byteLength > 0) {
+      const url = URL.createObjectURL(new Blob([glue], { type: "text/javascript" }));
+      return _instantiate(key, url, { module_or_path: buf }, () => URL.revokeObjectURL(url));
+    }
+    // else: bytes didn't survive the comm — fall through to the CDN.
+  }
+  const base = (model.get("wasm_base") || "").replace(/\/+$/, "");
+  return _instantiate("cdn:" + base, `${base}/veusz_paint_wasm.js`,
+                      { module_or_path: `${base}/veusz_paint_wasm_bg.wasm` }, null);
 }
 
 function render({ model, el }) {
@@ -108,12 +159,11 @@ function render({ model, el }) {
     const b64 = model.get("scene_b64");
     const w = model.get("width");
     const h = model.get("height");
-    const base = (model.get("wasm_base") || "").replace(/\/+$/, "");
     if (!b64) { status.textContent = "(no figure yet)"; return; }
     const mine = ++token;
     if (!svgEl()) status.textContent = "rendering…";
     try {
-      const mod = await loadWasm(base);
+      const mod = await getWasm(model);
       if (mine !== token) return;  // a newer scene arrived; drop this one
       if (typeof mod.scene_to_svg !== "function") {
         status.textContent = "this runtime has no SVG backend (wasm_base too old)";
@@ -198,6 +248,11 @@ class VeuszWidget(anywidget.AnyWidget):
     width = traitlets.Int(640).tag(sync=True)
     height = traitlets.Int(480).tag(sync=True)
     wasm_base = traitlets.Unicode(DEFAULT_WASM_BASE).tag(sync=True)
+    # Wasm renderer bundled in the wheel, handed to the frontend so rendering
+    # needs no network (kernel -> frontend only, so the leading underscore is
+    # fine — those sync outward; only frontend -> kernel ignores them).
+    _wasm_glue = traitlets.Unicode("").tag(sync=True)
+    _wasm_bytes = traitlets.Bytes(b"").tag(sync=True)
     # frontend -> kernel: an interaction request (JSON: zoom rect / reset).
     # NB: no leading underscore — ipywidgets does not sync underscore-prefixed
     # custom traits from the frontend, so the observer would never fire.
@@ -212,6 +267,10 @@ class VeuszWidget(anywidget.AnyWidget):
         self.height = int(height)
         if wasm_base:
             self.wasm_base = wasm_base
+        # Hand the bundled wasm renderer to the frontend when present (no CDN).
+        if _BUNDLED_WASM_GLUE and _BUNDLED_WASM_BYTES:
+            self._wasm_glue = _BUNDLED_WASM_GLUE
+            self._wasm_bytes = _BUNDLED_WASM_BYTES
         self._dpi = int(dpi)
         # Axis paths touched by interactive zoom, so reset knows what to clear.
         self._zoomed_axes: set[str] = set()

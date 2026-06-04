@@ -34,7 +34,7 @@ setup(
     version="{version}",
     description="Veusz (headless/browser build: pure-Python, no C extensions)",
     packages=find_packages(include=["veusz", "veusz.*"]),
-    package_data={{"veusz": ["embed_data/*.ttf"]}},
+    package_data={{"veusz": ["embed_data/*.ttf", "notebook/_assets/*"]}},
     include_package_data=True,
     python_requires=">=3.10",
     # numpy is provided by Pyodide; fonttools via micropip. No hard deps so the
@@ -58,6 +58,22 @@ def main():
             return drop
 
         shutil.copytree(src, dst, ignore=ignore)
+
+        # Bundle the wasm SVG renderer into the wheel so VeuszWidget renders with
+        # ZERO runtime network (VS Code's webview CSP / offline): the kernel
+        # hands these bytes to the frontend over the widget comm. Built by
+        # scripts/build_paint_wasm.sh into crates/veusz-paint-wasm/pkg.
+        pkg = os.path.join(REPO, 'veusz-tauri', 'crates', 'veusz-paint-wasm', 'pkg')
+        assets = os.path.join(dst, 'notebook', '_assets')
+        wanted = ('veusz_paint_wasm.js', 'veusz_paint_wasm_bg.wasm')
+        if all(os.path.exists(os.path.join(pkg, w)) for w in wanted):
+            os.makedirs(assets, exist_ok=True)
+            for w in wanted:
+                shutil.copy2(os.path.join(pkg, w), os.path.join(assets, w))
+            print(f'bundled wasm renderer into wheel: {", ".join(wanted)}')
+        else:
+            print('::warning:: veusz-paint-wasm/pkg not built — wheel will fall '
+                  'back to the CDN wasm_base (run scripts/build_paint_wasm.sh)')
 
         with open(os.path.join(build, 'setup.py'), 'w') as f:
             f.write(SETUP_PY.format(version=VERSION))
