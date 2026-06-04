@@ -4,11 +4,18 @@ A [MyST Markdown](https://mystmd.org) (`mystmd`) plugin that adds a **`veusz`
 directive** for embedding interactive [Veusz](https://veusz.github.io) figures in
 your documents.
 
-- **HTML / web output** → emits the `<veusz-figure>` web component, which renders a
-  `.vsz` document interactively in the browser (no server needed), powered by
-  `veusz-embed.js`.
-- **Static export** (PDF / Typst / LaTeX / DOCX) → emits a static `image` node
-  pointing at the figure's poster PNG/SVG. This is the live → static substitution.
+By default the figure shows inline as a crisp **poster image** (ideally an SVG —
+vector axes/labels, the data as an image) that the reader **clicks to open the
+live, interactive figure full-page** in the deployed per-figure viewer
+(`figure.html`). That full-page view owns its own viewport, so **fullscreen and
+sizing just work** — none of the inline-`<iframe>` sandbox/scroll problems — and
+when nobody's interacting the page shows a polished static figure.
+
+- **HTML / web output** → a clickable inline poster + an "⤢ Open interactive
+  figure" link, both pointing at the viewer (`figure.html?src=…`). External
+  links open in a new tab, so the host page (and any notebook kernel) stay put.
+- **Static export** (PDF / Typst / LaTeX / DOCX) → the same `image` node renders
+  natively; the click-through link is simply inert in print.
 
 ## Install
 
@@ -38,75 +45,71 @@ site:
   template: book-theme
 ```
 
-> The directive's `run` function builds the AST once, before the export target is
-> known, so it emits **both** a live web component and a static poster image and
-> lets each renderer pick the one it understands (see "How it works" below).
+> No on-page script is required. Because interaction happens in the standalone
+> `figure.html` viewer (which loads `veusz-embed.js` itself), the host page only
+> ever sees an `image` and a `link` — both of which MyST renders safely. (MyST
+> sanitises inline `<script>`/`<style>`/custom elements, so loading our runtime
+> on the page directly isn't possible anyway.)
 
-### 2. Load `veusz-embed.js` once on the HTML site
+### 2. Generate a poster (recommended)
 
-The web component is registered by a single script, loaded from a versioned CDN.
-Add it once to your site (so every page that uses `:::{veusz}` gets it). The
-simplest portable way is a small raw-HTML block in a page that's always included
-(or your theme's head). For example, at the top of `index.md`:
+The inline figure is the `:poster:` image. Render one straight from the `.vsz`
+with **no Qt and no browser** using the repo's headless pipeline:
 
-````md
-```{raw} html
-<script type="module"
-  src="https://yipihey.github.io/veusz/embed/v1/veusz-embed.js"></script>
+```bash
+# .vsz -> SVG (vector) ; also works for .png / .pdf by changing the extension
+scripts/render_vsz.sh figures/phase.vsz figures/phase.svg
 ```
-````
 
-Replace `v1` with the version you want to pin. (If your MyST theme supports custom
-`<head>` includes, add the same `<script type="module" ...>` there instead — that
-keeps it out of the page body.)
+(That runs `capture_scene.py` — pure-Python + numpy, via the `qtshim` — to build
+the Scene IR, then the `veusz-render` Rust CLI to emit SVG/PNG/PDF.) Commit the
+result next to your `.vsz`.
 
 ### 3. Use the directive
 
 ```md
-:::{veusz} figures/phase.vsz
-:width: 700
-:height: 500
-:poster: figures/phase.png
+:::{veusz} https://your.site/figures/phase.vsz
+:poster: figures/phase.svg
+:width: 640
+:height: 640
+:alt: Phase diagram — click to open the interactive figure
 :::
 ```
 
-The argument is the path/URL to the `.vsz` document. Options:
+The argument is the URL the **viewer** fetches the `.vsz` from (same-origin or
+CORS-enabled). Options:
 
-| Option         | Type    | Meaning                                                             |
-| -------------- | ------- | ------------------------------------------------------------------- |
-| `width`        | string  | Figure width in pixels (e.g. `700`).                                |
-| `height`       | string  | Figure height in pixels (e.g. `500`).                               |
-| `poster`       | string  | Static poster image (PNG/SVG). **Required for clean PDF/Typst/LaTeX export.** |
-| `alt`          | string  | Alt text for the static poster image.                               |
-| `eager`        | boolean | Render eagerly instead of lazily when scrolled into view.           |
-| `static`       | boolean | Emit **only** the poster image (no interactive component at all).   |
-| `interactive`  | boolean | Force the interactive component (this is the default).              |
+| Option    | Type    | Meaning                                                              |
+| --------- | ------- | ------------------------------------------------------------------- |
+| `poster`  | string  | Inline figure image (SVG/PNG). Also the static image on PDF/Typst/LaTeX export. |
+| `width`   | string  | Inline poster width in px (height auto-scales to keep aspect). Also the viewer box width. |
+| `height`  | string  | Interactive viewer box height in px.                                |
+| `alt`     | string  | Alt text / link title for the poster.                               |
+| `eager`   | boolean | Boot the interactive figure eagerly instead of on interaction.      |
+| `static`  | boolean | Emit **only** the poster image, no link — for print/export pages.   |
+| `embed`   | boolean | Embed an inline `<iframe>` to the viewer instead (interactive in-page; you own the sizing, fullscreen is subject to iframe limits). |
 
 Aliases: you can also write `:::{veusz-figure} ...:::`.
 
-## How it works (live → static substitution)
+## How it works
 
 A MyST directive's `run(data, vfile)` runs **once** while the AST is built, before
-any export target is chosen, so it can't ask "am I building HTML or PDF?". Instead
-the directive returns two sibling nodes and lets each renderer keep what it
-understands:
+any export target is chosen. The default output is two plain, universally-rendered
+nodes:
 
-1. An **`html` node** (`{ type: 'html', value: '<veusz-figure …>…</veusz-figure>' }`)
-   — rendered verbatim by the HTML renderer (`myst-to-html`) to produce the live,
-   interactive web component. The poster is also embedded inside the component as a
-   graceful `<img>` fallback (shown until the script upgrades the element / for
-   non-JS readers).
-2. An **`image` node** (`{ type: 'image', url: poster, width, height, alt }`)
-   — rendered by every target, including LaTeX (`\includegraphics`) and Typst
-   (`#image()`). This is the static poster used on export.
+1. A **clickable poster** — a `link` to `figure.html?src=…` wrapping the poster
+   `image`. The image renders on every target (HTML, LaTeX `\includegraphics`,
+   Typst `#image()`, DOCX); the link is web-only and inert in print.
+2. A **call-to-action** — an "⤢ Open interactive figure" `link` to the same
+   viewer.
 
-The static exporters (`myst-to-tex`, `myst-to-typst`) have **no handler for `html`
-nodes**: they skip them with a single, non-fatal warning, so a web component never
-ends up inside a PDF. If you want to avoid that warning entirely for a print-only
-build, use `:static:` on the directive (emits only the image).
-
-> v0 scope: the static fallback is the **poster PNG/SVG**. Full figure-SVG-on-export
-> (rendering the `.vsz` to a vector image at export time) is a planned enhancement.
+Why not an on-page modal? MyST's HTML sanitiser strips `<style>`, `<script>`,
+raw `<iframe>`, and custom elements, and there's no supported hook to inject our
+own JS — so a true overlay modal that mounts `<veusz-figure>` on the page isn't
+possible. Opening the live figure **full-page** is the robust equivalent, and it
+fixes the very problems an inline iframe causes (broken fullscreen, fiddly
+sizing, scrollbars). If you specifically want the figure inline and interactive,
+`:embed:` falls back to an `<iframe>` to the viewer.
 
 ## Test
 
@@ -117,21 +120,14 @@ npm test     # == node --test
 
 ## Manual verification (full build)
 
-This package's tests cover the directive's `run` output directly. To verify it end
-to end inside a real MyST project (not possible from this repo, which has no MyST
-project configured):
+The example under `example/` is a complete MyST project that registers the
+plugin:
 
 ```bash
-# 1. In a MyST project that registers the plugin (see "Wire it in" above):
-npm install -g mystmd            # or: npx mystmd
-
-# 2. Interactive web build — confirm <veusz-figure> appears in the HTML:
-myst build --html
-#   grep the generated HTML for `veusz-figure` and confirm veusz-embed.js loads.
-
-# 3. Static export — confirm the poster image is used and no web component leaks:
-myst build --pdf      # or: myst build --typst / --tex
-#   open the PDF/typst output and confirm the poster image renders.
+cd integrations/myst-veusz/example
+npx mystmd build --html
+# Confirm the built index.html has the poster <img>, an <a … figure.html …>
+# wrapping it, and the "Open interactive figure" link.
 ```
 
 ## License

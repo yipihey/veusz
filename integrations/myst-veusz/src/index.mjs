@@ -9,38 +9,31 @@
 //   :poster: figures/phase.png
 //   :::
 //
-// For HTML / web output the directive emits the `<veusz-figure>` web component,
-// which is rendered interactively in the browser by `veusz-embed.js` (loaded once
-// from a versioned CDN — see README). For non-HTML exports (PDF / Typst / LaTeX)
-// the directive emits a plain static `image` node pointing at the poster PNG.
+// Presentation model (default):
+// ------------------------------
+// The figure renders as a crisp, inline **poster image** (ideally an SVG — see
+// scripts/render_vsz.sh, which produces one with no Qt) that you CLICK to open
+// the live, interactive figure **full-page** in the per-figure viewer
+// (figure.html). The full-page view owns its own viewport, so fullscreen and
+// sizing just work — none of the inline-iframe sandbox/scroll problems — and
+// when you're just reading, the page shows a polished static figure, not a
+// letterboxed iframe.
 //
-// Design note (live -> static substitution):
-// ------------------------------------------
-// A directive's `run(data, vfile)` is executed ONCE while the AST is built, before
-// any specific export target is known, so it cannot branch on "am I building HTML
-// or PDF?". We therefore return BOTH representations and let each renderer pick the
-// one it understands:
+// Why not an on-page modal? MyST's HTML sanitiser strips <style>, <script>, raw
+// <iframe>, and custom elements, and there's no supported way to inject our own
+// JS, so a true overlay modal mounting <veusz-figure> on the page isn't possible
+// (verified). A full-page viewer is the robust equivalent.
 //
-//   * `html` node  ({ type: 'html', value })  — rendered verbatim by the HTML
-//     renderer (myst-to-html) and produces the live `<veusz-figure>` web component.
-//     Static exporters (myst-to-tex / myst-to-typst) have no handler for `html`
-//     nodes; they skip them (a single, non-fatal warning) and so never try to put
-//     a web component into a PDF.
+// Options:
+//   * (default)   clickable inline poster + an "⤢ Open interactive figure" link.
+//   * `:embed:`   the old behaviour — an inline <iframe> to the viewer
+//                 (interactive in-page; you own the sizing).
+//   * `:static:`  ONLY the poster image, no link — for print/export pages.
 //
-//   * `image` node ({ type: 'image', url: poster, ... }) — rendered by EVERY target
-//     (HTML, LaTeX, Typst, DOCX, ...). This is the static poster fallback used on
-//     export.
-//
-// To avoid the poster showing twice on the web (once as the component's own poster,
-// once as the standalone image), the `<img>` is placed *inside* the web component
-// as fallback content, and the standalone `image` node is wrapped so it only
-// surfaces on static export. We do this with the most portable mechanism available:
-// the standalone image is the node that static exporters render, and on the web the
-// web component visually covers it (the component renders into its own box and the
-// fallback `<img>` inside it is what shows until JS upgrades the element).
-//
-// If you want a *single* node instead of a pair, set `:static:` to render only the
-// poster image (no web component at all), or `:interactive:` (default) for both.
+// A directive's `run(data, vfile)` runs ONCE while the AST is built, before the
+// export target is known. The poster `image` node renders on EVERY target (HTML,
+// PDF, Typst, LaTeX, DOCX), so static exports get the figure for free; only the
+// click-through link is web-only (a no-op in print).
 
 const DEFAULTS = {
   // The deployed embed runtime that hosts figure.html (the per-figure viewer)
@@ -117,7 +110,11 @@ const veuszDirective = {
     },
     static: {
       type: Boolean,
-      doc: 'If set, emit ONLY the static poster image (no interactive iframe) — for print-only pages.',
+      doc: 'If set, emit ONLY the static poster image (no link) — for print/export pages.',
+    },
+    embed: {
+      type: Boolean,
+      doc: 'If set, embed an inline <iframe> to the viewer (interactive in-page) instead of the click-to-open-full-page poster. You own the sizing; fullscreen is subject to iframe limits.',
     },
   },
   run(data, vfile) {
@@ -126,6 +123,7 @@ const veuszDirective = {
     const { width, height, poster, alt, eager } = opts;
     const cdn = opts.cdn || DEFAULTS.cdn;
     const staticOnly = !!opts.static;
+    const embed = !!opts.embed;
 
     if (!src) {
       if (vfile && typeof vfile.message === 'function') {
@@ -134,7 +132,21 @@ const veuszDirective = {
       return [];
     }
 
-    // Static-only (print pages): just the poster image.
+    const viewer = buildViewerUrl({ src, cdn, width, height, poster, eager });
+
+    // Opt-in: the old inline iframe (interactive in-page; caller owns sizing).
+    if (embed) {
+      const iframe = {
+        type: 'iframe',
+        src: viewer,
+        width: width ? String(width) : '100%',
+      };
+      if (height) iframe.height = String(height);
+      if (alt) iframe.title = alt;
+      return [iframe];
+    }
+
+    // Static-only (print pages): just the poster image, no link.
     if (staticOnly) {
       if (!poster && vfile && typeof vfile.message === 'function') {
         vfile.message('veusz: :static: with no :poster: — nothing to render');
@@ -144,20 +156,38 @@ const veuszDirective = {
 
     if (!poster && vfile && typeof vfile.message === 'function') {
       vfile.message(
-        'veusz: no :poster: given — PDF/Typst/LaTeX export of this figure will fall back to a link, not an image',
+        'veusz: no :poster: given — the inline figure will be just a link, and PDF/Typst/LaTeX export will have no image',
       );
     }
 
-    // The interactive figure, embedded as an iframe to the per-figure viewer —
-    // the mechanism MyST renders (inline custom elements are sanitised away).
-    const iframe = {
-      type: 'iframe',
-      src: buildViewerUrl({ src, cdn, width, height, poster, eager }),
-      width: width ? String(width) : '100%',
-    };
-    if (height) iframe.height = String(height);
-    if (alt) iframe.title = alt;
-    return [iframe];
+    // Default: a crisp inline poster you click to open the live figure
+    // full-page, plus an explicit call-to-action link. Both target the viewer;
+    // external/full-URL links open in a new tab (MyST adds target=_blank), so
+    // the notebook page — and its kernel — stay put.
+    const title = alt || 'Open the interactive Veusz figure';
+    const nodes = [];
+    if (poster) {
+      // Width only — let the poster keep its intrinsic aspect ratio (a square
+      // figure forced into width×height would be distorted). The interactive
+      // viewer still gets both dimensions for its box.
+      const image = buildPosterImageNode({ poster, width, alt });
+      nodes.push({
+        type: 'paragraph',
+        children: [{ type: 'link', url: viewer, title, children: [image] }],
+      });
+    }
+    nodes.push({
+      type: 'paragraph',
+      children: [
+        {
+          type: 'link',
+          url: viewer,
+          title,
+          children: [{ type: 'text', value: '⤢ Open interactive figure' }],
+        },
+      ],
+    });
+    return nodes;
   },
 };
 

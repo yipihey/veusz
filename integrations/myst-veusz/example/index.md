@@ -31,16 +31,18 @@ print(f"log T   in [{logT.min():.2f}, {logT.max():.2f}]")
 ## Plot, with Veusz
 
 The figure below is a **real Veusz `density` widget** — a 2D histogram (phase
-diagram) of the two columns above — rendered interactively in the browser via
-WebGPU. Pinch to zoom, drag to pan, tap to open the editor; it exports to a
-publication-quality vector PDF. It's written with the `myst-veusz` `veusz`
-directive, which embeds it as an `{iframe}` to the deployed per-figure viewer
-(`figure.html?src=…`) — the mechanism MyST renders safely (it sanitizes inline
-custom elements). It works here, on a phone, with nothing installed.
+diagram) of the two columns above. It shows inline as a crisp **SVG** (vector
+axes and labels, the density as an image), rendered with no Qt and no browser
+by the pure-Rust backend (`scripts/render_vsz.sh`). **Click it to open the live,
+interactive figure full-page** — pinch to zoom, drag to pan, edit, and export a
+publication-quality vector PDF, on its own full viewport so fullscreen and
+sizing just work. It works here, on a phone, with nothing installed.
 
 :::{veusz} https://yipihey.github.io/veusz/notebook/phase.vsz
-:width: 720
-:height: 520
+:poster: figures/phase.svg
+:width: 640
+:height: 640
+:alt: Phase diagram (log T vs log rho) — click to open the interactive figure
 :::
 
 > **Where this is going:** the `DataService` / `RemoteProvider` layer in the repo

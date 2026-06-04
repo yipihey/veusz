@@ -25,12 +25,13 @@ test('plugin shape: name + one directive named "veusz"', () => {
 test('directive spec: required String arg + expected options', () => {
   assert.equal(veuszDirective.arg.type, String);
   assert.equal(veuszDirective.arg.required, true);
-  for (const k of ['width', 'height', 'cdn', 'poster', 'alt', 'eager', 'static']) {
+  for (const k of ['width', 'height', 'cdn', 'poster', 'alt', 'eager', 'static', 'embed']) {
     assert.ok(veuszDirective.options[k], `option ${k} should exist`);
   }
   assert.equal(veuszDirective.options.width.type, String);
   assert.equal(veuszDirective.options.eager.type, Boolean);
   assert.equal(veuszDirective.options.static.type, Boolean);
+  assert.equal(veuszDirective.options.embed.type, Boolean);
 });
 
 test('buildViewerUrl encodes src + size into figure.html query', () => {
@@ -47,44 +48,71 @@ test('buildViewerUrl encodes src + size into figure.html query', () => {
   assert.equal(q.get('height'), '520');
 });
 
-test('run() emits an iframe to the viewer by default', () => {
+test('run() default: a clickable poster + a CTA link to the viewer', () => {
   const vfile = makeVfile();
   const nodes = veuszDirective.run(
     {
       arg: 'https://h/notebook/phase.vsz',
-      options: { width: '700', height: '500', poster: 'phase.png' },
+      options: { width: '700', height: '500', poster: 'phase.svg' },
     },
     vfile,
   );
+  // paragraph[link[image]] + paragraph[link[text]]
+  assert.equal(nodes.length, 2);
+  const posterLink = nodes[0].children[0];
+  assert.equal(nodes[0].type, 'paragraph');
+  assert.equal(posterLink.type, 'link');
+  assert.ok(posterLink.url.includes('/figure.html?'));
+  const image = posterLink.children[0];
+  assert.equal(image.type, 'image');
+  assert.equal(image.url, 'phase.svg'); // the inline poster IS the figure
+  assert.equal(image.width, '700');
+
+  const cta = nodes[1].children[0];
+  assert.equal(cta.type, 'link');
+  assert.equal(cta.children[0].value, '⤢ Open interactive figure');
+  const q = new URL(cta.url).searchParams;
+  assert.equal(q.get('src'), 'https://h/notebook/phase.vsz');
+  assert.equal(vfile.messages.length, 0); // happy path: no warnings
+});
+
+test('run() with :embed: emits the inline iframe (opt-in)', () => {
+  const nodes = veuszDirective.run({
+    arg: 'https://h/notebook/phase.vsz',
+    options: { width: '700', height: '500', poster: 'phase.svg', embed: true },
+  });
   assert.equal(nodes.length, 1);
   const [iframe] = nodes;
   assert.equal(iframe.type, 'iframe');
   assert.ok(iframe.src.includes('/figure.html?'));
-  const q = new URL(iframe.src).searchParams;
-  assert.equal(q.get('src'), 'https://h/notebook/phase.vsz');
-  assert.equal(q.get('poster'), 'phase.png');
   assert.equal(iframe.width, '700');
   assert.equal(iframe.height, '500');
-  // happy path: no warnings
-  assert.equal(vfile.messages.length, 0);
+});
+
+test('run() with no :poster: emits only the CTA link (no broken image)', () => {
+  const vfile = makeVfile();
+  const nodes = veuszDirective.run({ arg: 'a.vsz', options: {} }, vfile);
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].children[0].type, 'link');
+  assert.ok(vfile.messages.some((m) => /poster/.test(m)));
 });
 
 test('run() uses the default CDN when none is given, overridable via :cdn:', () => {
-  const def = veuszDirective.run({ arg: 'x.vsz', options: { poster: 'x.png' } });
-  assert.ok(def[0].src.startsWith(DEFAULTS.cdn));
+  const def = veuszDirective.run({ arg: 'x.vsz', options: { poster: 'x.svg' } });
+  assert.ok(def[0].children[0].url.startsWith(DEFAULTS.cdn));
   const over = veuszDirective.run({
     arg: 'x.vsz',
-    options: { poster: 'x.png', cdn: 'https://my/embed/v9' },
+    options: { poster: 'x.svg', cdn: 'https://my/embed/v9' },
   });
-  assert.ok(over[0].src.startsWith('https://my/embed/v9/figure.html?'));
+  assert.ok(over[0].children[0].url.startsWith('https://my/embed/v9/figure.html?'));
 });
 
 test('run() honours :eager: as a query flag', () => {
-  const [iframe] = veuszDirective.run({
+  const nodes = veuszDirective.run({
     arg: 'a.vsz',
-    options: { poster: 'a.png', eager: true },
+    options: { poster: 'a.svg', eager: true },
   });
-  assert.equal(new URL(iframe.src).searchParams.get('eager'), '1');
+  assert.equal(new URL(nodes[0].children[0].url).searchParams.get('eager'), '1');
 });
 
 test('run() with :static: emits ONLY the poster image (export-safe)', () => {
@@ -96,13 +124,6 @@ test('run() with :static: emits ONLY the poster image (export-safe)', () => {
   assert.equal(nodes[0].type, 'image');
   assert.equal(nodes[0].url, 'a.png');
   assert.equal(nodes[0].width, '640');
-});
-
-test('run() warns when no poster is provided', () => {
-  const vfile = makeVfile();
-  const nodes = veuszDirective.run({ arg: 'a.vsz', options: {} }, vfile);
-  assert.equal(nodes[0].type, 'iframe');
-  assert.ok(vfile.messages.some((m) => /poster/.test(m)), 'should warn about missing poster');
 });
 
 test('run() with no arg returns [] and reports an error', () => {
