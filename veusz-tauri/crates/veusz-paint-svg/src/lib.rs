@@ -69,6 +69,30 @@ pub fn render_scene_to_svg(
     e.finish()
 }
 
+/// Like [`render_scene_to_svg`], but seeds the glyph layout engine with a
+/// single in-memory font instead of relying on system font discovery — so
+/// text emits real glyph outlines on targets where fontique finds nothing
+/// (notably wasm32, where the default engine yields the dashed placeholder).
+/// `font_bytes` must be a valid TTF/OTF; if it fails to register, text falls
+/// back to the placeholder exactly as before.
+#[cfg(feature = "text")]
+pub fn render_scene_to_svg_with_embedded_font(
+    scene: &Scene,
+    width: f64,
+    height: f64,
+    background: (f32, f32, f32, f32),
+    font_bytes: &'static [u8],
+) -> String {
+    let mut e = SvgEmitter::new(width, height, background);
+    // Pre-seed the engine; `draw_text` only builds the system-discovery engine
+    // when this is still `None`, so an embedded font here wins.
+    e.text_engine = veusz_paint_text::TextEngine::with_embedded_font(font_bytes);
+    for op in &scene.ops {
+        e.emit(op);
+    }
+    e.finish()
+}
+
 struct SvgEmitter {
     width: f64,
     height: f64,

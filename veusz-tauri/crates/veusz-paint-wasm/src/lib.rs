@@ -114,7 +114,11 @@ impl VelloCanvasRenderer {
 pub fn scene_to_svg(scene_json: &[u8], width: f64, height: f64) -> Result<String, JsValue> {
     let scene: VScene = serde_json::from_slice(scene_json)
         .map_err(|e| JsValue::from_str(&format!("scene JSON decode: {e}")))?;
-    Ok(veusz_paint_svg::render_scene_to_svg(&scene, width, height, (1.0, 1.0, 1.0, 1.0)))
+    // Seed the SVG text engine with the same vendored font the canvas path uses,
+    // so axis labels emit real glyph outlines instead of the dashed placeholder
+    // (fontique discovers no system fonts in the browser).
+    Ok(veusz_paint_svg::render_scene_to_svg_with_embedded_font(
+        &scene, width, height, (1.0, 1.0, 1.0, 1.0), EMBEDDED_FONT))
 }
 
 // ---------------------------------------------------------------------------

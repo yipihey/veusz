@@ -8,20 +8,23 @@ description = "Scene -> SVG emitter for Veusz's parallel paint backends. Consume
 veusz-paint-core = { path = "../veusz-paint-core" }
 # Glyph layout + outline extraction, shared with the raster/PDF backends, so
 # SVG text emits the same glyph outlines instead of viewer-font-dependent
-# <text>. SVG runs on the native target, so it can pull in veusz-paint-text ->
-# fontique. It is OPTIONAL and behind the default `text` feature because
-# veusz-paint-wasm depends on this crate (for `scene_to_svg`) and builds for
-# wasm32, where fontique's fontconfig path doesn't compile — that build turns
-# the feature off and falls back to a placeholder, exactly as the raster/PDF
-# backends do when no fonts are available.
-veusz-paint-text = { path = "../veusz-paint-text", optional = true }
+# <text>. `default-features = false` keeps fontique's system-font discovery
+# (which can't build on wasm32) OUT of the base `text` feature: native re-adds
+# it via this crate's `system-fonts` feature (in `default`), while the wasm
+# build enables `text` alone and seeds an embedded font instead (see
+# `render_scene_to_svg_with_embedded_font`).
+veusz-paint-text = { path = "../veusz-paint-text", optional = true, default-features = false }
 base64 = "0.22"
 png = "0.17"
 
 [features]
-default = ["text"]
+default = ["text", "system-fonts"]
 # Path-based glyph text via veusz-paint-text. Off => placeholder fallback.
+# On its own (no system-fonts) this builds on wasm32 and needs an embedded font.
 text = ["dep:veusz-paint-text"]
+# Native font discovery (fontconfig/CoreText/DirectWrite via fontique). The
+# `text?/…` form only forwards when `text` is also enabled.
+system-fonts = ["veusz-paint-text?/system-fonts"]
 
 [dev-dependencies]
 serde_json = "1"

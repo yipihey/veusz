@@ -10,11 +10,12 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 veusz-paint-core = { path = "../veusz-paint-core" }
 # Pure-Rust Scene -> SVG (no Qt, no GPU): powers the `scene_to_svg` binding for
-# true client-side vector export in the browser. `default-features = false`
-# drops its `text` feature (veusz-paint-text -> fontique), which doesn't build
-# for wasm32; SVG text then uses the placeholder fallback in the browser, the
-# same way the WASM canvas path uses the embedded-font renderer.
-veusz-paint-svg = { path = "../veusz-paint-svg", default-features = false }
+# true client-side vector export in the browser. We enable `text` (glyph-outline
+# SVG text) but NOT `system-fonts` — fontique's discovery can't build for wasm32
+# — and instead seed the same vendored Liberation Sans the canvas path uses, via
+# `render_scene_to_svg_with_embedded_font`. Without this, SVG text fell back to
+# the dashed placeholder in the browser.
+veusz-paint-svg = { path = "../veusz-paint-svg", default-features = false, features = ["text"] }
 # The shared Scene -> vello::Scene translator. We depend on this rather than
 # veusz-paint-vello directly because that crate pulls in veusz-paint-text with
 # system font discovery. The common crate is backend-agnostic: we inject a wasm
