@@ -11,6 +11,7 @@ members = [
     "crates/veusz-paint-vello-common",
     "crates/veusz-paint-py",
     "crates/veusz-paint-wasm",
+    "crates/veusz-render-cli",
     "src-tauri",
 ]
 

@@ -4978,6 +4978,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "veusz-render-cli"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "veusz-paint-core",
+ "veusz-paint-pdf",
+ "veusz-paint-svg",
+ "veusz-paint-tiny-skia",
+]
+
+[[package]]
 name = "veusz-rpc"
 version = "0.0.0"
 dependencies = [

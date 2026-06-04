@@ -1,0 +1,16 @@
+[package]
+name = "veusz-render-cli"
+version = "0.0.0"
+edition = "2021"
+description = "Native CLI: render a Veusz Scene-JSON display list to PNG / SVG / PDF. No Qt, no Python, no GPU — pure-Rust software backends (tiny-skia, the SVG/PDF emitters). The headless counterpart to the browser wasm renderer and the `_paint_ext` PyO3 bridge: any environment that can produce a scene (the pure-Python+numpy headless wheel) can rasterise/vectorise it here."
+
+[[bin]]
+name = "veusz-render"
+path = "src/main.rs"
+
+[dependencies]
+veusz-paint-core = { path = "../veusz-paint-core" }
+veusz-paint-tiny-skia = { path = "../veusz-paint-tiny-skia" }
+veusz-paint-svg = { path = "../veusz-paint-svg" }
+veusz-paint-pdf = { path = "../veusz-paint-pdf" }
+serde_json = "1"
