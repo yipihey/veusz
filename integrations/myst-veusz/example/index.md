@@ -38,22 +38,71 @@ print(f"log T   in [{logT.min():.2f}, {logT.max():.2f}]")
 
 ## Plot, with Veusz
 
-The figure below is a **real Veusz `density` widget** — a 2D histogram (phase
-diagram) of the two columns above. It shows inline as a crisp **SVG** (vector
-axes and labels, the density as an image), rendered with no Qt and no browser
-by the pure-Rust backend (`scripts/render_vsz.sh`). **Click it to open the live,
-interactive figure full-page** — pinch to zoom, drag to pan, edit, and export a
-publication-quality vector PDF, on its own full viewport so fullscreen and
-sizing just work. It works here, on a phone, with nothing installed.
+The figure below is a **real, live Veusz `density` widget** — a 2D histogram
+(phase diagram) of the two arrays computed above. It runs **inside this
+notebook's kernel** (a `VeuszWidget`, built on
+[anywidget](https://anywidget.dev)): the binning happens where the data lives,
+and only the finished scene — rendered to crisp vector **SVG** by the pure-Rust
+backend, no Qt and no WebGPU — is shipped to the page. So the figure and the
+cell above **share one dataset and one Pyodide, with no copy**.
 
-:::{veusz} https://yipihey.github.io/veusz/notebook/phase.vsz
-:poster: figures/phase.svg
-:width: 640
-:height: 640
-:alt: Phase diagram (log T vs log rho) — click to open the interactive figure
-:::
+Run the cell to draw it. Because it's live, you can **edit and redraw in place**:
+change `numBinsX`/`numBinsY` or the colour map below, re-run, and the figure
+updates — or change the data in the first cell, re-run both, and the phase
+diagram follows.
 
-> **Where this is going:** the `DataService` / `RemoteProvider` layer in the repo
-> lets the figure read arrays straight from *this notebook's* kernel — binning
-> where the data lives, shipping back only the grid — so the figure and the cell
-> above share one dataset and one Pyodide, with no copy across the thread.
+```{code-cell} python
+# One-time setup: install the in-browser plotting stack into this kernel.
+# (numpy is already loaded by the cell above.)
+import micropip
+await micropip.install("anywidget")
+await micropip.install("fonttools")
+await micropip.install(
+    "https://yipihey.github.io/veusz/embed/v4.5.0/veusz-4.5.0-py3-none-any.whl")
+
+from veusz.notebook import VeuszWidget
+
+# A compact phase-diagram document: a Veusz `density` 2D-histogram widget with a
+# colour bar. The data is NOT embedded — we feed it from the kernel below, so the
+# figure binds to THIS notebook's arrays.
+PHASE = r"""SetCompatLevel(0)
+Add('page', name='page1', autoadd=False)
+To('page1')
+Add('graph', name='graph1', autoadd=False)
+To('graph1')
+Add('axis', name='x', autoadd=False)
+To('x')
+Set('label', 'log \\rho')
+To('..')
+Add('axis', name='y', autoadd=False)
+To('y')
+Set('label', 'log T')
+Set('direction', 'vertical')
+To('..')
+Add('density', name='dens', autoadd=False)
+To('dens')
+Set('xData', 'logrho')
+Set('yData', 'logT')
+Set('numBinsX', 120)
+Set('numBinsY', 120)
+Set('colorMap', 'viridis')
+Set('colorScaling', 'log')
+To('..')
+Add('colorbar', name='colorbar1', autoadd=False)
+To('colorbar1')
+Set('widgetName', 'dens')
+Set('label', 'counts')
+To('..')
+To('..')
+To('..')
+"""
+
+fig = VeuszWidget(vsz=PHASE, width=640, height=560)
+fig.set_data("logrho", logrho)   # the arrays from the cell above — shared, not copied
+fig.set_data("logT", logT)
+fig
+```
+
+> **Try it:** `fig.set_setting("/page1/graph1/dens/colorMap", "plasma")` recolours
+> the figure in place; `fig.set_data("logT", logT + 0.5)` shifts the data and
+> rebins — both redraw without leaving the page.
