@@ -104,18 +104,34 @@ function loadModule(): Promise<VelloModule> {
 
 /** True only when a usable WebGPU adapter is reachable from this context.
  *  Inside Tauri's WKWebView on macOS this is frequently false; callers
- *  must degrade to a server-side backend when it is. */
+ *  must degrade to a server-side backend when it is.
+ *
+ *  Retries `requestAdapter()` a few times: Safari (incl. 26.x) can return a
+ *  null adapter for a moment right after a page/tab loads — the GPU process
+ *  isn't ready yet — even though WebGPU is fully available. A single probe at
+ *  boot then false-negatives and wrongly shows "needs WebGPU". `requestAdapter`
+ *  returns on the first success, so capable browsers pay no delay; only a
+ *  genuinely WebGPU-less context waits out the retries. */
 export async function webgpuAvailable(): Promise<boolean> {
-  try {
-    const gpu = (navigator as unknown as {
-      gpu?: { requestAdapter(): Promise<unknown> };
-    }).gpu;
-    if (!gpu) return false;
-    const adapter = await gpu.requestAdapter();
-    return adapter != null;
-  } catch {
-    return false;
+  const gpu = (navigator as unknown as {
+    gpu?: { requestAdapter(opts?: unknown): Promise<unknown> };
+  }).gpu;
+  if (!gpu) return false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      // Try the default adapter, then nudge Safari with an explicit power
+      // preference on later attempts.
+      const opts = attempt === 0 ? undefined
+        : { powerPreference: attempt % 2 ? 'high-performance' : 'low-power' };
+      const adapter = await gpu.requestAdapter(opts);
+      if (adapter != null) return true;
+    } catch (e) {
+      if (attempt === 0) console.warn('[veusz] WebGPU requestAdapter threw:', e);
+    }
+    if (attempt < 4) await new Promise((r) => setTimeout(r, 200));
   }
+  console.warn('[veusz] no WebGPU adapter after retries — degrading to non-interactive');
+  return false;
 }
 
 export function base64ToBytes(b64: string): Uint8Array {

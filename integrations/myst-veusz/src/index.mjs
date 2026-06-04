@@ -64,9 +64,25 @@ export function buildViewerUrl({ src, cdn, width, height, poster, eager }) {
   q.set('src', src);
   if (width != null && width !== '') q.set('width', String(width));
   if (height != null && height !== '') q.set('height', String(height));
-  if (poster) q.set('poster', poster);
+  // Resolve the poster against the .vsz location, not the viewer's: the poster
+  // lives next to the document (e.g. notebook/figures/phase.svg), but the
+  // viewer runs from the embed CDN (…/embed/vX/figure.html). A bare relative
+  // poster would resolve against the CDN and 404 — and on a no-WebGPU browser
+  // the viewer's static-poster fallback would then fail to a "needs WebGPU"
+  // message instead of showing the figure. Absolute → it resolves everywhere.
+  if (poster) q.set('poster', resolveAgainst(poster, src));
   if (eager) q.set('eager', '1');
   return `${base}/figure.html?${q.toString()}`;
+}
+
+/** Resolve `ref` against `base` to an absolute URL when possible; if `base`
+ *  isn't itself absolute (so resolution is undefined), return `ref` unchanged. */
+function resolveAgainst(ref, base) {
+  try {
+    return new URL(ref, base).href;
+  } catch {
+    return ref;
+  }
 }
 
 /**

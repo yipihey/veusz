@@ -48,6 +48,28 @@ test('buildViewerUrl encodes src + size into figure.html query', () => {
   assert.equal(q.get('height'), '520');
 });
 
+test('buildViewerUrl resolves a relative poster against the .vsz, not the viewer', () => {
+  // The poster lives next to the document; the viewer runs from the embed CDN.
+  // A bare relative poster would resolve against the CDN and 404 (and on a
+  // no-WebGPU browser, fall through to a "needs WebGPU" message).
+  const url = buildViewerUrl({
+    src: 'https://h/notebook/phase.vsz',
+    cdn: 'https://h/embed/v4.5.0/',
+    poster: 'figures/phase.svg',
+  });
+  assert.equal(
+    new URL(url).searchParams.get('poster'),
+    'https://h/notebook/figures/phase.svg',
+  );
+  // An already-absolute poster is left as-is.
+  const abs = buildViewerUrl({
+    src: 'https://h/notebook/phase.vsz',
+    cdn: 'https://h/embed/v4.5.0/',
+    poster: 'https://cdn.example/p.svg',
+  });
+  assert.equal(new URL(abs).searchParams.get('poster'), 'https://cdn.example/p.svg');
+});
+
 test('run() default: a clickable poster + a CTA link to the viewer', () => {
   const vfile = makeVfile();
   const nodes = veuszDirective.run(

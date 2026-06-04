@@ -196,6 +196,13 @@ jobs:
             else
               echo "::warning::no poster <img> hash found in notebook HTML"
             fi
+            # The full-page viewer's static-poster fallback (shown on browsers
+            # without WebGPU) resolves :poster: against the .vsz location, i.e.
+            # notebook/figures/phase.svg. Stage it there so that view shows the
+            # figure instead of a "needs WebGPU" message.
+            mkdir -p site/notebook/figures
+            cp integrations/myst-veusz/example/figures/phase.svg \
+               site/notebook/figures/phase.svg
           else
             echo "::warning::MyST notebook build failed — skipping /notebook/ this run"
           fi
