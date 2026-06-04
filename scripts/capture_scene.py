@@ -14,6 +14,14 @@ import argparse
 import os
 import sys
 
+# Make `import veusz` work no matter how this script is invoked. Running it by
+# absolute path (e.g. from scripts/render_vsz.sh) puts scripts/ on sys.path[0],
+# NOT the repo root, so the source `veusz/` package next to it isn't importable
+# unless veusz happens to be pip-installed. Add the repo root explicitly.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])

@@ -170,8 +170,9 @@ jobs:
           # Browser-native MyST notebook: prose + a live JupyterLite (Pyodide)
           # code cell + a live Veusz figure (via the veusz directive -> the
           # figure.html viewer above). Builds a static site; mystmd exits after
-          # building. The figure's phase.vsz is staged at notebook/phase.vsz,
-          # which is the URL the directive's iframe fetches.
+          # building. The figure's phase.vsz + poster phase.svg are staged at
+          # notebook/, the absolute URLs the directive references (the poster
+          # inline, the .vsz fetched when you click through to figure.html).
           rm -rf site/notebook
           # BASE_URL: the notebook is served from the /veusz/notebook/ sub-path,
           # so the MyST SPA must prefix its asset/content URLs with it (else it
@@ -182,6 +183,19 @@ jobs:
             mkdir -p site/notebook
             cp -r integrations/myst-veusz/example/_build/html/. site/notebook/
             cp integrations/myst-veusz/example/figures/phase.vsz site/notebook/phase.vsz
+            # Guarantee the inline poster file exists. mystmd rewrites the poster
+            # <img> to build/<hash>.svg, but on Linux it sometimes references the
+            # hashed name without emitting the optimized file (-> 404). So copy
+            # our phase.svg to whatever path the built HTML actually references.
+            REF=$(grep -oE 'build/phase-[a-f0-9]+\.svg' \
+                  site/notebook/index.html | head -1 || true)
+            if [ -n "$REF" ]; then
+              cp integrations/myst-veusz/example/figures/phase.svg \
+                 "site/notebook/$REF"
+              echo "ensured inline poster at site/notebook/$REF"
+            else
+              echo "::warning::no poster <img> hash found in notebook HTML"
+            fi
           else
             echo "::warning::MyST notebook build failed — skipping /notebook/ this run"
           fi
