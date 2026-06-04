@@ -81,20 +81,37 @@ function render({ model, el }) {
   el.innerHTML = "";
   const box = document.createElement("div");
   box.className = "veusz-widget";
-  box.style.cssText = "max-width:100%;";
+  box.style.cssText = "position:relative;max-width:100%;touch-action:none;user-select:none;";
+  // Rubber-band rectangle overlay for drag-to-zoom.
+  const rubber = document.createElement("div");
+  rubber.style.cssText =
+    "position:absolute;display:none;pointer-events:none;border:1px solid #1f6feb;" +
+    "background:rgba(31,111,235,0.12);z-index:2;";
+  box.appendChild(rubber);
   const status = document.createElement("div");
   status.style.cssText = "font:12px sans-serif;color:#888;";
-  el.append(box, status);
+  const hint = document.createElement("div");
+  hint.style.cssText = "font:11px sans-serif;color:#aaa;margin-top:2px;";
+  hint.textContent = "drag to zoom · double-click to reset";
+  el.append(box, status, hint);
 
-  let token = 0;
+  const svgEl = () => box.querySelector("svg");
+  let token = 0, actionN = 0;
+  function sendAction(obj) {
+    obj.n = ++actionN;
+    model.set("action", JSON.stringify(obj));
+    model.save_changes();
+    status.textContent = "updating…";
+  }
+
   async function draw() {
     const b64 = model.get("scene_b64");
     const w = model.get("width");
     const h = model.get("height");
     const base = (model.get("wasm_base") || "").replace(/\/+$/, "");
-    if (!b64) { box.innerHTML = ""; status.textContent = "(no figure yet)"; return; }
+    if (!b64) { status.textContent = "(no figure yet)"; return; }
     const mine = ++token;
-    status.textContent = "rendering…";
+    if (!svgEl()) status.textContent = "rendering…";
     try {
       const mod = await loadWasm(base);
       if (mine !== token) return;  // a newer scene arrived; drop this one
@@ -103,20 +120,63 @@ function render({ model, el }) {
         return;
       }
       const svg = mod.scene_to_svg(base64ToBytes(b64), w, h);
-      box.innerHTML = svg;
-      const s = box.querySelector("svg");
+      [...box.querySelectorAll("svg")].forEach((n) => n.remove());  // keep `rubber`
+      box.insertAdjacentHTML("beforeend", svg);
+      const s = svgEl();
       if (s) {
         if (!s.getAttribute("viewBox")) s.setAttribute("viewBox", `0 0 ${w} ${h}`);
         s.removeAttribute("width");
         s.removeAttribute("height");
         s.style.maxWidth = "100%";
         s.style.height = "auto";
+        s.style.display = "block";
+        s.style.touchAction = "none";
       }
       status.textContent = "";
     } catch (e) {
       status.textContent = "render error: " + (e && e.message ? e.message : e);
     }
   }
+
+  // --- pointer interaction: drag a rectangle to zoom ----------------------
+  // Pixel coords are mapped into the figure's render space (0..w, 0..h) so the
+  // kernel can resolve them to data coords (render.pixel_to_data) regardless of
+  // the SVG's displayed size.
+  let drag = null;
+  const px = (clientX, r, w) => ((clientX - r.left) / r.width) * w;
+  const py = (clientY, r, h) => ((clientY - r.top) / r.height) * h;
+  box.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || !svgEl()) return;
+    drag = { sx: ev.clientX, sy: ev.clientY };
+    const b = box.getBoundingClientRect();
+    rubber.style.display = "block";
+    rubber.style.left = (ev.clientX - b.left) + "px";
+    rubber.style.top = (ev.clientY - b.top) + "px";
+    rubber.style.width = "0px"; rubber.style.height = "0px";
+    try { box.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+  });
+  box.addEventListener("pointermove", (ev) => {
+    if (!drag) return;
+    const b = box.getBoundingClientRect();
+    rubber.style.left = (Math.min(drag.sx, ev.clientX) - b.left) + "px";
+    rubber.style.top = (Math.min(drag.sy, ev.clientY) - b.top) + "px";
+    rubber.style.width = Math.abs(ev.clientX - drag.sx) + "px";
+    rubber.style.height = Math.abs(ev.clientY - drag.sy) + "px";
+  });
+  box.addEventListener("pointerup", (ev) => {
+    if (!drag) return;
+    rubber.style.display = "none";
+    const s = svgEl(); const d = drag; drag = null;
+    if (!s) return;
+    if (Math.abs(ev.clientX - d.sx) < 6 || Math.abs(ev.clientY - d.sy) < 6) return;  // a click, not a drag
+    const r = s.getBoundingClientRect();
+    const w = model.get("width"), h = model.get("height");
+    const x0 = px(d.sx, r, w), y0 = py(d.sy, r, h);
+    const x1 = px(ev.clientX, r, w), y1 = py(ev.clientY, r, h);
+    sendAction({ type: "zoom", x0: Math.min(x0, x1), y0: Math.min(y0, y1),
+                 x1: Math.max(x0, x1), y1: Math.max(y0, y1) });
+  });
+  box.addEventListener("dblclick", () => sendAction({ type: "reset" }));
 
   model.on("change:scene_b64", draw);
   model.on("change:width", draw);
@@ -138,6 +198,10 @@ class VeuszWidget(anywidget.AnyWidget):
     width = traitlets.Int(640).tag(sync=True)
     height = traitlets.Int(480).tag(sync=True)
     wasm_base = traitlets.Unicode(DEFAULT_WASM_BASE).tag(sync=True)
+    # frontend -> kernel: an interaction request (JSON: zoom rect / reset).
+    # NB: no leading underscore — ipywidgets does not sync underscore-prefixed
+    # custom traits from the frontend, so the observer would never fire.
+    action = traitlets.Unicode("").tag(sync=True)
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -149,6 +213,8 @@ class VeuszWidget(anywidget.AnyWidget):
         if wasm_base:
             self.wasm_base = wasm_base
         self._dpi = int(dpi)
+        # Axis paths touched by interactive zoom, so reset knows what to clear.
+        self._zoomed_axes: set[str] = set()
         # The Veusz document + handler set, living in this kernel.
         self._bridge = Bridge(deterministic=deterministic)
         if vsz is not None:
@@ -203,29 +269,125 @@ class VeuszWidget(anywidget.AnyWidget):
         self.height = int(result.get("height", self.height))
         return self
 
+    # -- interaction (frontend pointer events -> axis edits) ----------------
+    def _axes_at(self, x: float, y: float) -> list:
+        """Axes under a render-space pixel, each ``{path, direction, value}``."""
+        out = self._call("render.pixel_to_data", {"x": float(x), "y": float(y)})
+        return out.get("axes", []) if out else []
+
+    def _zoom(self, x0, y0, x1, y1):
+        """Zoom so the dragged rectangle's corners become each axis's range.
+
+        Resolving both corners to data values gives absolute min/max, so this
+        works whether the axes were Auto-ranged or already zoomed."""
+        from collections import defaultdict
+        vals: dict[str, list] = defaultdict(list)
+        for entry in self._axes_at(x0, y0) + self._axes_at(x1, y1):
+            vals[entry["path"]].append(entry["value"])
+        changed = False
+        for path, vs in vals.items():
+            if len(vs) >= 2:
+                lo, hi = min(vs), max(vs)
+                if hi > lo:
+                    self._call("doc.set", {"path": f"{path}/min", "value": float(lo)})
+                    self._call("doc.set", {"path": f"{path}/max", "value": float(hi)})
+                    self._zoomed_axes.add(path)
+                    changed = True
+        if changed:
+            self.render()
+
+    def reset_zoom(self):
+        """Return every zoomed axis to automatic ranging and re-render."""
+        paths = set(self._zoomed_axes)
+        if not paths:  # nothing recorded — discover the axes under the centre
+            paths = {e["path"] for e in self._axes_at(self.width / 2, self.height / 2)}
+        for path in paths:
+            self._call("doc.set", {"path": f"{path}/min", "value": "Auto"})
+            self._call("doc.set", {"path": f"{path}/max", "value": "Auto"})
+        self._zoomed_axes.clear()
+        if paths:
+            self.render()
+
+    @traitlets.observe("action")
+    def _on_action(self, change):
+        import json
+        try:
+            a = json.loads(change["new"] or "{}")
+        except Exception:  # noqa: BLE001
+            return
+        kind = a.get("type")
+        if kind == "zoom":
+            self._zoom(a["x0"], a["y0"], a["x1"], a["y1"])
+        elif kind == "reset":
+            self.reset_zoom()
+
 
 # The editor frontend (ESM): a <textarea> + Run button + an output pane. Editing
 # syncs `code`; Run bumps `run_count` (the kernel observes it and executes).
 _EDITOR_ESM = r"""
+// Try to build a CodeMirror 6 editor (lazy CDN import). Returns an
+// {get,set,focus} handle, or null if anything fails — the caller then keeps the
+// plain <textarea>, so the editor always works even offline / if the CDN is down.
+async function tryCodeMirror(host, initial, onChange, onRun) {
+  try {
+    const E = "https://esm.sh";
+    const [view, state, commands, langpy, language] = await Promise.all([
+      import(`${E}/@codemirror/view@6`),
+      import(`${E}/@codemirror/state@6`),
+      import(`${E}/@codemirror/commands@6`),
+      import(`${E}/@codemirror/lang-python@6`),
+      import(`${E}/@codemirror/language@6`),
+    ]);
+    const { EditorView, keymap, lineNumbers, highlightActiveLine } = view;
+    const { EditorState } = state;
+    const { defaultKeymap, history, historyKeymap, indentWithTab } = commands;
+    const v = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: initial,
+        extensions: [
+          lineNumbers(), history(), highlightActiveLine(),
+          language.syntaxHighlighting(language.defaultHighlightStyle),
+          langpy.python(), language.indentUnit.of("    "),
+          keymap.of([
+            { key: "Mod-Enter", preventDefault: true, run: () => { onRun(); return true; } },
+            indentWithTab, ...defaultKeymap, ...historyKeymap,
+          ]),
+          EditorView.updateListener.of((u) => { if (u.docChanged) onChange(v.state.doc.toString()); }),
+          EditorView.theme({
+            "&": { fontSize: "13px", backgroundColor: "#f6f8fa" },
+            ".cm-content": { fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace" },
+            ".cm-gutters": { backgroundColor: "#f6f8fa", border: "0" },
+            "&.cm-focused": { outline: "none" },
+          }),
+        ],
+      }),
+    });
+    return {
+      get: () => v.state.doc.toString(),
+      set: (s) => { if (s !== v.state.doc.toString())
+        v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: s } }); },
+      focus: () => v.focus(),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 function render({ model, el }) {
   el.innerHTML = "";
-  el.style.cssText = "border:1px solid #d0d7de;border-radius:6px;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;";
+  el.style.cssText = "border:1px solid #d0d7de;border-radius:6px;overflow:hidden;";
 
-  const ta = document.createElement("textarea");
-  ta.spellcheck = false;
-  ta.value = model.get("code");
-  ta.style.cssText =
-    "display:block;width:100%;box-sizing:border-box;border:0;outline:none;resize:vertical;" +
-    "min-height:5.5em;padding:10px 12px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;" +
-    "background:#f6f8fa;color:#1f2328;";
+  const host = document.createElement("div");
+  host.style.cssText = "background:#f6f8fa;max-height:24em;overflow:auto;";
 
   const bar = document.createElement("div");
   bar.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 10px;background:#fff;border-top:1px solid #eaeef2;";
   const run = document.createElement("button");
   run.textContent = "▶ Run";
   run.style.cssText =
-    "cursor:pointer;border:1px solid #d0d7de;border-radius:6px;padding:3px 12px;font-size:13px;" +
-    "background:#1f883d;color:#fff;border-color:#1a7f37;";
+    "cursor:pointer;border:1px solid #1a7f37;border-radius:6px;padding:3px 12px;font-size:13px;" +
+    "background:#1f883d;color:#fff;";
   const hint = document.createElement("span");
   hint.textContent = "edit and run — ⌘/Ctrl+Enter";
   hint.style.cssText = "font:11px sans-serif;color:#8b949e;";
@@ -242,23 +404,37 @@ function render({ model, el }) {
   };
 
   const fire = () => {
-    model.set("code", ta.value);
+    model.set("code", editor.get());
     model.set("run_count", model.get("run_count") + 1);
     model.save_changes();
     run.disabled = true; run.style.opacity = "0.6"; out.textContent = "running…";
   };
-  run.addEventListener("click", fire);
+
+  // Always-present <textarea> fallback; upgraded to CodeMirror if it loads.
+  const ta = document.createElement("textarea");
+  ta.spellcheck = false;
+  ta.value = model.get("code");
+  ta.style.cssText =
+    "display:block;width:100%;box-sizing:border-box;border:0;outline:none;resize:vertical;" +
+    "min-height:5.5em;padding:10px 12px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;" +
+    "background:#f6f8fa;color:#1f2328;";
+  ta.addEventListener("input", () => { model.set("code", ta.value); model.save_changes(); });
   ta.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); fire(); }
   });
-  ta.addEventListener("input", () => { model.set("code", ta.value); model.save_changes(); });
+  host.appendChild(ta);
+  let editor = { get: () => ta.value, set: (s) => { if (ta.value !== s) ta.value = s; }, focus: () => ta.focus() };
 
-  // Kernel finished a run: it bumps `done` and updates `output`.
+  tryCodeMirror(host, model.get("code"),
+    (v) => { model.set("code", v); model.save_changes(); }, fire)
+    .then((cm) => { if (cm) { ta.remove(); editor = cm; } });
+
+  run.addEventListener("click", fire);
   model.on("change:done", () => { run.disabled = false; run.style.opacity = "1"; showOut(); });
   model.on("change:output", showOut);
-  model.on("change:code", () => { if (ta.value !== model.get("code")) ta.value = model.get("code"); });
+  model.on("change:code", () => editor.set(model.get("code")));
 
-  el.append(ta, bar, out);
+  el.append(host, bar, out);
   showOut();
 }
 export default { render };

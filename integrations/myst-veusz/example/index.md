@@ -47,19 +47,21 @@ and only the finished scene — rendered to crisp vector **SVG** by the pure-Rus
 backend, no Qt and no WebGPU — is shipped to the page. So the figure and the
 cell above **share one dataset and one Pyodide, with no copy**.
 
-Run the cell to draw it. Because it's live, you can **edit and redraw in place**:
-change `numBinsX`/`numBinsY` or the colour map below, re-run, and the figure
-updates — or change the data in the first cell, re-run both, and the phase
-diagram follows.
+Run the cell to draw it. The figure is **interactive**: **drag a rectangle to
+zoom**, **double-click to reset**. And because it's live you can edit it too —
+change settings or even the whole document in the editable boxes below, or
+change the data in the first cell and re-run.
 
 ```{code-cell} python
 # One-time setup: install the in-browser plotting stack into this kernel.
-# (numpy is already loaded by the cell above.)
+# (numpy is already loaded by the cell above.) One micropip call so the three
+# wheels resolve and download together rather than serially.
 import micropip
-await micropip.install("anywidget")
-await micropip.install("fonttools")
-await micropip.install(
-    "https://yipihey.github.io/veusz/embed/v4.5.0/veusz-4.5.0-py3-none-any.whl")
+await micropip.install([
+    "anywidget",
+    "fonttools",
+    "https://yipihey.github.io/veusz/embed/v4.5.0/veusz-4.5.0-py3-none-any.whl",
+])
 
 from veusz.notebook import VeuszWidget
 
@@ -120,5 +122,46 @@ fig.set_setting("/page1/graph1/dens/colorMap", "plasma")
 fig.set_setting("/page1/graph1/dens/numBinsX", 80)
 fig.set_setting("/page1/graph1/dens/numBinsY", 80)
 print("redrew with", 80, "x", 80, "bins")
+''')
+```
+
+### Edit the whole document
+
+The settings tweak above is small; you can also edit the figure's **entire Veusz
+document** — add widgets, change axes, swap the plot type — and rebuild it on the
+same data. Edit and **Run**:
+
+```{code-cell} python
+VeuszCodeEditor(r'''
+# The full Veusz document for the figure. Edit it and Run to rebuild `fig`
+# above — then re-feed the same kernel arrays (load resets the datasets).
+doc = """SetCompatLevel(0)
+Add('page', name='page1', autoadd=False)
+To('page1')
+Add('graph', name='graph1', autoadd=False)
+To('graph1')
+Add('axis', name='x', autoadd=False)
+To('x')
+Set('label', 'log \\\\rho')
+To('..')
+Add('axis', name='y', autoadd=False)
+To('y')
+Set('label', 'log T')
+Set('direction', 'vertical')
+To('..')
+Add('density', name='dens', autoadd=False)
+To('dens')
+Set('xData', 'logrho')
+Set('yData', 'logT')
+Set('numBinsX', 100)
+Set('numBinsY', 100)
+Set('colorMap', 'inferno')
+Set('colorScaling', 'log')
+To('..')
+"""
+fig.load_vsz(doc)
+fig.set_data("logrho", logrho)
+fig.set_data("logT", logT)
+print("rebuilt the figure from the document above")
 ''')
 ```
