@@ -149,6 +149,24 @@ jobs:
           # Lets any HTML host (notably a MyST {iframe}, which sanitises inline
           # custom elements) embed a Veusz figure by iframing this page.
           cp veusz-tauri/embed-viewer.html "$DEST/figure.html"
+          # Regenerate the notebook figure's inline SVG straight from its .vsz
+          # with the headless Rust renderer — NO Qt, NO browser. This is the
+          # whole point of the paint backends: render anywhere. It also proves
+          # the pipeline in CI (the env that previously couldn't) and keeps
+          # phase.svg in sync. Best-effort: on any failure the committed
+          # integrations/myst-veusz/example/figures/phase.svg is used instead.
+          if cargo build --release -p veusz-render-cli \
+                --manifest-path veusz-tauri/Cargo.toml \
+             && python -m pip install --quiet numpy \
+             && PYTHON=python \
+                VEUSZ_RENDER=veusz-tauri/target/release/veusz-render \
+                scripts/render_vsz.sh \
+                  integrations/myst-veusz/example/figures/phase.vsz \
+                  integrations/myst-veusz/example/figures/phase.svg; then
+            echo "regenerated phase.svg headlessly (no Qt)"
+          else
+            echo "::warning::headless SVG regen failed — using committed phase.svg"
+          fi
           # Browser-native MyST notebook: prose + a live JupyterLite (Pyodide)
           # code cell + a live Veusz figure (via the veusz directive -> the
           # figure.html viewer above). Builds a static site; mystmd exits after
