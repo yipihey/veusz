@@ -202,3 +202,119 @@ class VeuszWidget(anywidget.AnyWidget):
         self.width = int(result.get("width", self.width))
         self.height = int(result.get("height", self.height))
         return self
+
+
+# The editor frontend (ESM): a <textarea> + Run button + an output pane. Editing
+# syncs `code`; Run bumps `run_count` (the kernel observes it and executes).
+_EDITOR_ESM = r"""
+function render({ model, el }) {
+  el.innerHTML = "";
+  el.style.cssText = "border:1px solid #d0d7de;border-radius:6px;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;";
+
+  const ta = document.createElement("textarea");
+  ta.spellcheck = false;
+  ta.value = model.get("code");
+  ta.style.cssText =
+    "display:block;width:100%;box-sizing:border-box;border:0;outline:none;resize:vertical;" +
+    "min-height:5.5em;padding:10px 12px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;" +
+    "background:#f6f8fa;color:#1f2328;";
+
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 10px;background:#fff;border-top:1px solid #eaeef2;";
+  const run = document.createElement("button");
+  run.textContent = "▶ Run";
+  run.style.cssText =
+    "cursor:pointer;border:1px solid #d0d7de;border-radius:6px;padding:3px 12px;font-size:13px;" +
+    "background:#1f883d;color:#fff;border-color:#1a7f37;";
+  const hint = document.createElement("span");
+  hint.textContent = "edit and run — ⌘/Ctrl+Enter";
+  hint.style.cssText = "font:11px sans-serif;color:#8b949e;";
+  bar.append(run, hint);
+
+  const out = document.createElement("pre");
+  out.style.cssText =
+    "margin:0;padding:0 12px;max-height:12em;overflow:auto;white-space:pre-wrap;" +
+    "font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#57606a;";
+  const showOut = () => {
+    const t = model.get("output") || "";
+    out.textContent = t;
+    out.style.padding = t ? "8px 12px" : "0 12px";
+  };
+
+  const fire = () => {
+    model.set("code", ta.value);
+    model.set("run_count", model.get("run_count") + 1);
+    model.save_changes();
+    run.disabled = true; run.style.opacity = "0.6"; out.textContent = "running…";
+  };
+  run.addEventListener("click", fire);
+  ta.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); fire(); }
+  });
+  ta.addEventListener("input", () => { model.set("code", ta.value); model.save_changes(); });
+
+  // Kernel finished a run: it bumps `done` and updates `output`.
+  model.on("change:done", () => { run.disabled = false; run.style.opacity = "1"; showOut(); });
+  model.on("change:output", showOut);
+  model.on("change:code", () => { if (ta.value !== model.get("code")) ta.value = model.get("code"); });
+
+  el.append(ta, bar, out);
+  showOut();
+}
+export default { render };
+"""
+
+
+class VeuszCodeEditor(anywidget.AnyWidget):
+    """An in-page, editable Python cell that runs in the notebook kernel.
+
+    MyST's published site renders ``{code-cell}`` blocks as run-only static code
+    — there is no inline source editor. This widget restores editing: a code box
+    with a Run button whose contents execute **in the kernel's own namespace**
+    (via the IPython shell), so snippets can drive objects already defined on the
+    page — e.g. a displayed :class:`VeuszWidget` — and the figure redraws in
+    place. stdout/stderr and tracebacks are shown beneath the editor.
+
+    Usage::
+
+        from veusz.notebook import VeuszCodeEditor
+        VeuszCodeEditor('fig.set_setting("/page1/graph1/dens/colorMap", "plasma")')
+    """
+
+    _esm = _EDITOR_ESM
+    code = traitlets.Unicode("").tag(sync=True)
+    output = traitlets.Unicode("").tag(sync=True)
+    run_count = traitlets.Int(0).tag(sync=True)   # frontend -> kernel: please run
+    done = traitlets.Int(0).tag(sync=True)         # kernel -> frontend: run finished
+
+    def __init__(self, code: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self.code = code
+
+    @traitlets.observe("run_count")
+    def _on_run(self, _change):
+        import contextlib
+        import io
+        import traceback
+        # Execute in the live user namespace so the snippet sees `fig`, `logrho`,
+        # … exactly as a notebook cell would (and its edits to a displayed widget
+        # propagate). Fall back to module globals outside IPython.
+        ns = None
+        try:
+            from IPython import get_ipython
+            ip = get_ipython()
+            if ip is not None:
+                ns = ip.user_ns
+        except Exception:
+            ns = None
+        if ns is None:
+            ns = globals()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                exec(self.code, ns)  # noqa: S102 - intentional: user-authored cell
+            self.output = buf.getvalue()
+        except Exception:  # noqa: BLE001 - surface the traceback to the reader
+            self.output = buf.getvalue() + traceback.format_exc()
+        finally:
+            self.done += 1

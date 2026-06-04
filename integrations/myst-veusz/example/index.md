@@ -16,12 +16,13 @@ and nothing to install**. Open it on a laptop or a phone.
 
 ## Compute, in the browser
 
-The Python cell below is **live and editable**. First press the **power button
-(⏻) at the top of the page** to start the in-browser kernel (JupyterLite /
-Pyodide — this downloads the runtime once, on demand). Then each cell shows a
-**▶ run** button and becomes an editable input — change the numbers, re-run,
-and watch the output update, entirely on your device. It builds the kind of
-two-phase distribution a simulation produces: a warm diffuse component and a
+First press the **power button (⏻) at the top of the page** to start the
+in-browser kernel (JupyterLite / Pyodide — this downloads the runtime once, on
+demand). Each cell then shows a **▶ run** button, so you can run the whole page
+on your device. (Want to change the code? The published page shows code cells
+read-only; use the **editable code box** further down — or "Launch notebook in
+Jupyter" in the top toolbar for the full editor.) The cell below builds the kind
+of two-phase distribution a simulation produces: a warm diffuse component and a
 cool dense ridge.
 
 ```{code-cell} python
@@ -103,6 +104,21 @@ fig.set_data("logT", logT)
 fig
 ```
 
-> **Try it:** `fig.set_setting("/page1/graph1/dens/colorMap", "plasma")` recolours
-> the figure in place; `fig.set_data("logT", logT + 0.5)` shifts the data and
-> rebins — both redraw without leaving the page.
+### Edit it live
+
+The published page renders the code cells above read-only, so here's an
+**editable code box** — change it and press **▶ Run** (or ⌘/Ctrl+Enter). It runs
+in the same kernel, so it sees `fig` and the data, and the figure above
+**redraws in place**. Try a different colour map or bin count, or shift the
+data:
+
+```{code-cell} python
+from veusz.notebook import VeuszCodeEditor
+VeuszCodeEditor('''
+# Edit me, then press Run — the phase diagram above updates.
+fig.set_setting("/page1/graph1/dens/colorMap", "plasma")
+fig.set_setting("/page1/graph1/dens/numBinsX", 80)
+fig.set_setting("/page1/graph1/dens/numBinsY", 80)
+print("redrew with", 80, "x", 80, "bins")
+''')
+```
