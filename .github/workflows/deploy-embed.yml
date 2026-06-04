@@ -157,7 +157,7 @@ jobs:
           # integrations/myst-veusz/example/figures/phase.svg is used instead.
           if cargo build --release -p veusz-render-cli \
                 --manifest-path veusz-tauri/Cargo.toml \
-             && python -m pip install --quiet numpy \
+             && python -m pip install --quiet numpy fonttools \
              && PYTHON=python \
                 VEUSZ_RENDER=veusz-tauri/target/release/veusz-render \
                 scripts/render_vsz.sh \
