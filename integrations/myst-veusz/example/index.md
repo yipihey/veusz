@@ -1,5 +1,13 @@
 ---
 title: A phase diagram, computed and plotted in your browser
+# A kernelspec is what tells MyST this page is *executable*: without it the
+# {code-cell} below renders as a static code block and the in-page compute
+# "power button" (⏻) never appears — only the external Binder/JupyterHub
+# launcher. With it (plus project.jupyter.lite), MyST shows the power button
+# that boots the in-browser JupyterLite (Pyodide) kernel.
+kernelspec:
+  name: python
+  display_name: Python (Pyodide)
 ---
 
 This page is a **fully browser-native lab notebook**: the prose, the live Python
