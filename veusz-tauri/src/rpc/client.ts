@@ -5,6 +5,7 @@
 // and unit tests (mock handlers).
 
 import type {
+  ColormapInfo,
   DataInfo,
   DocSetOp,
   ImportItem,
@@ -38,6 +39,8 @@ export function createRpc(transport: Transport) {
       schemaAt: (path: string) =>
         t('doc.schema_at', { path }) as Promise<WidgetSchema>,
       widgetTypes: () => t('doc.widget_types') as Promise<string[]>,
+      colormaps: (samples = 24) =>
+        t('doc.colormaps', { samples }) as Promise<{ colormaps: ColormapInfo[]; samples: number }>,
       add: (parent: string, type: string, name?: string) =>
         t('doc.add', { parent, type, name }) as Promise<{ path: string }>,
       insertTargets: (path: string) =>

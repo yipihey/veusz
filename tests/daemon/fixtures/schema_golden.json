@@ -5617,6 +5617,7 @@
         "usertext": "Widget",
         "widgettypes": [
           "image",
+          "density",
           "xy",
           "nonorthpoint"
         ]
@@ -7675,6 +7676,315 @@
     "typename": "covariance",
     "usertext": ""
   },
+  "density": {
+    "descr": "",
+    "mode": "class",
+    "name": "Widget_density",
+    "setnsmode": "widgetsettings",
+    "settings": [
+      {
+        "datatype": "numeric",
+        "default": "x",
+        "descr": "X dataset to bin",
+        "dimensions": 1,
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "xData",
+        "typename": "dataset-extended",
+        "usertext": "X data"
+      },
+      {
+        "datatype": "numeric",
+        "default": "y",
+        "descr": "Y dataset to bin",
+        "dimensions": 1,
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "yData",
+        "typename": "dataset-extended",
+        "usertext": "Y data"
+      },
+      {
+        "datatype": "numeric",
+        "default": "",
+        "descr": "Optional weight dataset (for sum / mean)",
+        "dimensions": 1,
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "weightData",
+        "typename": "dataset-extended",
+        "usertext": "Weight"
+      },
+      {
+        "default": "counts",
+        "descr": "Value shown per bin",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "mode",
+        "typename": "choice",
+        "usertext": "Bin value",
+        "vallist": [
+          "counts",
+          "sum",
+          "mean",
+          "density"
+        ]
+      },
+      {
+        "default": 100,
+        "descr": "Number of bins in X",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 100000,
+        "minval": 1,
+        "name": "numBinsX",
+        "typename": "int",
+        "usertext": "Num. bins X"
+      },
+      {
+        "default": "grey",
+        "descr": "Set of colors to plot data with",
+        "formatting": true,
+        "hidden": false,
+        "is_reference": false,
+        "name": "colorMap",
+        "typename": "colormap",
+        "usertext": "Colormap"
+      },
+      {
+        "default": false,
+        "descr": "Invert color map",
+        "formatting": true,
+        "hidden": false,
+        "is_reference": false,
+        "name": "colorInvert",
+        "typename": "bool",
+        "usertext": "Invert colormap"
+      },
+      {
+        "default": 0,
+        "descr": "Transparency percentage",
+        "formatting": true,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 100,
+        "minval": 0,
+        "name": "transparency",
+        "typename": "int",
+        "usertext": "Transparency"
+      },
+      {
+        "default": "Auto",
+        "descr": "Minimum X (Auto = data minimum)",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 1e+200,
+        "minval": -1e+200,
+        "name": "minX",
+        "typename": "float-or-auto",
+        "usertext": "Min. X"
+      },
+      {
+        "default": "Auto",
+        "descr": "Maximum X (Auto = data maximum)",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 1e+200,
+        "minval": -1e+200,
+        "name": "maxX",
+        "typename": "float-or-auto",
+        "usertext": "Max. X"
+      },
+      {
+        "default": false,
+        "descr": "Log-spaced X bins",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "logX",
+        "typename": "bool",
+        "usertext": "Log X bins"
+      },
+      {
+        "default": 100,
+        "descr": "Number of bins in Y",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 100000,
+        "minval": 1,
+        "name": "numBinsY",
+        "typename": "int",
+        "usertext": "Num. bins Y"
+      },
+      {
+        "default": "Auto",
+        "descr": "Minimum Y (Auto = data minimum)",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 1e+200,
+        "minval": -1e+200,
+        "name": "minY",
+        "typename": "float-or-auto",
+        "usertext": "Min. Y"
+      },
+      {
+        "default": "Auto",
+        "descr": "Maximum Y (Auto = data maximum)",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 1e+200,
+        "minval": -1e+200,
+        "name": "maxY",
+        "typename": "float-or-auto",
+        "usertext": "Max. Y"
+      },
+      {
+        "default": false,
+        "descr": "Log-spaced Y bins",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "logY",
+        "typename": "bool",
+        "usertext": "Log Y bins"
+      },
+      {
+        "default": "Auto",
+        "descr": "Minimum value of color scale",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 1e+200,
+        "minval": -1e+200,
+        "name": "min",
+        "typename": "float-or-auto",
+        "usertext": "Min. value"
+      },
+      {
+        "default": "Auto",
+        "descr": "Maximum value of color scale",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "maxval": 1e+200,
+        "minval": -1e+200,
+        "name": "max",
+        "typename": "float-or-auto",
+        "usertext": "Max. value"
+      },
+      {
+        "default": "linear",
+        "descr": "Scaling to transform numbers to color",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "colorScaling",
+        "typename": "choice",
+        "usertext": "Scaling",
+        "vallist": [
+          "linear",
+          "sqrt",
+          "log",
+          "squared"
+        ]
+      },
+      {
+        "default": "pixels",
+        "descr": "Map image using pixels or bound coordinates",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "mapping",
+        "typename": "choice",
+        "usertext": "Mapping",
+        "vallist": [
+          "pixels",
+          "bounds"
+        ]
+      },
+      {
+        "default": false,
+        "descr": "Hide object",
+        "formatting": true,
+        "hidden": false,
+        "is_reference": false,
+        "name": "hide",
+        "typename": "bool",
+        "usertext": "Hide"
+      },
+      {
+        "default": "",
+        "descr": "Description of the plotted data to appear in key",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "key",
+        "typename": "str",
+        "usertext": "Key text"
+      },
+      {
+        "default": "x",
+        "descr": "Name of X-axis to use",
+        "direction": "horizontal",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "xAxis",
+        "typename": "axis",
+        "usertext": "X axis"
+      },
+      {
+        "default": "y",
+        "descr": "Name of Y-axis to use",
+        "direction": "vertical",
+        "formatting": false,
+        "hidden": false,
+        "is_reference": false,
+        "name": "yAxis",
+        "typename": "axis",
+        "usertext": "Y axis"
+      },
+      {
+        "default": "resample-pixels",
+        "descr": "Method for drawing output",
+        "formatting": true,
+        "hidden": false,
+        "is_reference": false,
+        "name": "drawMode",
+        "typename": "choice",
+        "usertext": "Draw Mode",
+        "vallist": [
+          "default",
+          "resample-pixels",
+          "resample-smooth",
+          "rectangles"
+        ]
+      },
+      {
+        "default": false,
+        "descr": "",
+        "formatting": true,
+        "hidden": true,
+        "is_reference": false,
+        "name": "smooth",
+        "typename": "backward-compat",
+        "usertext": ""
+      }
+    ],
+    "subgroups": [],
+    "typename": "density",
+    "usertext": ""
+  },
   "document": {
     "descr": "",
     "mode": "class",
@@ -9707,7 +10017,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {
@@ -9915,7 +10225,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {
@@ -12019,7 +12329,7 @@
         "hidden": false,
         "is_reference": false,
         "name": "colorMap",
-        "typename": "str",
+        "typename": "colormap",
         "usertext": "Colormap"
       },
       {
@@ -15095,7 +15405,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {
@@ -16297,7 +16607,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {
@@ -16379,7 +16689,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {
@@ -19030,7 +19340,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {
@@ -21040,7 +21350,7 @@
         "hidden": false,
         "is_reference": false,
         "name": "colorMap",
-        "typename": "str",
+        "typename": "colormap",
         "usertext": "Colormap"
       },
       {
@@ -22010,7 +22320,7 @@
             "hidden": false,
             "is_reference": false,
             "name": "colorMap",
-            "typename": "str",
+            "typename": "colormap",
             "usertext": "Color map"
           },
           {

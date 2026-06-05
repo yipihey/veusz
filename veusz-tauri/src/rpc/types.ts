@@ -128,6 +128,14 @@ export interface DataInfo {
   tags?: string[];
 }
 
+/** One colormap from `doc.colormaps`: a name plus sampled `[r,g,b]` stops the
+ *  UI renders as a swatch gradient. `step` marks discrete (banded) maps. */
+export interface ColormapInfo {
+  name: string;
+  colors: Array<[number, number, number]>;
+  step: boolean;
+}
+
 export interface DocSetOp {
   path: string;
   value: unknown;

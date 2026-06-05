@@ -911,6 +911,40 @@ class ColorMaps:
         ])
         return iter(items)
 
+def colormapSwatchRGB(cmap, nsamples=24):
+    """Sample a colormap into ``nsamples`` opaque ``[R, G, B]`` triples for a
+    swatch preview, using only numpy (no Qt / qtloops, so it works headless and
+    in the browser wheel).
+
+    ``cmap`` is the Nx4 BGRA array as stored in :class:`ColorMaps`. A leading row
+    whose first element is negative (``[-1, 0, 0, 0]``) marks a *stepped* map; its
+    remaining rows are the discrete band colours. Non-stepped maps are linearly
+    interpolated between their control points, mirroring ``numpyToQImage``.
+
+    Returns ``(stops, stepped)`` where ``stops`` is a list of ``[r, g, b]`` ints.
+    """
+    a = N.array(cmap, dtype=N.float64)
+    stepped = a.shape[0] >= 1 and a[0, 0] < 0
+    if stepped:
+        a = a[1:]
+    m = a.shape[0]
+    if m == 0:
+        return [], stepped
+    if stepped:
+        # discrete bands: pick the band each evenly-spaced sample falls in
+        idx = N.clip(N.arange(nsamples) * m // max(nsamples, 1), 0, m - 1)
+        sel = a[idx]
+    else:
+        xs = N.linspace(0, m - 1, nsamples)
+        lo = N.floor(xs).astype(int)
+        hi = N.clip(lo + 1, 0, m - 1)
+        frac = (xs - lo)[:, None]
+        sel = a[lo] * (1 - frac) + a[hi] * frac
+    sel = N.clip(N.round(sel), 0, 255).astype(int)
+    # stored order is BGRA -> emit RGB
+    return [[int(c[2]), int(c[1]), int(c[0])] for c in sel], bool(stepped)
+
+
 def applyScaling(data, mode, minval, maxval):
     """Apply a scaling transformation on the data.
     data is a numpy array

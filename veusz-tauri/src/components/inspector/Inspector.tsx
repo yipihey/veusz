@@ -1,5 +1,5 @@
 import { Fragment, useState, type CSSProperties, type ReactNode } from 'react';
-import type { SettingsGroup, SettingSchema, WidgetSchema } from '../../rpc/types';
+import type { ColormapInfo, SettingsGroup, SettingSchema, WidgetSchema } from '../../rpc/types';
 import { resolve } from '../settings';
 
 /** Context passed to the optional per-setting right-click menu. */
@@ -25,6 +25,8 @@ export interface InspectorProps {
   widgetPaths: string[];
   /** Dataset names — handed down to dataset pickers. */
   datasets?: string[];
+  /** Colormaps (name + swatch stops) — handed down to the colormap chooser. */
+  colormaps?: ColormapInfo[];
   /** Single-widget edit hook (absolute path). */
   onChange: (path: string, value: unknown) => void;
   /** Multi-widget batched edit hook — one op per selected widget,
@@ -94,6 +96,7 @@ export function Inspector(props: InspectorProps) {
         widgetPath={base}
         values={props.values}
         datasets={props.datasets}
+        colormaps={props.colormaps}
         onChange={handleChange}
         settingMenu={props.settingMenu}
         groupOpen={groupOpen}
@@ -140,6 +143,7 @@ interface GroupBodyProps {
   widgetPath: string;
   values: Record<string, unknown>;
   datasets?: string[];
+  colormaps?: ColormapInfo[];
   onChange: (path: string, value: unknown) => void;
   settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
   /** Enclosing subgroup's display label (undefined at the top level). Used
@@ -154,7 +158,7 @@ interface GroupBodyProps {
   hideDefaults: boolean;
 }
 
-function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, settingMenu, groupLabel, groupOpen, setGroupOpen, hideDefaults }: GroupBodyProps) {
+function GroupBody({ group, basePath, widgetPath, values, datasets, colormaps, onChange, settingMenu, groupLabel, groupOpen, setGroupOpen, hideDefaults }: GroupBodyProps) {
   return (
     <Fragment>
       {group.settings.map((s) => {
@@ -169,6 +173,7 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
             widgetPath={widgetPath}
             value={v}
             datasets={datasets}
+            colormaps={colormaps}
             onChange={onChange}
             settingMenu={settingMenu}
             groupLabel={groupLabel}
@@ -207,6 +212,7 @@ function GroupBody({ group, basePath, widgetPath, values, datasets, onChange, se
               widgetPath={widgetPath}
               values={values}
               datasets={datasets}
+              colormaps={colormaps}
               onChange={onChange}
               settingMenu={settingMenu}
               groupLabel={label}
@@ -258,6 +264,7 @@ function SettingRow({
   widgetPath,
   value,
   datasets,
+  colormaps,
   onChange,
   settingMenu,
   groupLabel,
@@ -267,6 +274,7 @@ function SettingRow({
   widgetPath: string;
   value: unknown;
   datasets?: string[];
+  colormaps?: ColormapInfo[];
   onChange: (path: string, value: unknown) => void;
   settingMenu?: (ctx: SettingMenuContext, label: ReactNode) => ReactNode;
   groupLabel?: string;
@@ -327,6 +335,7 @@ function SettingRow({
         schema={schema}
         value={mixed ? undefined : value}
         datasets={datasets}
+        colormaps={colormaps}
         onChange={(v) => onChange(path, v)}
       />
     </div>

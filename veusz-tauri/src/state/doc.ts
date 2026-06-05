@@ -17,6 +17,7 @@
 
 import { create } from 'zustand';
 import type {
+  ColormapInfo,
   DataInfo,
   PaintBackend,
   PluginInfo,
@@ -39,6 +40,9 @@ export interface DocState {
   clipboard: Clipboard;
   tree: WidgetTreeNode | null;
   datasets: DataInfo[];
+  /** All colormaps (name + swatch stops) from `doc.colormaps`, loaded once
+   *  and handed to the Inspector's colormap chooser. */
+  colormaps: ColormapInfo[];
   /**
    * Selected widget paths. Empty when nothing is selected; one entry
    * for a single selection (the Inspector shows that widget's schema);
@@ -88,6 +92,7 @@ export interface DocState {
   // --- lifecycle ---
   refreshTree: () => Promise<void>;
   refreshDatasets: () => Promise<void>;
+  refreshColormaps: () => Promise<void>;
   refreshUndoState: () => Promise<void>;
   /** Refresh insertTargets for the current selection (or root). */
   refreshInsertTargets: () => Promise<void>;
@@ -268,6 +273,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       clipboard,
       tree: null,
       datasets: [],
+      colormaps: [],
       selected: [],
       schema: null,
       values: {},
@@ -300,6 +306,11 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         if (datasets) set({ datasets });
       },
 
+      refreshColormaps: async () => {
+        const r = await guard(() => rpc.doc.colormaps());
+        if (r) set({ colormaps: r.colormaps });
+      },
+
       refreshUndoState: async () => {
         const s = await guard(() => rpc.doc.canUndo());
         if (s) set({ canUndo: s.can_undo, canRedo: s.can_redo });
@@ -316,6 +327,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         await Promise.all([
           get().refreshTree(),
           get().refreshDatasets(),
+          get().refreshColormaps(),
           get().refreshUndoState(),
           get().refreshFileInfo(),
           get().refreshInsertTargets(),

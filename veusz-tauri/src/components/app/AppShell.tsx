@@ -60,6 +60,7 @@ export function AppShell({
 }: AppShellProps) {
   const tree = store((s) => s.tree);
   const datasets = store((s) => s.datasets);
+  const colormaps = store((s) => s.colormaps);
   const selected = store((s) => s.selected);
   const schema = store((s) => s.schema);
   const values = store((s) => s.values);
@@ -391,6 +392,7 @@ export function AppShell({
               widgetPaths={selected}
               values={values}
               datasets={datasets.map((d) => d.name)}
+              colormaps={colormaps}
               onChange={setValue}
               onChangeMany={setValues}
               settingMenu={(ctx, label) => (

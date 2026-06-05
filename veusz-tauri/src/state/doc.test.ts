@@ -45,6 +45,7 @@ function makeStore(handlers: Record<string, (p: Record<string, unknown>) => unkn
   const t = mockTransport({
     'doc.tree': () => TREE,
     'data.list': () => [{ name: 'x', type: 'Dataset', len: 5 }],
+    'doc.colormaps': () => ({ colormaps: [], samples: 24 }),
     'doc.can_undo': () => ({ can_undo: false, can_redo: false }),
     'doc.insert_targets': () => ({ targets: {} }),
     'file.recent_list': () => ({ paths: [] }),

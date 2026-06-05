@@ -311,7 +311,105 @@ function render({ model, el }) {
   const requestSelect = (path) => { if (path) sendAction({ type: "select", path }); };
   const sendSet = (path, value) => sendAction({ type: "set", path, value });
 
+  // CSS background for a colormap swatch: a smooth or hard-banded gradient.
+  function cmGradient(colors, step) {
+    const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+    if (!colors || !colors.length) return "#e1e4e8";
+    if (step) {
+      const n = colors.length;
+      return "linear-gradient(to right," + colors.map((c, i) =>
+        `${rgb(c)} ${(i / n * 100).toFixed(2)}% ${((i + 1) / n * 100).toFixed(2)}%`).join(",") + ")";
+    }
+    return "linear-gradient(to right," + colors.map(rgb).join(",") + ")";
+  }
+  const cmList = () => (parseJSON(model.get("colormaps_json")) || {}).colormaps || [];
+  const cmByName = (name) => cmList().find((c) => c.name === name) || null;
+
+  // A colormap chooser: a swatch+name trigger that expands an inline panel with
+  // a streaming search box and a scrollable, swatch-previewed list.
+  function makeColormapInput(s) {
+    const root = document.createElement("div");
+    root.style.cssText = "flex:1;min-width:0;";
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.style.cssText =
+      "display:flex;align-items:center;gap:8px;width:100%;cursor:pointer;" +
+      "border:1px solid #d0d7de;border-radius:6px;padding:2px 6px;background:#fff;";
+    const sw = document.createElement("span");
+    sw.style.cssText = "flex:1;height:16px;border-radius:3px;border:1px solid #00000022;min-width:40px;";
+    const nameEl = document.createElement("span");
+    nameEl.style.cssText = "font:12px sans-serif;color:#1f2328;white-space:nowrap;";
+    const caret = document.createElement("span");
+    caret.textContent = "▾"; caret.style.cssText = "color:#6e7781;font-size:10px;";
+    trigger.append(sw, nameEl, caret);
+
+    const panel = document.createElement("div");
+    panel.style.cssText =
+      "display:none;margin-top:4px;border:1px solid #d0d7de;border-radius:6px;background:#fff;overflow:hidden;";
+    const search = document.createElement("input");
+    search.type = "text"; search.placeholder = "search colormaps…";
+    search.style.cssText =
+      "display:block;width:100%;box-sizing:border-box;border:0;border-bottom:1px solid #eaeef2;" +
+      "padding:5px 8px;font:12px sans-serif;outline:none;";
+    const listBox = document.createElement("div");
+    listBox.style.cssText = "max-height:190px;overflow:auto;";
+    panel.append(search, listBox);
+    root.append(trigger, panel);
+
+    let current = s.value;
+    function paintTrigger() {
+      const cm = cmByName(current);
+      sw.style.background = cm ? cmGradient(cm.colors, cm.step) : "#e1e4e8";
+      nameEl.textContent = current || "(none)";
+    }
+    function choose(name) {
+      current = name; paintTrigger();
+      panel.style.display = "none"; caret.textContent = "▾";
+      sendSet(s.path, name);
+    }
+    function buildList(filter) {
+      const f = (filter || "").toLowerCase();
+      listBox.innerHTML = "";
+      const maps = cmList().filter((c) => !f || c.name.toLowerCase().includes(f));
+      if (!maps.length) { listBox.innerHTML = '<div style="padding:8px;color:#8b949e;font:12px sans-serif;">no match</div>'; return; }
+      for (const c of maps) {
+        const row = document.createElement("div");
+        row.style.cssText =
+          "display:flex;align-items:center;gap:8px;padding:3px 8px;cursor:pointer;" +
+          (c.name === current ? "background:#ddf4ff;" : "");
+        row.addEventListener("mouseenter", () => { if (c.name !== current) row.style.background = "#f6f8fa"; });
+        row.addEventListener("mouseleave", () => { row.style.background = c.name === current ? "#ddf4ff" : ""; });
+        const cs = document.createElement("span");
+        cs.style.cssText = "flex:1;height:14px;border-radius:3px;border:1px solid #00000022;min-width:60px;";
+        cs.style.background = cmGradient(c.colors, c.step);
+        const nm = document.createElement("span");
+        nm.textContent = c.name + (c.step ? " ⋯" : "");
+        nm.style.cssText = "font:12px sans-serif;color:#1f2328;white-space:nowrap;";
+        row.append(cs, nm);
+        row.addEventListener("click", () => choose(c.name));
+        listBox.append(row);
+      }
+    }
+    trigger.addEventListener("click", () => {
+      const open = panel.style.display === "none";
+      panel.style.display = open ? "block" : "none";
+      caret.textContent = open ? "▴" : "▾";
+      if (open) { buildList(search.value); search.focus(); }
+    });
+    search.addEventListener("input", () => buildList(search.value));
+    search.addEventListener("keydown", (e) => { if (e.key === "Escape") { panel.style.display = "none"; caret.textContent = "▾"; } });
+    paintTrigger();
+    // If the swatch list arrives after the control is built, repaint.
+    model.on("change:colormaps_json", () => { paintTrigger(); if (panel.style.display !== "none") buildList(search.value); });
+
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;align-items:flex-start;gap:6px;flex:1;";
+    wrap.append(root);
+    return { el: trigger, wrap, set: (v) => { current = v; paintTrigger(); } };
+  }
+
   function makeInput(s) {
+    if (s.typename === "colormap") return makeColormapInput(s);
     let elc, get;
     if (Array.isArray(s.vallist) && s.vallist.length) {
       elc = document.createElement("select");
@@ -457,6 +555,7 @@ class VeuszWidget(anywidget.AnyWidget):
     tree_json = traitlets.Unicode("").tag(sync=True)    # the widget tree
     props_json = traitlets.Unicode("").tag(sync=True)   # schema+values of the selected widget
     value_echo = traitlets.Unicode("").tag(sync=True)   # coerced value after a single set
+    colormaps_json = traitlets.Unicode("").tag(sync=True)  # colormap names + swatch stops
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -618,8 +717,21 @@ class VeuszWidget(anywidget.AnyWidget):
             values = self._call("doc.get", {"paths": [s["path"] for s in leaves]})
             for s in leaves:
                 s["value"] = _json_safe_value(values.get(s["path"]))
+        # Populate the colormap swatch list once, the first time a colormap
+        # setting is shown — so a figure without any colormap never pays for it.
+        if not self.colormaps_json and any(
+                s.get("typename") == "colormap" for s in leaves):
+            self._refresh_colormaps()
         schema["widget_path"] = path
         return schema
+
+    def _refresh_colormaps(self):
+        import json
+        try:
+            res = self._call("doc.colormaps", {"samples": 24})
+        except Exception:  # noqa: BLE001 - chooser falls back to a plain text box
+            return
+        self.colormaps_json = json.dumps(res)
 
     def _select_gui(self, path: str):
         import json

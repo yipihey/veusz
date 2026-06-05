@@ -17,6 +17,7 @@ import type { LeafProps } from './types';
 import { AxisBound } from './AxisBound';
 import { Bool } from './Bool';
 import { Choice } from './Choice';
+import { ColormapPicker } from './ColormapPicker';
 import { ColorPicker } from './ColorPicker';
 import { DatasetPicker } from './DatasetPicker';
 import { Distance } from './Distance';
@@ -51,7 +52,7 @@ export const registry: Record<string, Leaf> = {
   'choice-or-more': (props) => <Choice {...props} editable />,
   'float-choice': (props) => <Choice {...props} editable />,
   'color': ColorPicker,
-  'colormap': Choice,
+  'colormap': ColormapPicker,
   'marker': MarkerPicker,
   'arrow': Choice,
   'line-style': LineStylePicker,

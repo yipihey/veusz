@@ -489,6 +489,39 @@ def register(ctx):
         ctx.notifier.publish('data.changed', {'names': [], 'kind': 'wipe'})
         return {'ok': True, 'changeset': ctx.document.changeset}
 
+    def colormaps(samples: int = 24, **_):
+        """List every colormap (built-in, stepped variants, and document
+        customs) with a small set of sampled ``[r,g,b]`` stops so any frontend
+        can render a swatch preview without a paint backend. Powers the
+        colormap chooser. ``step`` marks discrete (banded) maps.
+        """
+        from ...utils.colormap import colormapSwatchRGB
+        try:
+            n = max(2, min(64, int(samples)))
+        except (TypeError, ValueError):
+            n = 24
+        cmaps = ctx.document.evaluate.colormaps
+        names = sorted({str(name) for name in cmaps})
+        # Surface the well-known perceptual maps first for nicer browsing;
+        # everything else follows alphabetically.
+        preferred = [
+            'viridis', 'plasma', 'inferno', 'magma', 'grey', 'heat',
+            'spectrum', 'spectrum2', 'cool-warm', 'blue-darkred', 'royal',
+            'green-magenta', 'bluegreen', 'rainbow-12bit',
+        ]
+        ordered = ([p for p in preferred if p in names] +
+                   [n_ for n_ in names if n_ not in preferred])
+        out = []
+        for name in ordered:
+            try:
+                arr = cmaps[name]
+            except Exception:  # noqa: BLE001 - skip a map that fails to resolve
+                continue
+            stops, stepped = colormapSwatchRGB(arr, n)
+            if stops:
+                out.append({'name': name, 'colors': stops, 'step': stepped})
+        return {'colormaps': out, 'samples': n}
+
     def get_customs(**_):
         """Return the document's custom definitions grouped by type."""
         ev = ctx.document.evaluate
@@ -520,6 +553,7 @@ def register(ctx):
 
     return {
         'doc.tree': tree,
+        'doc.colormaps': colormaps,
         'doc.new': new,
         'doc.get_customs': get_customs,
         'doc.set_customs': set_customs,

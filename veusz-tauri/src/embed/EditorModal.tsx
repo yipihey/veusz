@@ -41,6 +41,7 @@ export function EditorModal({
   const schema = store((s) => s.schema);
   const values = store((s) => s.values);
   const datasets = store((s) => s.datasets);
+  const colormaps = store((s) => s.colormaps);
   const error = store((s) => s.error);
   const [full, setFull] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,6 +130,7 @@ export function EditorModal({
                 widgetPaths={selected}
                 values={values}
                 datasets={datasets.map((d) => d.name)}
+                colormaps={colormaps}
                 onChange={(path, value) => { void store.getState().setValue(path, value); }}
                 onChangeMany={(ops) => { void store.getState().setValues(ops); }}
               />

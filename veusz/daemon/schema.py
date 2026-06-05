@@ -93,11 +93,23 @@ _OPTIONAL_FIELDS = (
 )
 
 
+def _setting_typename(s) -> str:
+    """The schema typename for a setting. Veusz's ``Colormap`` setting is a
+    ``Str`` subclass (typename ``'str'``) because its value list is dynamic, but
+    frontends want to render it with a dedicated colormap chooser — so advertise
+    it as ``'colormap'`` here. The available maps come from ``doc.colormaps``.
+    """
+    from ..setting.setting import Colormap as _Colormap
+    if isinstance(s, _Colormap):
+        return 'colormap'
+    return s.typename
+
+
 def _serialize_setting(s) -> dict:
     """Reduce a `Setting` instance to a JSON dict."""
     out = {
         'name': s.name,
-        'typename': s.typename,
+        'typename': _setting_typename(s),
         'default': _json_safe(s.default),
         'descr': s.descr,
         'usertext': s.usertext,
