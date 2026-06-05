@@ -192,8 +192,14 @@ function render({ model, el }) {
   const sel = document.createElement("select");
   sel.style.cssText = "flex:1;font:12px sans-serif;padding:2px 4px;";
   selRow.append(selLbl, sel);
+  // Editing toolbar (Insert / Delete / Move / Duplicate / Undo / Redo) + an
+  // inline rename row; both are populated in the logic section below.
+  const toolbar = document.createElement("div");
+  toolbar.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-bottom:6px;";
+  const renameRow = document.createElement("div");
+  renameRow.style.cssText = "display:none;align-items:center;gap:4px;margin-bottom:6px;";
   const controls = document.createElement("div");
-  panel.append(selRow, controls);
+  panel.append(selRow, toolbar, renameRow, controls);
 
   el.append(box, status, hint, editBar, panel);
 
@@ -502,6 +508,123 @@ function render({ model, el }) {
       controls.textContent = "(no editable settings)";
   }
 
+  // --- editing toolbar: insert new widgets + structural edits -------------
+  // The canonical user-insertable widget types, grouped (mirrors the Tauri
+  // app's INSERT_WIDGETS). doc.insert_targets says which are valid for the
+  // current selection and under which parent.
+  const INSERT_WIDGETS = [
+    { group: "Pages & graphs", items: [["page", "Page"], ["grid", "Grid"], ["graph", "Graph"], ["graph3d", "3D graph"], ["scene3d", "3D scene"]] },
+    { group: "Axes", items: [["axis", "Axis"], ["axis-broken", "Broken axis"], ["axis-function", "Function axis"], ["axis3d", "3D axis"]] },
+    { group: "Plotters", items: [["xy", "Points (XY)"], ["function", "Function"], ["bar", "Bar chart"], ["histo", "Histogram"], ["boxplot", "Box plot"], ["fit", "Fit"], ["image", "Image"], ["density", "Density (2D histogram)"], ["contour", "Contour"], ["vectorfield", "Vector field"], ["covariance", "Covariance"], ["polar", "Polar"], ["ternary", "Ternary"], ["nonorthpoint", "Non-orth. points"], ["nonorthfunc", "Non-orth. function"]] },
+    { group: "3D plotters", items: [["point3d", "3D points"], ["function3d", "3D function"], ["surface3d", "3D surface"], ["volume3d", "3D volume"]] },
+    { group: "Annotations", items: [["key", "Key / legend"], ["label", "Text label"], ["colorbar", "Colorbar"]] },
+    { group: "Shapes", items: [["rect", "Rectangle"], ["ellipse", "Ellipse"], ["line", "Line"], ["polygon", "Polygon"], ["imagefile", "Image file"], ["svgfile", "SVG file"]] },
+  ];
+  const insTargets = () => parseJSON(model.get("insert_targets_json")) || {};
+  const curSel = () => sel.value;
+  function tbBtn(label, title) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = label; b.title = title || label;
+    b.style.cssText = "cursor:pointer;border:1px solid #d0d7de;border-radius:6px;padding:2px 8px;font:12px sans-serif;background:#f6f8fa;color:#1f2328;";
+    return b;
+  }
+  const tbSep = () => { const s = document.createElement("span"); s.style.cssText = "width:1px;height:18px;background:#d0d7de;margin:0 2px;"; return s; };
+
+  // Insert dropdown.
+  const insertWrap = document.createElement("div");
+  insertWrap.style.cssText = "position:relative;";
+  const insertBtn = tbBtn("＋ Insert ▾", "Add a new widget");
+  const insertMenu = document.createElement("div");
+  insertMenu.style.cssText = "display:none;position:absolute;z-index:40;top:100%;left:0;margin-top:2px;background:#fff;border:1px solid #d0d7de;border-radius:6px;box-shadow:0 6px 18px #00000022;max-height:300px;overflow:auto;min-width:190px;padding:4px 0;";
+  insertWrap.append(insertBtn, insertMenu);
+  function buildInsertMenu() {
+    const targets = insTargets();
+    insertMenu.innerHTML = "";
+    for (const grp of INSERT_WIDGETS) {
+      const items = grp.items.filter(([t]) => t in targets);
+      if (!items.length) continue;
+      const hdr = document.createElement("div");
+      hdr.textContent = grp.group;
+      hdr.style.cssText = "padding:5px 12px 2px;font:600 11px sans-serif;color:#8b949e;";
+      insertMenu.append(hdr);
+      for (const [t, label] of items) {
+        const it = document.createElement("button");
+        it.type = "button"; it.textContent = label;
+        it.style.cssText = "display:block;width:100%;text-align:left;border:0;background:none;padding:4px 14px;font:12px sans-serif;color:#1f2328;cursor:pointer;";
+        it.addEventListener("mouseenter", () => { it.style.background = "#f6f8fa"; });
+        it.addEventListener("mouseleave", () => { it.style.background = "none"; });
+        it.addEventListener("click", () => { insertMenu.style.display = "none"; sendAction({ type: "add", wtype: t, parent: targets[t] }); });
+        insertMenu.append(it);
+      }
+    }
+    if (!insertMenu.childNodes.length)
+      insertMenu.innerHTML = '<div style="padding:6px 12px;color:#8b949e;font:12px sans-serif;">nothing insertable under this selection</div>';
+  }
+  insertBtn.addEventListener("click", () => {
+    const open = insertMenu.style.display === "none";
+    if (open) buildInsertMenu();
+    insertMenu.style.display = open ? "block" : "none";
+  });
+  document.addEventListener("click", (e) => { if (!insertWrap.contains(e.target)) insertMenu.style.display = "none"; });
+
+  const dupBtn = tbBtn("⧉", "Duplicate selected");
+  const delBtn = tbBtn("🗑", "Delete selected");
+  const upBtn = tbBtn("↑", "Move up");
+  const downBtn = tbBtn("↓", "Move down");
+  const renBtn = tbBtn("✎", "Rename");
+  const undoBtn = tbBtn("↶", "Undo");
+  const redoBtn = tbBtn("↷", "Redo");
+  const tbStatus = document.createElement("span");
+  tbStatus.style.cssText = "font:11px sans-serif;color:#cf222e;margin-left:4px;";
+  dupBtn.addEventListener("click", () => { if (curSel()) sendAction({ type: "duplicate", path: curSel() }); });
+  delBtn.addEventListener("click", () => { if (curSel()) sendAction({ type: "remove", path: curSel() }); });
+  upBtn.addEventListener("click", () => { if (curSel()) sendAction({ type: "move", path: curSel(), direction: "up" }); });
+  downBtn.addEventListener("click", () => { if (curSel()) sendAction({ type: "move", path: curSel(), direction: "down" }); });
+  undoBtn.addEventListener("click", () => sendAction({ type: "undo" }));
+  redoBtn.addEventListener("click", () => sendAction({ type: "redo" }));
+  toolbar.append(insertWrap, tbSep(), dupBtn, delBtn, upBtn, downBtn, renBtn, tbSep(), undoBtn, redoBtn, tbStatus);
+
+  // Inline rename (window.prompt is blocked in some notebook webviews).
+  const renameInput = document.createElement("input");
+  renameInput.type = "text";
+  renameInput.style.cssText = "flex:1;font:12px sans-serif;padding:2px 6px;border:1px solid #d0d7de;border-radius:6px;";
+  const renameOk = tbBtn("Rename", "Apply");
+  const renameCancel = tbBtn("✕", "Cancel");
+  renameRow.append(renameInput, renameOk, renameCancel);
+  const closeRename = () => { renameRow.style.display = "none"; };
+  function applyRename() {
+    const p = curSel(); const name = renameInput.value.trim();
+    closeRename();
+    if (p && name && name !== p.split("/").pop()) sendAction({ type: "rename", path: p, name });
+  }
+  renBtn.addEventListener("click", () => {
+    const p = curSel(); if (!p) return;
+    renameInput.value = p.split("/").pop();
+    renameRow.style.display = "flex"; renameInput.focus(); renameInput.select();
+  });
+  renameOk.addEventListener("click", applyRename);
+  renameCancel.addEventListener("click", closeRename);
+  renameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") applyRename(); if (e.key === "Escape") closeRename(); });
+
+  function refreshUndoButtons() {
+    const u = parseJSON(model.get("undo_state_json")) || {};
+    undoBtn.disabled = !u.can_undo; undoBtn.style.opacity = u.can_undo ? "1" : "0.4";
+    redoBtn.disabled = !u.can_redo; redoBtn.style.opacity = u.can_redo ? "1" : "0.4";
+  }
+  model.on("change:undo_state_json", refreshUndoButtons);
+  model.on("change:op_status", () => {
+    const m = parseJSON(model.get("op_status"));
+    tbStatus.textContent = m && m.error ? m.error : "";
+  });
+  model.on("change:insert_targets_json", () => { if (insertMenu.style.display !== "none") buildInsertMenu(); });
+  model.on("change:selected_path", () => {
+    const p = model.get("selected_path");
+    if (!p) return;
+    if (![...sel.options].some((o) => o.value === p)) rebuildTree();
+    if (sel.value !== p) sel.value = p;
+  });
+  refreshUndoButtons();
+
   sel.addEventListener("change", () => requestSelect(sel.value));
   editToggle.addEventListener("click", () => {
     const opening = panel.style.display === "none";
@@ -556,6 +679,11 @@ class VeuszWidget(anywidget.AnyWidget):
     props_json = traitlets.Unicode("").tag(sync=True)   # schema+values of the selected widget
     value_echo = traitlets.Unicode("").tag(sync=True)   # coerced value after a single set
     colormaps_json = traitlets.Unicode("").tag(sync=True)  # colormap names + swatch stops
+    # Editing toolbar (kernel -> frontend).
+    insert_targets_json = traitlets.Unicode("").tag(sync=True)  # {wtype: parent_path} for the selection
+    selected_path = traitlets.Unicode("").tag(sync=True)        # current selection; drives the chooser
+    undo_state_json = traitlets.Unicode("").tag(sync=True)      # {can_undo, can_redo}
+    op_status = traitlets.Unicode("").tag(sync=True)            # transient toolbar message (errors)
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -573,6 +701,8 @@ class VeuszWidget(anywidget.AnyWidget):
         self._dpi = int(dpi)
         # Axis paths touched by interactive zoom, so reset knows what to clear.
         self._zoomed_axes: set[str] = set()
+        # The currently selected widget path (mirrors the chooser).
+        self._sel = ""
         # The Veusz document + handler set, living in this kernel.
         self._bridge = Bridge(deterministic=deterministic)
         if vsz is not None:
@@ -581,6 +711,7 @@ class VeuszWidget(anywidget.AnyWidget):
             # Publish the default document's tree so the panel is usable even
             # before a .vsz is loaded.
             self._refresh_tree()
+        self._refresh_undo_state()
 
     # -- kernel-side document operations; each re-renders --------------------
     def _call(self, method: str, params: dict):
@@ -687,6 +818,20 @@ class VeuszWidget(anywidget.AnyWidget):
             self._select_gui(a.get("path", ""))
         elif kind == "set":
             self._set_gui(a.get("path", ""), a.get("value"))
+        elif kind == "add":
+            self.add_widget(a.get("parent", "/"), a.get("wtype", ""))
+        elif kind == "remove":
+            self._remove_widget(a.get("path", ""))
+        elif kind == "move":
+            self._move_widget(a.get("path", ""), a.get("direction", "up"))
+        elif kind == "duplicate":
+            self._duplicate_widget(a.get("path", ""))
+        elif kind == "rename":
+            self._rename_widget(a.get("path", ""), a.get("name", ""))
+        elif kind == "undo":
+            self._undo()
+        elif kind == "redo":
+            self._redo()
 
     # -- GUI properties panel (frontend tree/inspector) ---------------------
     def _refresh_tree(self):
@@ -737,13 +882,17 @@ class VeuszWidget(anywidget.AnyWidget):
         import json
         if not path:
             return
+        self._sel = path
         try:
             model = self._inspector_model(path)
         except Exception as exc:  # noqa: BLE001 - surface as an empty panel, not a crash
             self.props_json = json.dumps({"settings": [], "subgroups": [],
                                           "error": str(exc)})
-            return
-        self.props_json = json.dumps(model)
+        else:
+            self.props_json = json.dumps(model)
+        # Refresh the Insert toolbar's enablement/placement for this selection.
+        self._refresh_insert_targets(path)
+        self.selected_path = path
 
     def _set_gui(self, path: str, value):
         import json
@@ -760,6 +909,114 @@ class VeuszWidget(anywidget.AnyWidget):
             d = diffs[0]
             self.value_echo = json.dumps({"path": d.get("path", path),
                                           "value": _json_safe_value(d.get("new"))})
+
+    # -- widget-tree editing (toolbar: insert / delete / move / undo) --------
+    def _refresh_insert_targets(self, path: str):
+        import json
+        try:
+            r = self._call("doc.insert_targets", {"path": path or "/"})
+        except Exception:  # noqa: BLE001
+            return
+        self.insert_targets_json = json.dumps((r or {}).get("targets", {}))
+
+    def _refresh_undo_state(self):
+        import json
+        try:
+            r = self._call("doc.can_undo", {})
+        except Exception:  # noqa: BLE001
+            return
+        self.undo_state_json = json.dumps({
+            "can_undo": bool((r or {}).get("can_undo")),
+            "can_redo": bool((r or {}).get("can_redo"))})
+
+    def _tree_paths(self) -> list:
+        """Flat ``(path, type)`` of every non-root widget, in document order."""
+        try:
+            tree = self._call("doc.tree", {})
+        except Exception:  # noqa: BLE001
+            return []
+        out: list = []
+
+        def walk(node):
+            p = node.get("path")
+            if p and p != "/":
+                out.append((p, node.get("type")))
+            for c in node.get("children", []):
+                walk(c)
+
+        walk(tree)
+        return out
+
+    def _after_structural(self, select_path: str):
+        """Shared post-op refresh: tree, undo state, re-render, then re-select
+        ``select_path`` (or the first sensible widget if it's gone)."""
+        self._refresh_tree()
+        self._refresh_undo_state()
+        self.render()
+        paths = self._tree_paths()
+        names = {p for p, _ in paths}
+        if not select_path or select_path not in names:
+            graph = next((p for p, t in paths if t == "graph"), None)
+            select_path = graph or (paths[0][0] if paths else "/")
+        self._select_gui(select_path)
+
+    def _op(self, fn):
+        """Run an editing op, surfacing any error to the toolbar (not a crash)."""
+        import json
+        try:
+            self.op_status = ""
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            self.op_status = json.dumps({"error": str(exc)})
+            return None
+
+    def add_widget(self, parent: str, wtype: str, name: str | None = None):
+        """Insert a widget of ``wtype`` under ``parent`` (auto-named), then
+        re-render and select it. Returns the new widget's path."""
+        def go():
+            res = self._call("doc.add",
+                             {"parent": parent, "type": wtype, "name": name})
+            newpath = (res or {}).get("path")
+            self._after_structural(newpath)
+            return newpath
+        return self._op(go)
+
+    def _remove_widget(self, path: str):
+        def go():
+            parent = path.rsplit("/", 1)[0] or "/"
+            self._call("doc.remove", {"path": path})
+            self._after_structural(parent)
+        self._op(go)
+
+    def _move_widget(self, path: str, direction: str):
+        def go():
+            res = self._call("doc.move", {"path": path, "direction": direction})
+            self._after_structural((res or {}).get("path", path))
+        self._op(go)
+
+    def _duplicate_widget(self, path: str):
+        def go():
+            res = self._call("doc.duplicate", {"path": path})
+            self._after_structural((res or {}).get("path", path))
+        self._op(go)
+
+    def _rename_widget(self, path: str, name: str):
+        def go():
+            res = self._call("doc.rename", {"path": path, "name": name})
+            self._after_structural((res or {}).get("path", path))
+        self._op(go)
+
+    def _undo(self):
+        def go():
+            self._call("doc.undo", {})
+            self._after_structural(self._sel)
+        self._op(go)
+
+    def _redo(self):
+        def go():
+            self._call("doc.redo", {})
+            self._after_structural(self._sel)
+        self._op(go)
 
 
 # The editor frontend (ESM): a <textarea> + Run button + an output pane. Editing
