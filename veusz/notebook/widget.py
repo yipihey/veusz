@@ -201,7 +201,12 @@ function render({ model, el }) {
   const controls = document.createElement("div");
   panel.append(selRow, toolbar, renameRow, controls);
 
-  el.append(box, status, hint, editBar, panel);
+  // Page tabs — shown only for multi-page documents; each switches the page
+  // the figure renders.
+  const tabBar = document.createElement("div");
+  tabBar.style.cssText = "display:none;gap:2px;margin-bottom:4px;flex-wrap:wrap;align-items:flex-end;";
+
+  el.append(tabBar, box, status, hint, editBar, panel);
 
   const svgEl = () => box.querySelector("svg");
   let token = 0, actionN = 0;
@@ -635,6 +640,30 @@ function render({ model, el }) {
       if (sel.value && !controls.childNodes.length) requestSelect(sel.value);
     }
   });
+  // Page tabs (multi-page documents).
+  function rebuildTabs() {
+    const d = parseJSON(model.get("pages_json")) || { pages: [] };
+    const pages = d.pages || [];
+    tabBar.innerHTML = "";
+    if (pages.length <= 1) { tabBar.style.display = "none"; return; }
+    tabBar.style.display = "flex";
+    pages.forEach((pg, i) => {
+      const active = i === d.current;
+      const t = document.createElement("button");
+      t.type = "button";
+      t.textContent = pg.name || ("Page " + (i + 1));
+      t.style.cssText =
+        "cursor:pointer;border:1px solid #d0d7de;border-radius:6px 6px 0 0;" +
+        "padding:2px 10px;font:12px sans-serif;color:#1f2328;" +
+        (active ? "background:#fff;border-bottom:2px solid #1f6feb;font-weight:600;"
+                : "background:#f6f8fa;");
+      t.addEventListener("click", () => { if (i !== d.current) sendAction({ type: "page", index: i }); });
+      tabBar.append(t);
+    });
+  }
+  model.on("change:pages_json", rebuildTabs);
+  rebuildTabs();
+
   model.on("change:tree_json", rebuildTree);
   model.on("change:props_json", rebuildControls);
   model.on("change:value_echo", () => {
@@ -684,6 +713,7 @@ class VeuszWidget(anywidget.AnyWidget):
     selected_path = traitlets.Unicode("").tag(sync=True)        # current selection; drives the chooser
     undo_state_json = traitlets.Unicode("").tag(sync=True)      # {can_undo, can_redo}
     op_status = traitlets.Unicode("").tag(sync=True)            # transient toolbar message (errors)
+    pages_json = traitlets.Unicode("").tag(sync=True)           # {pages:[{name,path}], current} for the tabs
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -703,6 +733,8 @@ class VeuszWidget(anywidget.AnyWidget):
         self._zoomed_axes: set[str] = set()
         # The currently selected widget path (mirrors the chooser).
         self._sel = ""
+        # The page index currently shown in the figure (drives the tabs).
+        self._page = 0
         # The Veusz document + handler set, living in this kernel.
         self._bridge = Bridge(deterministic=deterministic)
         if vsz is not None:
@@ -712,6 +744,7 @@ class VeuszWidget(anywidget.AnyWidget):
             # before a .vsz is loaded.
             self._refresh_tree()
         self._refresh_undo_state()
+        self._refresh_pages()
 
     # -- kernel-side document operations; each re-renders --------------------
     def _call(self, method: str, params: dict):
@@ -724,7 +757,9 @@ class VeuszWidget(anywidget.AnyWidget):
     def load_vsz(self, text: str):
         """Load a ``.vsz`` document from its text and render it."""
         self._call("file.open", {"path": self._write_vsz(text)})
+        self._page = 0
         self._refresh_tree()
+        self._refresh_pages()
         return self.render()
 
     def _write_vsz(self, text: str) -> str:
@@ -755,7 +790,8 @@ class VeuszWidget(anywidget.AnyWidget):
     def render(self):
         """Re-capture the current page's Scene IR and push it to the frontend."""
         result = self._call("render.scene", {
-            "page": 0, "w": self.width, "h": self.height, "dpi": self._dpi,
+            "page": getattr(self, "_page", 0),
+            "w": self.width, "h": self.height, "dpi": self._dpi,
         })
         self.scene_b64 = result["scene_b64"]
         # Mirror the renderer's reported size (it may clamp/round).
@@ -815,7 +851,12 @@ class VeuszWidget(anywidget.AnyWidget):
         elif kind == "reset":
             self.reset_zoom()
         elif kind == "select":
-            self._select_gui(a.get("path", ""))
+            # Selecting a widget on another page switches the figure to it.
+            if self._select_gui(a.get("path", "")):
+                self.render()
+                self._refresh_pages()
+        elif kind == "page":
+            self._set_page(a.get("index", 0))
         elif kind == "set":
             self._set_gui(a.get("path", ""), a.get("value"))
         elif kind == "add":
@@ -878,11 +919,18 @@ class VeuszWidget(anywidget.AnyWidget):
             return
         self.colormaps_json = json.dumps(res)
 
-    def _select_gui(self, path: str):
+    def _select_gui(self, path: str) -> bool:
+        """Select ``path``: publish its schema, insert targets, and switch the
+        figure to the page it lives on. Returns True if the page changed."""
         import json
         if not path:
-            return
+            return False
         self._sel = path
+        page_changed = False
+        page = self._page_for_path(path)
+        if page is not None and page != self._page:
+            self._page = page
+            page_changed = True
         try:
             model = self._inspector_model(path)
         except Exception as exc:  # noqa: BLE001 - surface as an empty panel, not a crash
@@ -893,6 +941,7 @@ class VeuszWidget(anywidget.AnyWidget):
         # Refresh the Insert toolbar's enablement/placement for this selection.
         self._refresh_insert_targets(path)
         self.selected_path = path
+        return page_changed
 
     def _set_gui(self, path: str, value):
         import json
@@ -948,17 +997,76 @@ class VeuszWidget(anywidget.AnyWidget):
         return out
 
     def _after_structural(self, select_path: str):
-        """Shared post-op refresh: tree, undo state, re-render, then re-select
-        ``select_path`` (or the first sensible widget if it's gone)."""
+        """Shared post-op refresh: tree, undo state, re-select ``select_path``
+        (or the first sensible widget if it's gone), then re-render the page the
+        selection lives on."""
         self._refresh_tree()
         self._refresh_undo_state()
-        self.render()
         paths = self._tree_paths()
         names = {p for p, _ in paths}
         if not select_path or select_path not in names:
             graph = next((p for p, t in paths if t == "graph"), None)
             select_path = graph or (paths[0][0] if paths else "/")
+        # Select first (this sets the page the selection lives on), then clamp
+        # the page (a removed page may have shifted indices) and render once.
         self._select_gui(select_path)
+        self._refresh_pages()
+        self.render()
+
+    # -- pages (tabs) -------------------------------------------------------
+    def _page_for_path(self, path: str):
+        """Index of the top-level page that contains ``path`` (None if root or
+        not found). Pages are the root document's direct children, so the page
+        is just the first path segment."""
+        if not path or path == "/":
+            return None
+        page_name = path.lstrip("/").split("/")[0]
+        try:
+            tree = self._call("doc.tree", {})
+        except Exception:  # noqa: BLE001
+            return None
+        for i, child in enumerate(tree.get("children", [])):
+            if child.get("name") == page_name:
+                return i
+        return None
+
+    def _refresh_pages(self):
+        """Publish the page list + current index for the figure tabs, clamping
+        the current page in case pages were added/removed."""
+        import json
+        try:
+            tree = self._call("doc.tree", {})
+        except Exception:  # noqa: BLE001
+            return
+        children = tree.get("children", [])
+        if children and self._page >= len(children):
+            self._page = len(children) - 1
+        if self._page < 0:
+            self._page = 0
+        pages = [{"name": c.get("name"), "path": c.get("path")} for c in children]
+        self.pages_json = json.dumps({"pages": pages, "current": self._page})
+
+    def _set_page(self, index):
+        """Switch the figure to page ``index`` (tab click) and select that page
+        so the chooser + Insert targets follow."""
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return
+        try:
+            tree = self._call("doc.tree", {})
+        except Exception:  # noqa: BLE001
+            return
+        children = tree.get("children", [])
+        if not children:
+            return
+        index = max(0, min(index, len(children) - 1))
+        self._page = index
+        self.render()
+        self._refresh_pages()
+        page_path = children[index].get("path")
+        if page_path:
+            self._select_gui(page_path)
 
     def _op(self, fn):
         """Run an editing op, surfacing any error to the toolbar (not a crash)."""
