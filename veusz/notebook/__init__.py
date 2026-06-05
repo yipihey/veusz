@@ -6,6 +6,16 @@ the figure shares the kernel (and therefore the notebook's data) and edits
 re-render in place. See :mod:`veusz.notebook.widget`.
 """
 
-from .widget import VeuszWidget, VeuszCodeEditor  # noqa: F401
+from .widget import (  # noqa: F401
+    VeuszWidget,
+    VeuszCodeEditor,
+    register_array_provider,
+    unregister_array_provider,
+)
 
-__all__ = ["VeuszWidget", "VeuszCodeEditor"]
+__all__ = [
+    "VeuszWidget",
+    "VeuszCodeEditor",
+    "register_array_provider",
+    "unregister_array_provider",
+]

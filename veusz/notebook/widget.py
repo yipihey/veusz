@@ -48,6 +48,68 @@ except ImportError as exc:  # pragma: no cover - exercised only without the dep
 from ..daemon.pyodide_bridge import Bridge
 
 
+# -- pluggable namespace providers ------------------------------------------
+# The widget surfaces "the arrays in the notebook" so plotters can reference
+# them by name. *Where* those arrays come from is pluggable: by default we read
+# the IPython user namespace (a Python kernel), but a host driving the widget
+# from a different runtime — e.g. a Julia/PythonCall adapter — can register its
+# own provider so its variables show up in the dataset pickers too.
+#
+# A provider is a zero-argument callable returning either a ``dict`` of
+# ``name -> value`` or an iterable of ``(name, value)`` pairs. Values are then
+# validated/normalised centrally (``VeuszWidget._as_array``), so a provider only
+# needs to hand back array-like objects (numpy arrays or flat numeric lists);
+# a Julia adapter would convert Julia arrays to numpy before yielding them.
+_ARRAY_PROVIDERS: list = []
+
+
+def register_array_provider(fn):
+    """Register a namespace provider (see module docs). Returns ``fn`` so it can
+    be used as a decorator. Registering the same callable twice is a no-op.
+
+    Example — exposing a Julia notebook's variables from a PythonCall adapter::
+
+        from veusz.notebook import register_array_provider
+        from juliacall import Main as jl   # or PyCall on the Julia side
+
+        @register_array_provider
+        def julia_arrays():
+            # yield (name, numpy_array) for the Julia globals you want plottable
+            for name in jl.seval("filter(n -> isa(getfield(Main,n), AbstractArray),"
+                                 " names(Main))"):
+                yield str(name), jl.PythonCall.pyconvert(... )  # -> numpy/list
+
+    The widget then offers those names in its dataset pickers and ingests the
+    array when one is referenced — exactly as it does for IPython globals.
+    """
+    if fn not in _ARRAY_PROVIDERS:
+        _ARRAY_PROVIDERS.append(fn)
+    return fn
+
+
+def unregister_array_provider(fn):
+    """Remove a previously registered provider; silent if it wasn't registered."""
+    try:
+        _ARRAY_PROVIDERS.remove(fn)
+    except ValueError:
+        pass
+
+
+def _ipython_namespace_provider():
+    """Default provider: the IPython user namespace (empty outside IPython)."""
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+        if ip is not None:
+            return list(ip.user_ns.items())
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
+register_array_provider(_ipython_namespace_provider)
+
+
 def _json_safe_value(value):
     """Coerce a setting value from ``doc.get`` into a JSON-serialisable form for
     the properties panel. Most values are primitives; tuples/lists (FloatList,
@@ -845,12 +907,16 @@ class VeuszWidget(anywidget.AnyWidget):
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
                  wasm_base: str | None = None, deterministic: bool = False,
-                 **kwargs):
+                 array_provider=None, **kwargs):
         super().__init__(**kwargs)
         self.width = int(width)
         self.height = int(height)
         if wasm_base:
             self.wasm_base = wasm_base
+        # Optional per-widget namespace provider (see register_array_provider);
+        # used in addition to the module-level providers. A non-IPython host
+        # (e.g. Julia via PythonCall) can pass one to expose its own arrays.
+        self._array_provider = array_provider
         # Hand the bundled wasm renderer to the frontend when present (no CDN).
         if _BUNDLED_WASM_GLUE and _BUNDLED_WASM_BYTES:
             self._wasm_glue = _BUNDLED_WASM_GLUE
@@ -1415,24 +1481,30 @@ class VeuszWidget(anywidget.AnyWidget):
         return None
 
     def _kernel_arrays(self):
-        """``[(name, array)]`` for numeric arrays in the notebook namespace."""
-        ns = None
-        try:
-            from IPython import get_ipython
-            ip = get_ipython()
-            if ip is not None:
-                ns = ip.user_ns
-        except Exception:  # noqa: BLE001
-            ns = None
-        if ns is None:
-            return []
-        out = []
-        for name, val in list(ns.items()):
-            if not isinstance(name, str) or name.startswith("_"):
+        """``[(name, array)]`` for numeric arrays the host exposes.
+
+        Aggregates every registered :func:`register_array_provider` (the IPython
+        namespace by default) plus this widget's own ``array_provider``. The
+        first provider to yield a given name wins; values are validated by
+        :meth:`_as_array` so a provider can hand back raw host objects."""
+        providers = list(_ARRAY_PROVIDERS)
+        if self._array_provider is not None:
+            providers.append(self._array_provider)
+        out, seen = [], set()
+        for provider in providers:
+            try:
+                items = provider()
+            except Exception:  # noqa: BLE001 - a broken provider mustn't break the panel
                 continue
-            arr = self._as_array(val)
-            if arr is not None:
-                out.append((name, arr))
+            if isinstance(items, dict):
+                items = items.items()
+            for name, val in items:
+                if not isinstance(name, str) or name.startswith("_") or name in seen:
+                    continue
+                arr = self._as_array(val)
+                if arr is not None:
+                    seen.add(name)
+                    out.append((name, arr))
         return out
 
     def _refresh_datasets(self):
