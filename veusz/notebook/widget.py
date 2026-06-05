@@ -330,6 +330,12 @@ function render({ model, el }) {
   const sendSet = (path, value) => isMulti
     ? sendAction({ type: "set_many", rel: path, value })
     : sendAction({ type: "set", path, value });
+  // Dataset settings route through a set that first ingests a named kernel
+  // array into the document if it isn't already a dataset.
+  const sendDataset = (path, value) => isMulti
+    ? sendAction({ type: "set_dataset_many", rel: path, value })
+    : sendAction({ type: "set_dataset", path, value });
+  const datasetList = () => (parseJSON(model.get("datasets_json")) || {}).datasets || [];
 
   // CSS background for a colormap swatch: a smooth or hard-banded gradient.
   function cmGradient(colors, step) {
@@ -428,8 +434,41 @@ function render({ model, el }) {
     return { el: trigger, wrap, set: (v) => { current = v; paintTrigger(); } };
   }
 
+  // Dataset chooser: a text input (so expressions still work) with a datalist
+  // autocompleting document datasets + notebook-global arrays. Setting a kernel
+  // array name ingests it into the document on the kernel side.
+  const DATASET_TYPES = { "dataset": 1, "dataset-extended": 1, "dataset-or-str": 1, "dataset-multi": 1 };
+  let _dsId = 0;
+  function makeDatasetInput(s) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;justify-content:flex-end;";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = s.value === null || s.value === undefined ? "" : String(s.value);
+    input.style.cssText = "flex:1;min-width:0;font:12px sans-serif;padding:1px 4px;";
+    const dl = document.createElement("datalist");
+    dl.id = "veusz-ds-" + (++_dsId);
+    input.setAttribute("list", dl.id);
+    function fillOptions() {
+      dl.innerHTML = "";
+      for (const d of datasetList()) {
+        const o = document.createElement("option");
+        o.value = d.name;
+        const shape = Array.isArray(d.shape) ? d.shape.join("×") : "";
+        o.label = (d.source === "kernel" ? "kernel array " : "dataset ") + shape;
+        dl.append(o);
+      }
+    }
+    fillOptions();
+    input.addEventListener("change", () => sendDataset(s.path, input.value));
+    model.on("change:datasets_json", fillOptions);
+    wrap.append(input, dl);
+    return { el: input, wrap, set: (v) => { input.value = v === null || v === undefined ? "" : String(v); } };
+  }
+
   function makeInput(s) {
     if (s.typename === "colormap") return makeColormapInput(s);
+    if (DATASET_TYPES[s.typename]) return makeDatasetInput(s);
     let elc, get;
     if (Array.isArray(s.vallist) && s.vallist.length) {
       elc = document.createElement("select");
@@ -801,6 +840,7 @@ class VeuszWidget(anywidget.AnyWidget):
     op_status = traitlets.Unicode("").tag(sync=True)            # transient toolbar message (errors)
     pages_json = traitlets.Unicode("").tag(sync=True)           # {pages:[{name,path}], current} for the tabs
     clip_state = traitlets.Unicode("").tag(sync=True)           # {has} — whether the clipboard holds widgets
+    datasets_json = traitlets.Unicode("").tag(sync=True)        # {datasets:[{name,source,shape}]} for dataset pickers
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -835,6 +875,7 @@ class VeuszWidget(anywidget.AnyWidget):
             self._refresh_tree()
         self._refresh_undo_state()
         self._refresh_pages()
+        self._refresh_datasets()
 
     # -- kernel-side document operations; each re-renders --------------------
     def _call(self, method: str, params: dict):
@@ -869,6 +910,7 @@ class VeuszWidget(anywidget.AnyWidget):
         """
         seq = values.tolist() if hasattr(values, "tolist") else list(values)
         self._call("data.set", {"name": name, "values": seq, "dtype": dtype})
+        self._refresh_datasets()
         return self.render()
 
     def set_setting(self, path: str, value):
@@ -975,6 +1017,10 @@ class VeuszWidget(anywidget.AnyWidget):
             self._select_scope(a.get("path", ""), a.get("scope", ""))
         elif kind == "set_many":
             self._set_many(a.get("rel", ""), a.get("value"))
+        elif kind == "set_dataset":
+            self._set_dataset_gui(a.get("path", ""), a.get("value"))
+        elif kind == "set_dataset_many":
+            self._set_dataset_many(a.get("rel", ""), a.get("value"))
         elif kind == "remove_many":
             self._remove_many()
         elif kind == "hide_many":
@@ -1047,6 +1093,8 @@ class VeuszWidget(anywidget.AnyWidget):
             self.props_json = json.dumps(model)
         # Refresh the Insert toolbar's enablement/placement for this selection.
         self._refresh_insert_targets(path)
+        # Refresh the dataset list so kernel arrays defined since are offered.
+        self._refresh_datasets()
         self.selected_path = path
         return page_changed
 
@@ -1346,6 +1394,100 @@ class VeuszWidget(anywidget.AnyWidget):
             self.op_status = json.dumps({"error": str(exc)})
             return
         self.render()
+
+    # -- kernel arrays as datasets (xData/yData pickers) --------------------
+    @staticmethod
+    def _as_array(val):
+        """Return ``val`` if it is a 1-D/2-D numeric array (numpy or a flat
+        list/tuple of numbers), else None — used to surface notebook globals as
+        Veusz datasets."""
+        if hasattr(val, "ndim") and hasattr(val, "dtype") and hasattr(val, "shape"):
+            try:
+                import numpy as np
+                if val.ndim in (1, 2) and np.issubdtype(val.dtype, np.number):
+                    return val
+            except Exception:  # noqa: BLE001
+                return None
+            return None
+        if (isinstance(val, (list, tuple)) and val and
+                all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in val)):
+            return val
+        return None
+
+    def _kernel_arrays(self):
+        """``[(name, array)]`` for numeric arrays in the notebook namespace."""
+        ns = None
+        try:
+            from IPython import get_ipython
+            ip = get_ipython()
+            if ip is not None:
+                ns = ip.user_ns
+        except Exception:  # noqa: BLE001
+            ns = None
+        if ns is None:
+            return []
+        out = []
+        for name, val in list(ns.items()):
+            if not isinstance(name, str) or name.startswith("_"):
+                continue
+            arr = self._as_array(val)
+            if arr is not None:
+                out.append((name, arr))
+        return out
+
+    def _refresh_datasets(self):
+        """Publish dataset names for the pickers: the document's own datasets
+        plus any notebook-global numeric arrays not already shadowing one."""
+        import json
+        try:
+            doc_ds = self._call("data.list", {}) or []
+        except Exception:  # noqa: BLE001
+            doc_ds = []
+        doc_names = {d["name"] for d in doc_ds}
+        out = [{"name": d["name"], "source": "doc",
+                "shape": d.get("shape") or [d.get("len", 0)]} for d in doc_ds]
+        for name, arr in self._kernel_arrays():
+            if name in doc_names:
+                continue
+            shape = list(arr.shape) if hasattr(arr, "shape") else [len(arr)]
+            out.append({"name": name, "source": "kernel", "shape": shape})
+        self.datasets_json = json.dumps({"datasets": out})
+
+    def _ingest_array(self, name):
+        """If ``name`` is a notebook-global array not yet a document dataset,
+        copy it into the document so a plotter can reference it."""
+        if not name or not isinstance(name, str):
+            return
+        try:
+            doc_names = {d["name"] for d in (self._call("data.list", {}) or [])}
+        except Exception:  # noqa: BLE001
+            doc_names = set()
+        if name in doc_names:
+            return  # already a dataset — don't shadow it
+        arr = dict(self._kernel_arrays()).get(name)
+        if arr is None:
+            return  # not an array name (e.g. a dataset-extended expression)
+        ndim = getattr(arr, "ndim", 1)
+        if ndim == 2:
+            import numpy as np
+            from ..document.commandinterface import CommandInterface
+            CommandInterface(self._bridge.ctx.document).SetData2D(
+                name, np.asarray(arr, dtype="float64"))
+        else:
+            seq = arr.tolist() if hasattr(arr, "tolist") else list(arr)
+            self._call("data.set", {"name": name, "values": seq, "dtype": "float64"})
+
+    def _set_dataset_gui(self, path, value):
+        if isinstance(value, str):
+            self._op(lambda: self._ingest_array(value))
+            self._refresh_datasets()
+        self._set_gui(path, value)
+
+    def _set_dataset_many(self, rel, value):
+        if isinstance(value, str):
+            self._op(lambda: self._ingest_array(value))
+            self._refresh_datasets()
+        self._set_many(rel, value)
 
     def _remove_many(self):
         if not self._multi:
