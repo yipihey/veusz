@@ -126,3 +126,48 @@ describe('commTransport', () => {
     await expect(p).rejects.toThrow(/comm closed/);
   });
 });
+
+import { websocketComm } from './transport';
+
+// A fake WebSocket: captures sends, lets the test drive open/message/close.
+class FakeWS {
+  static last: FakeWS | null = null;
+  listeners: Record<string, Array<(e: any) => void>> = {};
+  sent: string[] = [];
+  constructor(public url: string) { FakeWS.last = this; }
+  addEventListener(type: string, fn: (e: any) => void) { (this.listeners[type] ??= []).push(fn); }
+  send(data: string) { this.sent.push(data); }
+  emit(type: string, e?: any) { (this.listeners[type] ?? []).forEach((fn) => fn(e)); }
+}
+
+describe('websocketComm', () => {
+  it('queues sends until open, then flushes; parses incoming JSON', () => {
+    const comm = websocketComm('ws://x', FakeWS as unknown as { new (u: string): WebSocket });
+    const ws = FakeWS.last!;
+    // send before open -> queued
+    comm.send({ id: 1, method: 'ping' });
+    expect(ws.sent).toHaveLength(0);
+    ws.emit('open');
+    expect(JSON.parse(ws.sent[0])).toEqual({ id: 1, method: 'ping' });
+    // after open, sends go straight through
+    comm.send({ id: 2, method: 'version' });
+    expect(JSON.parse(ws.sent[1])).toEqual({ id: 2, method: 'version' });
+    // incoming JSON is parsed and handed to onMessage
+    const got: unknown[] = [];
+    comm.onMessage((d) => got.push(d));
+    ws.emit('message', { data: JSON.stringify({ id: 1, result: { pong: true } }) });
+    expect(got).toEqual([{ id: 1, result: { pong: true } }]);
+  });
+
+  it('drives commTransport end-to-end (round-trip over the fake socket)', async () => {
+    const comm = websocketComm('ws://x', FakeWS as unknown as { new (u: string): WebSocket });
+    const ws = FakeWS.last!;
+    ws.emit('open');
+    const t = commTransport(comm);
+    const p = t.call('ping');
+    // relay would answer; echo the id back with a result
+    const sent = JSON.parse(ws.sent[ws.sent.length - 1]) as { id: number };
+    ws.emit('message', { data: JSON.stringify({ id: sent.id, result: { pong: true } }) });
+    expect(await p).toEqual({ pong: true });
+  });
+});

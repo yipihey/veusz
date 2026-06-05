@@ -385,3 +385,36 @@ export function commTransport(comm: CommLike): Transport {
     },
   };
 }
+
+/**
+ * Adapt a WebSocket to {@link CommLike}, so a host that exposes its kernel↔
+ * daemon relay over a socket (e.g. a Julia/IJulia notebook) can drive the
+ * editor with `commTransport(websocketComm(url))`. Messages are JSON; sends
+ * before the socket opens are queued. `WS` is injectable for testing.
+ */
+export function websocketComm(
+  url: string,
+  WS: { new (url: string): WebSocket } = WebSocket,
+): CommLike {
+  const ws = new WS(url);
+  const queue: unknown[] = [];
+  let isOpen = false;
+  let onMsg: ((d: unknown) => void) | null = null;
+  ws.addEventListener('open', () => {
+    isOpen = true;
+    for (const m of queue) ws.send(JSON.stringify(m));
+    queue.length = 0;
+  });
+  ws.addEventListener('message', (e: MessageEvent) => {
+    try {
+      onMsg?.(JSON.parse(typeof e.data === 'string' ? e.data : String(e.data)));
+    } catch {
+      /* ignore non-JSON frames */
+    }
+  });
+  return {
+    send: (data) => { isOpen ? ws.send(JSON.stringify(data)) : queue.push(data); },
+    onMessage: (h) => { onMsg = h; },
+    onClose: (h) => ws.addEventListener('close', () => h()),
+  };
+}

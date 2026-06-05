@@ -54,7 +54,7 @@ export {
   type RemoteEditorOptions,
   type RemoteEditorHandle,
 } from './mountRemote';
-export { commTransport, type CommLike } from '../rpc/transport';
+export { commTransport, websocketComm, type CommLike } from '../rpc/transport';
 
 const NEEDS_WEBGPU = 'This interactive figure needs WebGPU. '
   + 'Open in Chrome or Safari 26+.';
