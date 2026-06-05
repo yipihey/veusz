@@ -61,3 +61,68 @@ describe('pyodideTransport', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 });
+
+import { commTransport, type CommLike } from './transport';
+
+/** A fake host comm wired to a fake kernel relay: messages the transport
+ *  `send`s are answered as a subprocess daemon would, and the relay can push
+ *  unsolicited notifications. */
+function fakeComm() {
+  let onMsg: ((d: unknown) => void) | null = null;
+  let onClose: (() => void) | null = null;
+  const comm: CommLike & {
+    pushNotify(method: string, params: unknown): void;
+    close(): void;
+  } = {
+    send(data) {
+      const r = data as { id: number; method: string; params: Record<string, unknown> };
+      // Relay → daemon → reply, delivered back over the comm asynchronously.
+      queueMicrotask(() => {
+        if (r.method === 'ping') onMsg?.({ id: r.id, result: { pong: true } });
+        else if (r.method === 'boom') onMsg?.({ id: r.id, error: { code: -32603, message: 'kaboom', data: { x: 1 } } });
+        else onMsg?.({ id: r.id, result: { echo: r.params } });
+      });
+    },
+    onMessage(h) { onMsg = h; },
+    onClose(h) { onClose = h; },
+    pushNotify(method, params) { onMsg?.({ method, params }); },
+    close() { onClose?.(); },
+  };
+  return comm;
+}
+
+describe('commTransport', () => {
+  it('round-trips a call over the comm', async () => {
+    const t = commTransport(fakeComm());
+    expect(await t.call('ping')).toEqual({ pong: true });
+    expect(await t.call('whatever', { a: 1 })).toEqual({ echo: { a: 1 } });
+  });
+
+  it('rejects with the JSON-RPC error (code + data preserved)', async () => {
+    const t = commTransport(fakeComm());
+    await expect(t.call('boom')).rejects.toMatchObject({
+      message: 'kaboom', code: -32603, data: { x: 1 },
+    });
+  });
+
+  it('delivers id-less notifications to the matching subscriber only', () => {
+    const comm = fakeComm();
+    const t = commTransport(comm);
+    const onDoc = vi.fn();
+    const onData = vi.fn();
+    t.subscribe('doc.changed', onDoc);
+    t.subscribe('data.changed', onData);
+    comm.pushNotify('doc.changed', { changeset: 7 });
+    expect(onDoc).toHaveBeenCalledWith({ changeset: 7 });
+    expect(onData).not.toHaveBeenCalled();
+  });
+
+  it('rejects in-flight calls when the comm closes', async () => {
+    const comm = fakeComm();
+    const t = commTransport(comm);
+    // never answered: make send a no-op for this one, then close
+    const p = t.call('hang');
+    comm.close();
+    await expect(p).rejects.toThrow(/comm closed/);
+  });
+});

@@ -45,6 +45,17 @@ import { prefetchUrlsInVsz, wireUrlLinks, type UrlLinkController } from './urlLi
 import { fetchDataFiles } from './localData';
 import { VeuszFigure } from './VeuszFigure';
 
+// Re-exported so the embed bundle exposes the remote-mount entry a non-Python
+// notebook host (IJulia, Pluto, …) imports to mount the editor over a comm
+// transport (see ./mountRemote.ts and ../rpc/transport.ts commTransport).
+export {
+  mountRemoteEditor,
+  mountRemoteEditorFromComm,
+  type RemoteEditorOptions,
+  type RemoteEditorHandle,
+} from './mountRemote';
+export { commTransport, type CommLike } from '../rpc/transport';
+
 const NEEDS_WEBGPU = 'This interactive figure needs WebGPU. '
   + 'Open in Chrome or Safari 26+.';
 

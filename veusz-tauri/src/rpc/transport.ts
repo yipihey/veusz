@@ -296,3 +296,92 @@ export function clientTransport(client: {
     subscribe: (method, fn) => client.on(method, fn),
   };
 }
+
+/**
+ * A duplex message channel to a host kernel — the minimal surface a Jupyter
+ * comm satisfies (IJulia, IPython, Pluto, …). `send` posts a JSON-able object
+ * to the kernel; `onMessage` registers a handler for objects the kernel posts
+ * back. Kept transport-agnostic so the same editor mounts over any host comm.
+ */
+export interface CommLike {
+  send(data: unknown): void;
+  onMessage(handler: (data: unknown) => void): void;
+  onClose?(handler: () => void): void;
+}
+
+/**
+ * Transport backed by a host **comm** (a Jupyter comm, typically). This is how
+ * a non-Pyodide notebook host drives the editor: the kernel relays each call to
+ * a subprocess `veuszd` over a socket and posts the reply back over the comm.
+ *
+ * Wire shape over the comm (kept identical to the daemon's own JSON-RPC so the
+ * kernel relay is a passthrough):
+ *  - call out:   `{ id, method, params }`
+ *  - reply in:   `{ id, result }`  or  `{ id, error: { code, message, data } }`
+ *  - notify in:  `{ method, params }`  (no `id`) — fanned out to subscribers
+ *
+ * Same `Transport` surface as every other backend, so the editor is unchanged.
+ */
+export function commTransport(comm: CommLike): Transport {
+  const listeners = new Map<string, Set<NotificationListener>>();
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
+  let nextId = 1;
+  let closed = false;
+
+  comm.onMessage((data) => {
+    const msg = data as {
+      id?: number;
+      result?: unknown;
+      error?: { code?: number; message?: string; data?: unknown };
+      method?: string;
+      params?: unknown;
+    };
+    // Notification (no id) → fan out to per-method subscribers.
+    if ((msg.id === undefined || msg.id === null) && typeof msg.method === 'string') {
+      listeners.get(msg.method)?.forEach((fn) => fn(msg.params));
+      return;
+    }
+    // Reply to a call → settle the matching pending promise.
+    if (typeof msg.id === 'number') {
+      const p = pending.get(msg.id);
+      if (!p) return;
+      pending.delete(msg.id);
+      if (msg.error) {
+        const err = new Error(msg.error.message || 'rpc error') as Error & {
+          code?: number; data?: unknown;
+        };
+        err.code = msg.error.code;
+        err.data = msg.error.data;
+        p.reject(err);
+      } else {
+        p.resolve(msg.result);
+      }
+    }
+  });
+
+  comm.onClose?.(() => {
+    closed = true;
+    for (const p of pending.values()) p.reject(new Error('comm closed'));
+    pending.clear();
+  });
+
+  return {
+    call: (method, params = {}) => {
+      if (closed) return Promise.reject(new Error('comm closed'));
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        comm.send({ id, method, params });
+      });
+    },
+    subscribe: (method, fn) => {
+      let ls = listeners.get(method);
+      if (!ls) {
+        ls = new Set();
+        listeners.set(method, ls);
+      }
+      ls.add(fn);
+      return () => { ls!.delete(fn); };
+    },
+  };
+}
