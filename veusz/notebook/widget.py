@@ -191,7 +191,10 @@ function render({ model, el }) {
   selLbl.style.cssText = "font:12px sans-serif;color:#57606a;";
   const sel = document.createElement("select");
   sel.style.cssText = "flex:1;font:12px sans-serif;padding:2px 4px;";
-  selRow.append(selLbl, sel);
+  const menuBtn = document.createElement("button");
+  menuBtn.type = "button"; menuBtn.textContent = "⋯"; menuBtn.title = "Widget actions (or right-click the list)";
+  menuBtn.style.cssText = "cursor:pointer;border:1px solid #d0d7de;border-radius:6px;padding:2px 8px;font:13px sans-serif;background:#f6f8fa;";
+  selRow.append(selLbl, sel, menuBtn);
   // Editing toolbar (Insert / Delete / Move / Duplicate / Undo / Redo) + an
   // inline rename row; both are populated in the logic section below.
   const toolbar = document.createElement("div");
@@ -293,6 +296,8 @@ function render({ model, el }) {
   // --- properties panel logic --------------------------------------------
   const parseJSON = (s) => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
   let inputsByPath = {};
+  // Tree-context state: multi-edit mode, clipboard presence, selected hide flag.
+  let isMulti = false, hasClip = false, curHidden = false;
 
   function flattenTree(node, depth, out) {
     if (node && node.path && node.path !== "/")
@@ -320,7 +325,11 @@ function render({ model, el }) {
     }
   }
   const requestSelect = (path) => { if (path) sendAction({ type: "select", path }); };
-  const sendSet = (path, value) => sendAction({ type: "set", path, value });
+  // In multi-edit mode `path` is a setting path relative to each widget, so the
+  // kernel fans it out across the whole selection (one batched, single undo).
+  const sendSet = (path, value) => isMulti
+    ? sendAction({ type: "set_many", rel: path, value })
+    : sendAction({ type: "set", path, value });
 
   // CSS background for a colormap swatch: a smooth or hard-banded gradient.
   function cmGradient(colors, step) {
@@ -503,14 +512,33 @@ function render({ model, el }) {
       parent.append(det);
     });
   }
+  function findLeafValue(group, name) {
+    for (const s of (group.settings || [])) if (s.name === name) return s.value;
+    for (const sub of (group.subgroups || [])) {
+      const v = findLeafValue(sub, name);
+      if (v !== undefined) return v;
+    }
+    return undefined;
+  }
   function rebuildControls() {
     const schema = parseJSON(model.get("props_json"));
     controls.innerHTML = "";
     inputsByPath = {};
+    isMulti = !!(schema && schema.multi);
+    const hv = schema ? findLeafValue(schema, "hide") : undefined;
+    curHidden = hv === true || hv === "True";
     if (!schema) { controls.textContent = ""; return; }
+    if (isMulti) {
+      const hdr = document.createElement("div");
+      const types = (schema.typenames || []).join(", ");
+      hdr.textContent = "Editing " + schema.count + " widgets together" +
+        (types ? " (" + types + ")" : "") + " — pick a widget above to exit";
+      hdr.style.cssText = "font:600 12px sans-serif;color:#0969da;background:#ddf4ff;padding:4px 8px;border-radius:6px;margin-bottom:6px;";
+      controls.append(hdr);
+    }
     renderGroup(schema, controls, true);
-    if (!controls.childNodes.length)
-      controls.textContent = "(no editable settings)";
+    if (controls.childNodes.length <= (isMulti ? 1 : 0))
+      controls.append(document.createTextNode(isMulti ? "(no settings common to the selection)" : "(no editable settings)"));
   }
 
   // --- editing toolbar: insert new widgets + structural edits -------------
@@ -630,6 +658,64 @@ function render({ model, el }) {
   });
   refreshUndoButtons();
 
+  // --- tree context menu (right-click the chooser or use the ⋯ button) -----
+  hasClip = !!((parseJSON(model.get("clip_state")) || {}).has);
+  model.on("change:clip_state", () => { hasClip = !!((parseJSON(model.get("clip_state")) || {}).has); });
+  let treeMenu = null;
+  const closeTreeMenu = () => { if (treeMenu) { treeMenu.remove(); treeMenu = null; } };
+  function openTreeMenu(x, y) {
+    closeTreeMenu();
+    const m = document.createElement("div");
+    m.style.cssText = "position:fixed;z-index:60;background:#fff;border:1px solid #d0d7de;border-radius:6px;box-shadow:0 6px 18px #00000022;padding:4px 0;min-width:180px;font:12px sans-serif;";
+    const item = (label, fn, enabled) => {
+      if (enabled === undefined) enabled = true;
+      const it = document.createElement("div");
+      it.textContent = label;
+      it.style.cssText = "padding:4px 14px;white-space:nowrap;cursor:" + (enabled ? "pointer" : "default") + ";color:" + (enabled ? "#1f2328" : "#b1b8c0") + ";";
+      if (enabled) {
+        it.addEventListener("mouseenter", () => { it.style.background = "#f6f8fa"; });
+        it.addEventListener("mouseleave", () => { it.style.background = "none"; });
+        it.addEventListener("click", () => { closeTreeMenu(); fn(); });
+      }
+      m.append(it);
+    };
+    const hdr = (t) => { const d = document.createElement("div"); d.textContent = t; d.style.cssText = "padding:3px 14px;font-weight:600;color:#8b949e;"; m.append(d); };
+    const sep = () => { const s = document.createElement("div"); s.style.cssText = "height:1px;background:#eaeef2;margin:4px 0;"; m.append(s); };
+    const p = curSel();
+    if (isMulti) {
+      hdr("Multi-selection");
+      item("Hide all", () => sendAction({ type: "hide_many" }));
+      item("Delete all", () => sendAction({ type: "remove_many" }));
+      sep();
+      item("Exit multi-select", () => { if (sel.value) requestSelect(sel.value); });
+    } else {
+      item("Cut", () => sendAction({ type: "cut", path: p }), !!p);
+      item("Copy", () => sendAction({ type: "copy", path: p }), !!p);
+      item("Paste", () => sendAction({ type: "paste", path: p }), hasClip && !!p);
+      item("Duplicate", () => sendAction({ type: "duplicate", path: p }), !!p);
+      sep();
+      item("Move up", () => sendAction({ type: "move", path: p, direction: "up" }), !!p);
+      item("Move down", () => sendAction({ type: "move", path: p, direction: "down" }), !!p);
+      sep();
+      item(curHidden ? "Show" : "Hide", () => sendAction({ type: "hide", path: p }), !!p);
+      item("Delete", () => sendAction({ type: "remove", path: p }), !!p);
+      sep();
+      hdr("Select widgets…");
+      item("  Same type", () => sendAction({ type: "select_scope", path: p, scope: "type" }), !!p);
+      item("  Same name", () => sendAction({ type: "select_scope", path: p, scope: "name" }), !!p);
+      item("  Sibling widgets", () => sendAction({ type: "select_scope", path: p, scope: "siblings" }), !!p);
+      item("  All on page", () => sendAction({ type: "select_scope", path: p, scope: "page" }), !!p);
+    }
+    document.body.appendChild(m);
+    const r = m.getBoundingClientRect();
+    m.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+    m.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+    treeMenu = m;
+  }
+  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); const r = menuBtn.getBoundingClientRect(); openTreeMenu(r.left, r.bottom); });
+  sel.addEventListener("contextmenu", (e) => { e.preventDefault(); openTreeMenu(e.clientX, e.clientY); });
+  document.addEventListener("click", (e) => { if (treeMenu && !treeMenu.contains(e.target)) closeTreeMenu(); });
+
   sel.addEventListener("change", () => requestSelect(sel.value));
   editToggle.addEventListener("click", () => {
     const opening = panel.style.display === "none";
@@ -714,6 +800,7 @@ class VeuszWidget(anywidget.AnyWidget):
     undo_state_json = traitlets.Unicode("").tag(sync=True)      # {can_undo, can_redo}
     op_status = traitlets.Unicode("").tag(sync=True)            # transient toolbar message (errors)
     pages_json = traitlets.Unicode("").tag(sync=True)           # {pages:[{name,path}], current} for the tabs
+    clip_state = traitlets.Unicode("").tag(sync=True)           # {has} — whether the clipboard holds widgets
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -735,6 +822,9 @@ class VeuszWidget(anywidget.AnyWidget):
         self._sel = ""
         # The page index currently shown in the figure (drives the tabs).
         self._page = 0
+        # Widget clipboard (in-kernel) and the current multi-selection.
+        self._clip = None
+        self._multi: list = []
         # The Veusz document + handler set, living in this kernel.
         self._bridge = Bridge(deterministic=deterministic)
         if vsz is not None:
@@ -873,6 +963,22 @@ class VeuszWidget(anywidget.AnyWidget):
             self._undo()
         elif kind == "redo":
             self._redo()
+        elif kind == "copy":
+            self._copy_widgets([a.get("path", "")])
+        elif kind == "cut":
+            self._cut_widgets([a.get("path", "")])
+        elif kind == "paste":
+            self._paste_widgets(a.get("path", ""))
+        elif kind == "hide":
+            self._toggle_hide(a.get("path", ""))
+        elif kind == "select_scope":
+            self._select_scope(a.get("path", ""), a.get("scope", ""))
+        elif kind == "set_many":
+            self._set_many(a.get("rel", ""), a.get("value"))
+        elif kind == "remove_many":
+            self._remove_many()
+        elif kind == "hide_many":
+            self._hide_many()
 
     # -- GUI properties panel (frontend tree/inspector) ---------------------
     def _refresh_tree(self):
@@ -926,6 +1032,7 @@ class VeuszWidget(anywidget.AnyWidget):
         if not path:
             return False
         self._sel = path
+        self._multi = []  # picking a single widget leaves multi-edit mode
         page_changed = False
         page = self._page_for_path(path)
         if page is not None and page != self._page:
@@ -1067,6 +1174,202 @@ class VeuszWidget(anywidget.AnyWidget):
         page_path = children[index].get("path")
         if page_path:
             self._select_gui(page_path)
+
+    # -- clipboard / hide / multi-select (tree context menu) ----------------
+    def _copy_widgets(self, paths):
+        import json
+        paths = [p for p in paths if p]
+        if not paths:
+            return
+
+        def go():
+            res = self._call("doc.serialize_widgets", {"paths": paths})
+            self._clip = {"mime_type": res["mime_type"],
+                          "payload_b64": res["payload_b64"]}
+            self.clip_state = json.dumps({"has": True})
+        self._op(go)
+
+    def _cut_widgets(self, paths):
+        import json
+        paths = [p for p in paths if p]
+        if not paths:
+            return
+
+        def go():
+            res = self._call("doc.serialize_widgets", {"paths": paths})
+            self._clip = {"mime_type": res["mime_type"],
+                          "payload_b64": res["payload_b64"]}
+            self.clip_state = json.dumps({"has": True})
+            parent = paths[0].rsplit("/", 1)[0] or "/"
+            for p in sorted(paths, reverse=True):
+                self._call("doc.remove", {"path": p})
+            self._after_structural(parent)
+        self._op(go)
+
+    def _paste_target(self, sel):
+        """Nearest ancestor of ``sel`` (self first, up to root) that accepts the
+        clipboard, mirroring the Qt GUI's paste-as-child-else-sibling."""
+        if not self._clip:
+            return None
+        chain, p = [], sel
+        while p and p != "/":
+            chain.append(p)
+            p = p.rsplit("/", 1)[0] or "/"
+        chain.append("/")
+        for c in chain:
+            try:
+                r = self._call("doc.can_paste_mime", {
+                    "parent": c, "mime_type": self._clip["mime_type"],
+                    "payload_b64": self._clip["payload_b64"]})
+            except Exception:  # noqa: BLE001
+                continue
+            if r and r.get("ok"):
+                return c
+        return None
+
+    def _paste_widgets(self, sel):
+        import json
+        if not self._clip:
+            return
+
+        def go():
+            target = self._paste_target(sel)
+            if not target:
+                self.op_status = json.dumps({"error": "can't paste here"})
+                return
+            res = self._call("doc.paste_widgets_mime", {
+                "parent": target, "mime_type": self._clip["mime_type"],
+                "payload_b64": self._clip["payload_b64"]})
+            newpaths = (res or {}).get("paths", [])
+            self._after_structural(newpaths[0] if newpaths else target)
+        self._op(go)
+
+    def _toggle_hide(self, path):
+        if not path:
+            return
+
+        def go():
+            hp = f"{path}/hide"
+            cur = (self._call("doc.get", {"paths": [hp]}) or {}).get(hp)
+            self._call("doc.set", {"path": hp, "value": (not bool(cur))})
+            self.render()
+            self._select_gui(path)
+        self._op(go)
+
+    def _all_widgets(self) -> list:
+        try:
+            tree = self._call("doc.tree", {})
+        except Exception:  # noqa: BLE001
+            return []
+        out: list = []
+
+        def walk(n):
+            p = n.get("path")
+            if p and p != "/":
+                out.append({"path": p, "name": n.get("name"), "type": n.get("type")})
+            for c in n.get("children", []):
+                walk(c)
+
+        walk(tree)
+        return out
+
+    def _select_scope(self, sel, scope):
+        """Multi-select widgets related to ``sel`` (Qt's Select submenu):
+        same type / same name / siblings / all on the page."""
+        if not sel:
+            return
+        allw = self._all_widgets()
+        cur = next((w for w in allw if w["path"] == sel), None)
+        if not cur:
+            return
+        if scope == "type":
+            paths = [w["path"] for w in allw if w["type"] == cur["type"]]
+        elif scope == "name":
+            paths = [w["path"] for w in allw if w["name"] == cur["name"]]
+        elif scope == "siblings":
+            parent = sel.rsplit("/", 1)[0] or "/"
+            paths = [w["path"] for w in allw
+                     if (w["path"].rsplit("/", 1)[0] or "/") == parent]
+        elif scope == "page":
+            page = "/" + sel.lstrip("/").split("/")[0]
+            paths = [w["path"] for w in allw
+                     if w["path"] == page or w["path"].startswith(page + "/")]
+        else:
+            paths = [sel]
+        if len(paths) <= 1:
+            self._select_gui(sel)
+        else:
+            self._select_many(paths)
+
+    def _schema_has_colormap(self, group) -> bool:
+        if any(s.get("typename") == "colormap" for s in group.get("settings", [])):
+            return True
+        return any(self._schema_has_colormap(sub)
+                   for sub in group.get("subgroups", []))
+
+    def _select_many(self, paths):
+        """Show the common-schema editor for ``paths``; edits fan out to all."""
+        import json
+        self._multi = list(paths)
+        try:
+            schema = self._call("doc.common_schema", {"paths": paths})
+        except Exception as exc:  # noqa: BLE001
+            self.op_status = json.dumps({"error": str(exc)})
+            return
+
+        def walk(group, prefix):  # leaf['path'] is the setting path RELATIVE to a widget
+            for s in group.get("settings", []):
+                s["path"] = f"{prefix}/{s['name']}"
+            for sub in group.get("subgroups", []):
+                walk(sub, f"{prefix}/{sub['name']}")
+
+        walk(schema, "")
+        schema["multi"] = True
+        schema["widget_paths"] = paths
+        schema["count"] = len(paths)
+        if not self.colormaps_json and self._schema_has_colormap(schema):
+            self._refresh_colormaps()
+        self.props_json = json.dumps(schema)
+        self.selected_path = ""
+        self._refresh_insert_targets(paths[0])
+
+    def _set_many(self, rel, value):
+        """Apply one setting (relative path ``rel``) to every selected widget in
+        a single batched, single-undo operation."""
+        import json
+        if not self._multi or not rel:
+            return
+        ops = [{"path": w + rel, "value": value} for w in self._multi]
+        try:
+            self._call("doc.set", {"ops": ops})
+        except Exception as exc:  # noqa: BLE001
+            self.op_status = json.dumps({"error": str(exc)})
+            return
+        self.render()
+
+    def _remove_many(self):
+        if not self._multi:
+            return
+
+        def go():
+            paths = sorted(self._multi, reverse=True)
+            parent = self._multi[0].rsplit("/", 1)[0] or "/"
+            for p in paths:
+                self._call("doc.remove", {"path": p})
+            self._multi = []
+            self._after_structural(parent)
+        self._op(go)
+
+    def _hide_many(self):
+        if not self._multi:
+            return
+
+        def go():
+            ops = [{"path": f"{w}/hide", "value": True} for w in self._multi]
+            self._call("doc.set", {"ops": ops})
+            self.render()
+            self._select_many(self._multi)
+        self._op(go)
 
     def _op(self, fn):
         """Run an editing op, surfacing any error to the toolbar (not a crash)."""

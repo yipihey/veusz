@@ -1372,7 +1372,54 @@ class QFontDatabase:
 
 
 class QByteArray(bytes):
-    pass
+    def data(self):
+        return bytes(self)
+
+    @staticmethod
+    def fromBase64(b, *a):
+        import base64
+        return QByteArray(base64.b64decode(bytes(b)))
+
+    def toBase64(self, *a):
+        import base64
+        return QByteArray(base64.b64encode(bytes(self)))
+
+
+class QMimeData:
+    """Minimal in-process QMimeData: enough for veusz's widget/dataset
+    clipboard marshalling (``document.mime.generateWidgetsMime`` etc.) to
+    round-trip on the headless/embed path, where there is no real Qt. Stores
+    each format's bytes in a dict; ``data()`` returns a :class:`QByteArray`
+    whose ``.data()`` yields the bytes, matching PyQt's API."""
+
+    def __init__(self):
+        self._formats = {}
+        self._image = None
+
+    def setData(self, fmt, data):
+        self._formats[str(fmt)] = bytes(data)
+
+    def data(self, fmt):
+        return QByteArray(self._formats.get(str(fmt), b""))
+
+    def hasFormat(self, fmt):
+        return str(fmt) in self._formats
+
+    def formats(self):
+        return list(self._formats.keys())
+
+    def setText(self, text):
+        self._formats['text/plain'] = (
+            text.encode('utf-8') if isinstance(text, str) else bytes(text))
+
+    def text(self):
+        return self._formats.get('text/plain', b"").decode('utf-8', 'replace')
+
+    def setImageData(self, image):
+        self._image = image
+
+    def imageData(self):
+        return self._image
 
 
 def loadUi(*a, **k):
