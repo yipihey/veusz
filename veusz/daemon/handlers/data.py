@@ -136,6 +136,55 @@ def register(ctx):
         })
         return {'ok': True, 'len': int(len(arr))}
 
+    # Wire dtype tags accepted by data.set_b64. float32 halves the bytes (fine
+    # for most plotting); float64 preserves the host's values exactly.
+    _B64_DTYPES = {
+        'float64': '<f8', 'f8': '<f8', 'float32': '<f4', 'f4': '<f4',
+        'int64': '<i8', 'i8': '<i8', 'int32': '<i4', 'i4': '<i4',
+    }
+
+    def set_b64(name: str, b64: str, shape=None, dtype: str = 'float64', **_):
+        """Set a 1-D or 2-D dataset from a base64-encoded little-endian binary
+        buffer — the efficient large-array path for any-language clients (no
+        O(n) JSON list). ``dtype`` names the *wire* element type; the dataset is
+        stored as float64. ``shape`` (e.g. ``[rows, cols]``) makes it 2-D.
+        """
+        wire = _B64_DTYPES.get(str(dtype))
+        if wire is None:
+            raise RpcError(INVALID_PARAMS,
+                           f'unsupported dtype {dtype!r}; one of '
+                           f'{sorted(set(_B64_DTYPES))}')
+        try:
+            buf = base64.b64decode(b64, validate=True)
+        except (TypeError, ValueError) as e:  # binascii.Error subclasses ValueError
+            raise RpcError(INVALID_PARAMS, f'b64 not valid base64: {e}') from e
+        if len(buf) % np.dtype(wire).itemsize:
+            raise RpcError(INVALID_PARAMS,
+                           f'buffer of {len(buf)} bytes is not a whole number '
+                           f'of {dtype} elements')
+        flat = np.frombuffer(buf, dtype=wire)
+        # Force a writable float64 copy (frombuffer is read-only; the document
+        # mutates datasets in place).
+        arr = np.array(flat, dtype='float64')
+        if shape:
+            try:
+                arr = arr.reshape([int(s) for s in shape])
+            except (TypeError, ValueError) as e:
+                raise RpcError(INVALID_PARAMS,
+                               f'shape {shape!r} does not fit '
+                               f'{arr.size} elements: {e}') from e
+        if arr.ndim not in (1, 2):
+            raise RpcError(INVALID_PARAMS,
+                           f'only 1-D/2-D datasets supported (got {arr.ndim}-D)')
+        from ...document.commandinterface import CommandInterface
+        ci = CommandInterface(ctx.document)
+        if arr.ndim == 2:
+            ci.SetData2D(name, arr)
+        else:
+            ci.SetData(name, arr)
+        ctx.notifier.publish('data.changed', {'names': [name], 'kind': 'set'})
+        return {'ok': True, 'shape': [int(s) for s in arr.shape]}
+
     def preview_csv(filename: str,
                     delimiter: str = ',',
                     text_delimiter: str = '"',
@@ -590,6 +639,7 @@ def register(ctx):
         'data.peek': peek,
         'data.stats': stats,
         'data.set': set_,
+        'data.set_b64': set_b64,
         'data.create': create,
         'data.create_2d': create_2d,
         'data.filter': filter_,

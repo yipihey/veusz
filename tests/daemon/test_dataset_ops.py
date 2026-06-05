@@ -2,10 +2,57 @@
 clipboard / file-scoped ops."""
 
 import base64
+import struct
+
 import pytest
 
 
 DATA_MIME = 'text/x-vnd.veusz-data-1'
+
+
+def _b64(values, fmt):
+    """Pack ``values`` as a little-endian binary buffer, base64-encoded — the
+    wire form a non-Python client (Veusz.jl, …) sends to ``data.set_b64``."""
+    return base64.standard_b64encode(
+        struct.pack('<' + fmt * len(values), *values)).decode('ascii')
+
+
+@pytest.mark.asyncio
+async def test_set_b64_1d_float64_roundtrips_exactly(daemon):
+    vals = [-3.0, 0.5, 2.25, 1e9, -7.0]
+    r = await daemon.call('data.set_b64', name='x',
+                          b64=_b64(vals, 'd'), dtype='float64')
+    assert r == {'ok': True, 'shape': [5]}
+    peek = await daemon.call('data.peek', name='x')
+    assert peek['values'] == vals
+
+
+@pytest.mark.asyncio
+async def test_set_b64_float32_and_2d_grid(daemon):
+    # float32 wire form (compact)
+    await daemon.call('data.set_b64', name='y',
+                      b64=_b64([1.0, 2.0, 3.0, 4.0], 'f'), dtype='float32')
+    assert (await daemon.call('data.peek', name='y'))['total'] == 4
+    # 2-D grid -> Dataset2D
+    grid = [float(i) for i in range(6)]
+    r = await daemon.call('data.set_b64', name='g',
+                          b64=_b64(grid, 'd'), shape=[2, 3], dtype='float64')
+    assert r['shape'] == [2, 3]
+    info = {d['name']: d for d in await daemon.call('data.list')}
+    assert info['g']['type'] == 'Dataset2D' and info['g']['shape'] == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_set_b64_rejects_bad_input(daemon):
+    with pytest.raises(Exception):
+        await daemon.call('data.set_b64', name='z', b64='@@@', dtype='float64')
+    with pytest.raises(Exception):  # 3 bytes is not a whole f8 element
+        await daemon.call('data.set_b64', name='z',
+                          b64=base64.standard_b64encode(b'abc').decode(),
+                          dtype='float64')
+    with pytest.raises(Exception):
+        await daemon.call('data.set_b64', name='z',
+                          b64=_b64([1.0], 'd'), dtype='complex128')
 
 
 @pytest.fixture

@@ -40,6 +40,10 @@ setup(
     # numpy is provided by Pyodide; fonttools via micropip. No hard deps so the
     # wheel installs cleanly in the browser.
     install_requires=[],
+    # The headless JSON-RPC daemon. Lets a CPython install of this no-Qt wheel
+    # spawn `veuszd` (or `python -m veusz.daemon.cli`) so any-language clients
+    # (Veusz.jl, …) can drive the document model over a socket.
+    entry_points={{"console_scripts": ["veuszd = veusz.daemon.cli:main"]}},
 )
 '''
 
