@@ -145,7 +145,10 @@ def register(ctx):
         from ...document import svg_export
         if ctx.document is None or not ctx.document.basewidget.children:
             raise RpcError(INVALID_PARAMS, 'document has no pages')
-        buf = io.BytesIO()
+        # svg_export writes str, so the sink must be a TEXT file. Passing a
+        # binary io.BytesIO raised "a bytes-like object is required, not 'str'"
+        # (and, on Py3.14 + Qt 6.11, could crash in QPainter.end()).
+        buf = io.StringIO()
         # svg_export.SVGPaintDevice takes a file-like + size in points
         device = svg_export.SVGPaintDevice(buf, float(w) / dpi * 72,
                                             float(h) / dpi * 72)
@@ -157,7 +160,7 @@ def register(ctx):
         painter.end()
         ctx.cache_render((page, w, h, dpi), phelper)
         return {
-            'svg': buf.getvalue().decode('utf-8'),
+            'svg': buf.getvalue(),
             'width': int(w),
             'height': int(h),
         }

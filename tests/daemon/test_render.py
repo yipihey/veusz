@@ -109,11 +109,6 @@ async def test_copy_image_png(daemon):
     assert raw[:8] == b'\x89PNG\r\n\x1a\n'
 
 
-@pytest.mark.xfail(reason='SVGPaintDevice/QPainter.end() segfaults on '
-                          'Python 3.14 + Qt 6.11 + io.BytesIO; pre-existing '
-                          'issue in render.svg handler, not specific to '
-                          'copy_image. Tracked separately.',
-                   strict=False, run=False)
 @pytest.mark.asyncio
 async def test_copy_image_svg(daemon):
     await daemon.call('doc.add', parent='/', type='page')
@@ -124,6 +119,18 @@ async def test_copy_image_svg(daemon):
     assert r['mime_type'] == 'image/svg+xml'
     raw = base64.b64decode(r['payload_b64']).decode('utf-8')
     assert raw.lstrip().startswith('<?xml') or raw.lstrip().startswith('<svg')
+
+
+@pytest.mark.asyncio
+async def test_render_svg_returns_vector(daemon):
+    """render.svg yields an SVG document string (the static inline-display path
+    for non-WASM clients, e.g. Veusz.jl's Base.show)."""
+    await daemon.call('doc.add', parent='/', type='page')
+    await daemon.call('doc.add', parent='/page1', type='graph')
+    r = await daemon.call('render.svg', page=0, w=200, h=150, dpi=96)
+    assert r['width'] == 200 and r['height'] == 150
+    assert r['svg'].lstrip().startswith(('<?xml', '<svg'))
+    assert len(r['svg']) > 100
 
 
 @pytest.mark.asyncio
