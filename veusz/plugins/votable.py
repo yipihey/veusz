@@ -26,8 +26,10 @@ from .datasetplugin import Dataset1D, DatasetText
 try:
     from astropy.io.votable.table import parse
 except ImportError:
+    # astropy is an optional dependency. When it's absent the plugin is simply
+    # not registered (see the bottom of this file), so this is not an error and
+    # must stay silent — printing here spams stdout in headless/notebook kernels.
     parse = None
-    print('VO table import: astropy module not available')
 
 class ImportPluginVoTable(ImportPlugin):
     name = 'VO table import'

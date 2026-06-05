@@ -83,7 +83,14 @@ def _registerFontStyleSheet():
             'Bitstream Vera Serif',
             'Times',
             'Utopia',
-            'Serif'
+            'Serif',
+            # Headless/embed builds (veusz.qtshim) report these families and none
+            # of the serif faces above. Matching one here avoids the "no default
+            # font" warning and selects the face the SVG/WASM renderer actually
+            # embeds (Liberation Sans), so document text and output agree.
+            'Liberation Sans',
+            'sans-serif',
+            'serif',
     ):
         if f in families:
             deffont = f
