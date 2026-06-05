@@ -47,6 +47,26 @@ except ImportError as exc:  # pragma: no cover - exercised only without the dep
 
 from ..daemon.pyodide_bridge import Bridge
 
+
+def _json_safe_value(value):
+    """Coerce a setting value from ``doc.get`` into a JSON-serialisable form for
+    the properties panel. Most values are primitives; tuples/lists (FloatList,
+    colours-as-sequences) are recursed, and anything exotic falls back to its
+    string form (which the panel shows in a text input and round-trips as text).
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    if hasattr(value, "item"):  # numpy scalar
+        try:
+            return _json_safe_value(value.item())
+        except Exception:  # noqa: BLE001
+            pass
+    return str(value)
+
 # Default CDN hosting the pure-Rust Scene-IR -> SVG wasm backend
 # (veusz_paint_wasm.js + veusz_paint_wasm_bg.wasm), published with CORS by
 # .github/workflows/deploy-embed.yml. Used only as a FALLBACK when the wasm is
@@ -144,7 +164,38 @@ function render({ model, el }) {
   const hint = document.createElement("div");
   hint.style.cssText = "font:11px sans-serif;color:#aaa;margin-top:2px;";
   hint.textContent = "drag to zoom · double-click to reset";
-  el.append(box, status, hint);
+
+  // --- GUI properties panel (kernel-driven) -------------------------------
+  // A widget chooser (from doc.tree) + auto-generated controls (from
+  // doc.schema_at + current values) that write settings via doc.set and
+  // re-render. Hidden until the reader opens it, and the schema is fetched
+  // lazily, so a plain figure pays nothing for the editor.
+  const editBar = document.createElement("div");
+  editBar.style.cssText = "margin-top:4px;";
+  const editToggle = document.createElement("button");
+  editToggle.type = "button";
+  editToggle.textContent = "⚙ Edit ▾";
+  editToggle.style.cssText =
+    "cursor:pointer;border:1px solid #d0d7de;border-radius:6px;padding:2px 10px;" +
+    "font:12px sans-serif;background:#f6f8fa;color:#1f2328;";
+  editBar.append(editToggle);
+
+  const panel = document.createElement("div");
+  panel.style.cssText =
+    "display:none;margin-top:6px;border:1px solid #d0d7de;border-radius:6px;" +
+    "padding:8px 10px;background:#fbfcfe;max-height:22em;overflow:auto;";
+  const selRow = document.createElement("div");
+  selRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;";
+  const selLbl = document.createElement("span");
+  selLbl.textContent = "Widget:";
+  selLbl.style.cssText = "font:12px sans-serif;color:#57606a;";
+  const sel = document.createElement("select");
+  sel.style.cssText = "flex:1;font:12px sans-serif;padding:2px 4px;";
+  selRow.append(selLbl, sel);
+  const controls = document.createElement("div");
+  panel.append(selRow, controls);
+
+  el.append(box, status, hint, editBar, panel);
 
   const svgEl = () => box.querySelector("svg");
   let token = 0, actionN = 0;
@@ -228,6 +279,151 @@ function render({ model, el }) {
   });
   box.addEventListener("dblclick", () => sendAction({ type: "reset" }));
 
+  // --- properties panel logic --------------------------------------------
+  const parseJSON = (s) => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
+  let inputsByPath = {};
+
+  function flattenTree(node, depth, out) {
+    if (node && node.path && node.path !== "/")
+      out.push({ path: node.path, name: node.name, type: node.type, depth });
+    (node && node.children || []).forEach((c) => flattenTree(c, depth + 1, out));
+    return out;
+  }
+  function rebuildTree() {
+    const t = parseJSON(model.get("tree_json"));
+    if (!t) return;
+    const items = flattenTree(t, 0, []);
+    const prev = sel.value;
+    sel.innerHTML = "";
+    for (const it of items) {
+      const o = document.createElement("option");
+      o.value = it.path;
+      o.textContent = " ".repeat(Math.max(0, it.depth - 1) * 2) + it.name + "  (" + it.type + ")";
+      sel.append(o);
+    }
+    if (prev && items.some((i) => i.path === prev)) {
+      sel.value = prev;
+    } else if (items.length) {
+      const g = items.find((i) => i.type === "graph") || items[items.length - 1];
+      sel.value = g.path;
+    }
+  }
+  const requestSelect = (path) => { if (path) sendAction({ type: "select", path }); };
+  const sendSet = (path, value) => sendAction({ type: "set", path, value });
+
+  function makeInput(s) {
+    let elc, get;
+    if (Array.isArray(s.vallist) && s.vallist.length) {
+      elc = document.createElement("select");
+      s.vallist.forEach((v, i) => {
+        const o = document.createElement("option");
+        o.value = String(v);
+        o.textContent = (Array.isArray(s.descriptions) && s.descriptions[i]) || String(v);
+        elc.append(o);
+      });
+      elc.value = String(s.value);
+      get = () => elc.value;
+      elc.addEventListener("change", () => sendSet(s.path, get()));
+    } else if (s.typename === "bool") {
+      elc = document.createElement("input");
+      elc.type = "checkbox";
+      elc.checked = s.value === true || s.value === "True";
+      get = () => elc.checked;
+      elc.addEventListener("change", () => sendSet(s.path, elc.checked));
+    } else if (s.typename === "int" || s.typename === "float") {
+      elc = document.createElement("input");
+      elc.type = "number";
+      if (s.typename === "int") elc.step = "1";
+      if (s.value !== null && s.value !== undefined) elc.value = String(s.value);
+      get = () => elc.value;
+      const commit = () => sendSet(s.path, elc.value === "" ? "" : Number(elc.value));
+      elc.addEventListener("change", commit);
+    } else {
+      elc = document.createElement("input");
+      elc.type = "text";
+      // a colour value also gets a native swatch picker beside it
+      elc.value = s.value === null || s.value === undefined ? "" : String(s.value);
+      get = () => elc.value;
+      elc.addEventListener("change", () => sendSet(s.path, elc.value));
+    }
+    elc.style.cssText = (elc.type === "checkbox")
+      ? "margin:0;"
+      : "flex:1;min-width:0;font:12px sans-serif;padding:1px 4px;";
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;justify-content:flex-end;";
+    wrap.append(elc);
+    if (s.typename === "color" && typeof s.value === "string" && /^#?[0-9a-fA-F]{6}$/.test(s.value.replace(/^#/, ""))) {
+      const sw = document.createElement("input");
+      sw.type = "color";
+      sw.value = s.value[0] === "#" ? s.value : "#" + s.value;
+      sw.style.cssText = "width:26px;height:20px;padding:0;border:1px solid #d0d7de;";
+      sw.addEventListener("input", () => { elc.value = sw.value; sendSet(s.path, sw.value); });
+      wrap.append(sw);
+    }
+    return { el: elc, wrap, set: (v) => {
+      if (elc.type === "checkbox") elc.checked = v === true || v === "True";
+      else elc.value = v === null || v === undefined ? "" : String(v);
+    } };
+  }
+  function controlRow(s) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:8px;padding:2px 0;";
+    const lbl = document.createElement("label");
+    lbl.textContent = s.usertext || s.name;
+    lbl.title = s.descr || "";
+    lbl.style.cssText = "font:12px sans-serif;color:#1f2328;flex:0 0 42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    const inp = makeInput(s);
+    inputsByPath[s.path] = inp;
+    row.append(lbl, inp.wrap);
+    return row;
+  }
+  function renderGroup(group, parent, isRoot) {
+    (group.settings || []).filter((s) => !s.hidden).forEach((s) => parent.append(controlRow(s)));
+    (group.subgroups || []).forEach((sub) => {
+      if (!sub.settings && !sub.subgroups) return;
+      const det = document.createElement("details");
+      det.style.cssText = "margin:4px 0;";
+      const sum = document.createElement("summary");
+      sum.textContent = sub.usertext || sub.name;
+      sum.style.cssText = "cursor:pointer;font:600 12px sans-serif;color:#57606a;";
+      det.append(sum);
+      const inner = document.createElement("div");
+      inner.style.cssText = "padding-left:8px;";
+      renderGroup(sub, inner, false);
+      det.append(inner);
+      parent.append(det);
+    });
+  }
+  function rebuildControls() {
+    const schema = parseJSON(model.get("props_json"));
+    controls.innerHTML = "";
+    inputsByPath = {};
+    if (!schema) { controls.textContent = ""; return; }
+    renderGroup(schema, controls, true);
+    if (!controls.childNodes.length)
+      controls.textContent = "(no editable settings)";
+  }
+
+  sel.addEventListener("change", () => requestSelect(sel.value));
+  editToggle.addEventListener("click", () => {
+    const opening = panel.style.display === "none";
+    panel.style.display = opening ? "block" : "none";
+    editToggle.textContent = opening ? "⚙ Edit ▴" : "⚙ Edit ▾";
+    if (opening) {
+      rebuildTree();
+      if (sel.value && !controls.childNodes.length) requestSelect(sel.value);
+    }
+  });
+  model.on("change:tree_json", rebuildTree);
+  model.on("change:props_json", rebuildControls);
+  model.on("change:value_echo", () => {
+    const u = parseJSON(model.get("value_echo"));
+    if (!u) return;
+    const inp = inputsByPath[u.path];
+    if (inp && document.activeElement !== inp.el) inp.set(u.value);
+  });
+  rebuildTree();
+
   model.on("change:scene_b64", draw);
   model.on("change:width", draw);
   model.on("change:height", draw);
@@ -253,10 +449,14 @@ class VeuszWidget(anywidget.AnyWidget):
     # fine — those sync outward; only frontend -> kernel ignores them).
     _wasm_glue = traitlets.Unicode("").tag(sync=True)
     _wasm_bytes = traitlets.Bytes(b"").tag(sync=True)
-    # frontend -> kernel: an interaction request (JSON: zoom rect / reset).
-    # NB: no leading underscore — ipywidgets does not sync underscore-prefixed
-    # custom traits from the frontend, so the observer would never fire.
+    # frontend -> kernel: an interaction request (JSON: zoom / reset / select /
+    # set). NB: no leading underscore — ipywidgets does not sync underscore-
+    # prefixed custom traits from the frontend, so the observer would never fire.
     action = traitlets.Unicode("").tag(sync=True)
+    # kernel -> frontend: data for the GUI properties panel.
+    tree_json = traitlets.Unicode("").tag(sync=True)    # the widget tree
+    props_json = traitlets.Unicode("").tag(sync=True)   # schema+values of the selected widget
+    value_echo = traitlets.Unicode("").tag(sync=True)   # coerced value after a single set
 
     def __init__(self, vsz: str | None = None, width: int = 640,
                  height: int = 480, dpi: int = 96,
@@ -278,6 +478,10 @@ class VeuszWidget(anywidget.AnyWidget):
         self._bridge = Bridge(deterministic=deterministic)
         if vsz is not None:
             self.load_vsz(vsz)
+        else:
+            # Publish the default document's tree so the panel is usable even
+            # before a .vsz is loaded.
+            self._refresh_tree()
 
     # -- kernel-side document operations; each re-renders --------------------
     def _call(self, method: str, params: dict):
@@ -290,6 +494,7 @@ class VeuszWidget(anywidget.AnyWidget):
     def load_vsz(self, text: str):
         """Load a ``.vsz`` document from its text and render it."""
         self._call("file.open", {"path": self._write_vsz(text)})
+        self._refresh_tree()
         return self.render()
 
     def _write_vsz(self, text: str) -> str:
@@ -379,6 +584,70 @@ class VeuszWidget(anywidget.AnyWidget):
             self._zoom(a["x0"], a["y0"], a["x1"], a["y1"])
         elif kind == "reset":
             self.reset_zoom()
+        elif kind == "select":
+            self._select_gui(a.get("path", ""))
+        elif kind == "set":
+            self._set_gui(a.get("path", ""), a.get("value"))
+
+    # -- GUI properties panel (frontend tree/inspector) ---------------------
+    def _refresh_tree(self):
+        """Publish the document's widget tree to the panel's chooser."""
+        import json
+        try:
+            tree = self._call("doc.tree", {})
+        except Exception:  # noqa: BLE001 - keep the figure alive if introspection fails
+            return
+        self.tree_json = json.dumps(tree)
+
+    def _inspector_model(self, path: str) -> dict:
+        """Schema of the widget at ``path``, with each leaf augmented with its
+        full setting ``path`` and current ``value`` so the panel can build and
+        populate controls in one shot."""
+        schema = self._call("doc.schema_at", {"path": path})
+        leaves: list[dict] = []
+
+        def walk(group, prefix):
+            for s in group.get("settings", []):
+                s["path"] = f"{prefix}/{s['name']}"
+                leaves.append(s)
+            for sub in group.get("subgroups", []):
+                walk(sub, f"{prefix}/{sub['name']}")
+
+        walk(schema, path.rstrip("/"))
+        if leaves:
+            values = self._call("doc.get", {"paths": [s["path"] for s in leaves]})
+            for s in leaves:
+                s["value"] = _json_safe_value(values.get(s["path"]))
+        schema["widget_path"] = path
+        return schema
+
+    def _select_gui(self, path: str):
+        import json
+        if not path:
+            return
+        try:
+            model = self._inspector_model(path)
+        except Exception as exc:  # noqa: BLE001 - surface as an empty panel, not a crash
+            self.props_json = json.dumps({"settings": [], "subgroups": [],
+                                          "error": str(exc)})
+            return
+        self.props_json = json.dumps(model)
+
+    def _set_gui(self, path: str, value):
+        import json
+        if not path:
+            return
+        try:
+            res = self._call("doc.set", {"path": path, "value": value})
+        except Exception as exc:  # noqa: BLE001 - bad value: report, don't crash
+            self.value_echo = json.dumps({"path": path, "error": str(exc)})
+            return
+        self.render()
+        diffs = res.get("diffs") if isinstance(res, dict) else None
+        if diffs:
+            d = diffs[0]
+            self.value_echo = json.dumps({"path": d.get("path", path),
+                                          "value": _json_safe_value(d.get("new"))})
 
 
 # The editor frontend (ESM): a <textarea> + Run button + an output pane. Editing
