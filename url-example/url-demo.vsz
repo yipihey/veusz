@@ -1,0 +1,22 @@
+# A minimal Veusz figure that loads its data from a URL.
+#
+# When loaded in the in-browser embed, the JS runtime pre-fetches `data.csv`
+# (resolved against the .vsz's directory) and re-renders whenever the file
+# changes. The .vsz is canonical and downloadable as-is.
+ImportFileURL('data.csv', format='csv', poll_seconds=0, linked=True)
+Add('page', name='page1', autoadd=False)
+To('/page1')
+Add('graph', name='graph1', autoadd=False)
+To('/page1/graph1')
+Add('axis', name='x', autoadd=False)
+Add('axis', name='y', autoadd=False)
+To('/page1/graph1/y')
+Set('direction', 'vertical')
+To('..')
+Add('xy', name='pts', autoadd=False)
+To('/page1/graph1/pts')
+Set('xData', 'x')
+Set('yData', 'y')
+Set('PlotLine/hide', True)
+Set('MarkerFill/color', '#1f6feb')
+To('/')
