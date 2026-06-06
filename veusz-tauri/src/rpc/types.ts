@@ -136,6 +136,23 @@ export interface ColormapInfo {
   step: boolean;
 }
 
+/** A document theme preset (from `doc.themes`) — a curated bundle of
+ *  colorTheme + stylesheet defaults applied by `doc.apply_theme`. The extra
+ *  fields drive a small preview swatch in the chooser. */
+export interface ThemeInfo {
+  id: string;
+  label: string;
+  description: string;
+  /** Auto-colour palette (hex) of this theme's colorTheme, for the swatch. */
+  palette: string[];
+  colorTheme: string;
+  /** Resolved base font family. */
+  font: string;
+  /** foreground / background hex (drive the preview's text + panel). */
+  fg: string;
+  bg: string;
+}
+
 export interface DocSetOp {
   path: string;
   value: unknown;

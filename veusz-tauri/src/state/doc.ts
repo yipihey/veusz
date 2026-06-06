@@ -23,6 +23,7 @@ import type {
   PluginInfo,
   RenderResult,
   ServerBackend,
+  ThemeInfo,
   WidgetSchema,
   WidgetTreeNode,
 } from '../rpc/types';
@@ -43,6 +44,8 @@ export interface DocState {
   /** All colormaps (name + swatch stops) from `doc.colormaps`, loaded once
    *  and handed to the Inspector's colormap chooser. */
   colormaps: ColormapInfo[];
+  /** Document theme presets from `doc.themes`, for the theme chooser. */
+  themes: ThemeInfo[];
   /**
    * Selected widget paths. Empty when nothing is selected; one entry
    * for a single selection (the Inspector shows that widget's schema);
@@ -93,6 +96,9 @@ export interface DocState {
   refreshTree: () => Promise<void>;
   refreshDatasets: () => Promise<void>;
   refreshColormaps: () => Promise<void>;
+  refreshThemes: () => Promise<void>;
+  /** Apply a document theme preset (one undoable op), then refresh + render. */
+  applyTheme: (themeId: string) => Promise<void>;
   refreshUndoState: () => Promise<void>;
   /** Refresh insertTargets for the current selection (or root). */
   refreshInsertTargets: () => Promise<void>;
@@ -274,6 +280,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
       tree: null,
       datasets: [],
       colormaps: [],
+      themes: [],
       selected: [],
       schema: null,
       values: {},
@@ -311,6 +318,23 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
         if (r) set({ colormaps: r.colormaps });
       },
 
+      refreshThemes: async () => {
+        const r = await guard(() => rpc.doc.themes());
+        if (r) set({ themes: r.themes });
+      },
+
+      applyTheme: async (themeId) => {
+        const r = await guard(() => rpc.doc.applyTheme(themeId));
+        if (!r) return;
+        // A theme writes colorTheme + stylesheet defaults + custom colours;
+        // these don't change the widget tree but redraw every default. Pull
+        // fresh state (refreshTree hands back a new tree ref, which the plot
+        // re-render effect watches) and refresh the inspected widget's values.
+        await get().refreshAll();
+        const sel = get().selected;
+        if (sel.length) await get().select(sel);
+      },
+
       refreshUndoState: async () => {
         const s = await guard(() => rpc.doc.canUndo());
         if (s) set({ canUndo: s.can_undo, canRedo: s.can_redo });
@@ -328,6 +352,7 @@ export function createDocStore(rpc: Rpc, clipboard: Clipboard = createClipboard(
           get().refreshTree(),
           get().refreshDatasets(),
           get().refreshColormaps(),
+          get().refreshThemes(),
           get().refreshUndoState(),
           get().refreshFileInfo(),
           get().refreshInsertTargets(),

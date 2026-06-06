@@ -24,6 +24,7 @@ import type { DocState } from '../state/doc';
 import { ACTIONS, INSERT_WIDGETS } from '../actions/actions';
 import type { ActionCtx, Action } from '../actions/types';
 import { actionLabel } from '../actions/types';
+import { ThemePicker } from './ThemePicker';
 
 type Store = UseBoundStore<StoreApi<DocState>>;
 
@@ -70,6 +71,8 @@ export function EmbedToolbar({ store, ctx, density, onReload }: EmbedToolbarProp
           <ActionBtn id="edit.movedown" state={s} ctx={ctx} label="▼" title="Move down" />
           <Sep />
           <DataDropdown state={s} ctx={ctx} />
+          <Sep />
+          <ThemeControl store={store} />
           {npages > 1 && (
             <>
               <Sep />
@@ -255,6 +258,18 @@ function DataDropdown({ state, ctx }: { state: DocState; ctx: ActionCtx }) {
       )}
     </div>
   );
+}
+
+function ThemeControl({ store }: { store: Store }) {
+  const themes = store((s) => s.themes);
+  const applyTheme = store((s) => s.applyTheme);
+  const [busy, setBusy] = useState(false);
+  const apply = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
+    try { await applyTheme(id); } finally { setBusy(false); }
+  };
+  return <ThemePicker themes={themes} onApply={(id) => void apply(id)} disabled={busy} />;
 }
 
 // --- styles ---------------------------------------------------------------

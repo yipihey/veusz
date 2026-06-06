@@ -13,6 +13,7 @@ import type {
   RenderResult,
   SceneResult,
   ServerBackend,
+  ThemeInfo,
   WidgetSchema,
   WidgetTreeNode,
 } from './types';
@@ -41,6 +42,10 @@ export function createRpc(transport: Transport) {
       widgetTypes: () => t('doc.widget_types') as Promise<string[]>,
       colormaps: (samples = 24) =>
         t('doc.colormaps', { samples }) as Promise<{ colormaps: ColormapInfo[]; samples: number }>,
+      themes: () =>
+        t('doc.themes') as Promise<{ themes: ThemeInfo[] }>,
+      applyTheme: (theme: string) =>
+        t('doc.apply_theme', { theme }) as Promise<{ ok: true; theme: string; changeset: number }>,
       add: (parent: string, type: string, name?: string) =>
         t('doc.add', { parent, type, name }) as Promise<{ path: string }>,
       insertTargets: (path: string) =>

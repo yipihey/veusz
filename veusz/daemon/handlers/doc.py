@@ -551,9 +551,55 @@ def register(ctx):
         })
         return {'ok': True, 'changeset': ctx.document.changeset}
 
+    def themes(**_):
+        """List the document theme presets for the chooser, each with a
+        small palette/font/colour preview spec. See ``_themes.catalog``."""
+        from . import _themes
+        return {'themes': _themes.catalog()}
+
+    def apply_theme(theme: str = None, id: str = None, **_):
+        """Apply a theme preset as ONE undoable operation: a batch of
+        ``/colorTheme`` + ``/StyleSheet/...`` setting writes plus the
+        theme's foreground/background custom colours (merged over any the
+        document already defines). ``doc.undo`` reverts the whole theme."""
+        from . import _themes
+        from ...document import operations
+        theme_id = theme or id
+        setvals = _themes.settings_for(theme_id)
+        if setvals is None:
+            raise RpcError(INVALID_PARAMS, f'unknown theme: {theme_id!r}')
+
+        ops = []
+        for path, value in setvals.items():
+            try:
+                setn = _resolve_setting(path)
+            except RpcError:
+                # A stylesheet path absent in this Veusz build — skip it
+                # rather than fail the whole theme.
+                continue
+            ops.append(operations.OperationSettingSet(setn, value))
+
+        # Merge the theme's fg/bg over existing custom colours (preserve any
+        # other custom colours the document defines).
+        overrides = _themes.colors_for(theme_id) or {}
+        existing = [[str(n), v] for n, v in ctx.document.evaluate.def_colors]
+        merged = [[n, v] for n, v in existing if n not in overrides]
+        merged += [[n, v] for n, v in overrides.items()]
+        ops.append(operations.OperationSetCustom('color', merged))
+
+        op = operations.OperationMultiple(ops, descr=f'apply theme {theme_id}')
+        ctx.document.applyOperation(op)
+        ctx.notifier.publish('doc.changed', {
+            'changeset': ctx.document.changeset, 'paths': ['/'], 'kind': 'theme',
+        })
+        return {'ok': True, 'theme': theme_id,
+                'changeset': ctx.document.changeset}
+
     return {
         'doc.tree': tree,
         'doc.colormaps': colormaps,
+        'doc.themes': themes,
+        'doc.apply_theme': apply_theme,
         'doc.new': new,
         'doc.get_customs': get_customs,
         'doc.set_customs': set_customs,

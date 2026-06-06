@@ -52,6 +52,7 @@ function rig(over: Record<string, (p: Record<string, unknown>) => unknown> = {})
       { name: 'y', type: 'Dataset', len: 5, shape: [5] },
     ],
     'doc.colormaps': () => ({ colormaps: [], samples: 24 }),
+    'doc.themes': () => ({ themes: [] }),
     'doc.can_undo': () => ({ can_undo: canUndo, can_redo: canRedo }),
     'doc.insert_targets': () => ({ targets: {
       page: '/', graph: '/page1', xy: '/page1/graph1',

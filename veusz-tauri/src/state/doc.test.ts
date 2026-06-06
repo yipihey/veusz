@@ -40,12 +40,21 @@ const XY_SCHEMA = {
 
 function makeStore(handlers: Record<string, (p: Record<string, unknown>) => unknown> = {}) {
   const setOps: Array<unknown> = [];
+  const applied: string[] = [];
   let fileInfo: { path: string | null; changeset: number; modified: boolean } =
     { path: null, changeset: 0, modified: false };
   const t = mockTransport({
     'doc.tree': () => TREE,
     'data.list': () => [{ name: 'x', type: 'Dataset', len: 5 }],
     'doc.colormaps': () => ({ colormaps: [], samples: 24 }),
+    'doc.themes': () => ({ themes: [
+      { id: 'dark', label: 'Dark', description: '', palette: ['#377eb8'],
+        colorTheme: 'default1', font: 'Helvetica', fg: '#e6e6e6', bg: '#1e1e1e' },
+    ] }),
+    'doc.apply_theme': (params) => {
+      applied.push((params as { theme: string }).theme);
+      return { ok: true, theme: (params as { theme: string }).theme, changeset: 7 };
+    },
     'doc.can_undo': () => ({ can_undo: false, can_redo: false }),
     'doc.insert_targets': () => ({ targets: {} }),
     'file.recent_list': () => ({ paths: [] }),
@@ -89,7 +98,7 @@ function makeStore(handlers: Record<string, (p: Record<string, unknown>) => unkn
     ...handlers,
   });
   const rpc = createRpc(t);
-  return { store: createDocStore(rpc), setOps };
+  return { store: createDocStore(rpc), setOps, applied };
 }
 
 describe('DocStore', () => {
@@ -301,6 +310,22 @@ describe('DocStore', () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(listCalls).toBeGreaterThan(before);
     off();
+  });
+
+  it('refreshThemes loads the theme catalog', async () => {
+    const { store } = makeStore();
+    await store.getState().refreshThemes();
+    const themes = store.getState().themes;
+    expect(themes.map((t) => t.id)).toEqual(['dark']);
+    expect(themes[0].bg).toBe('#1e1e1e');
+  });
+
+  it('applyTheme routes to doc.apply_theme then refreshes', async () => {
+    const { store, applied } = makeStore();
+    await store.getState().applyTheme('dark');
+    expect(applied).toEqual(['dark']);
+    // refreshAll ran (tree populated)
+    expect(store.getState().tree).not.toBeNull();
   });
 });
 
