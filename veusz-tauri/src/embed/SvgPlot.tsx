@@ -4,21 +4,21 @@
  * the notebook widget) instead of the Vello/WebGPU canvas. This lets the editor
  * render in *any* browser — and makes it headless-testable.
  *
- * Drag a rectangle to zoom; double-click to reset (the zoom/reset logic is the
- * renderer-agnostic `navigate.ts` shared with EmbedPlot). Precise control is
- * via the Inspector. Used by the remote / live (e.g. IJulia) editor, where
- * WebGPU may be unavailable.
+ * The pointer interactions — drag-zoom, pan, hover tooltip, double-click reset,
+ * pinch-zoom, and 3D rotate — come from the shared `usePlotInteractions` hook
+ * (the same one EmbedPlot uses), so the SVG and canvas surfaces behave
+ * identically. Used by the remote / live (e.g. IJulia) editor.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../state/doc';
 import { sceneToSvg } from '../components/plot/velloWasm';
-import { computeZoomOps, computeResetOps, type AxisHit } from './navigate';
+import { findScene3dPath } from './rotate3d';
+import { usePlotInteractions } from './usePlotInteractions';
 import { BASE_DPI } from './dpi';
 
 type Store = UseBoundStore<StoreApi<DocState>>;
-const DRAG_THRESHOLD = 4;
 
 export function SvgPlot({
   store, width, height,
@@ -30,13 +30,17 @@ export function SvgPlot({
   const requestRender = store((s) => s.requestRender);
 
   const boxRef = useRef<HTMLDivElement>(null);
-  const rubberRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ sx: number; sy: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState('');
 
   // SVG scales crisply, so render at the figure's logical size.
   const rw = Math.max(1, Math.round(width));
   const rh = Math.max(1, Math.round(height));
+
+  const scene3dPath = useMemo(
+    () => (tree ? findScene3dPath(tree.children[currentPage] ?? null) : null),
+    [tree, currentPage],
+  );
 
   // Fetch a fresh scene whenever the document / data / page changes.
   useEffect(() => {
@@ -54,7 +58,13 @@ export function SvgPlot({
     return () => { alive = false; };
   }, [render]);
 
-  // Make the injected <svg> responsive (fit width, keep aspect).
+  // Make the injected <svg> fill the (aspect-locked) wrapper. We deliberately
+  // size it to 100%/100% of the wrapper rather than letting its intrinsic
+  // width/height drive layout: the svg is replaced on every scene render
+  // (dangerouslySetInnerHTML), and an intrinsically-sized svg has a transient
+  // frame at its raw pixel size before this effect runs — a pointer event in
+  // that window would map through the wrong rect. The wrapper's aspect-ratio
+  // box is stable across replacements, so geometry never flickers.
   useEffect(() => {
     const el = boxRef.current?.querySelector('svg') as SVGSVGElement | null;
     if (!el) return;
@@ -63,91 +73,79 @@ export function SvgPlot({
     }
     el.removeAttribute('width');
     el.removeAttribute('height');
-    el.style.maxWidth = '100%';
-    el.style.height = 'auto';
+    el.style.width = '100%';
+    el.style.height = '100%';
     el.style.display = 'block';
   }, [svg, render, rw, rh]);
 
-  const rpc = () => store.getState().rpc;
-
-  // Pointer position → render-space pixels (0..render.width/height).
+  // Pointer position → render-space pixels (0..render.width/height), relative
+  // to the stable wrapper rect (which the svg fills and the overlays align to).
+  // Fall back to the container before the wrapper has a layout box (and in
+  // jsdom, where getBoundingClientRect reports zero size).
+  const svgRect = () => {
+    const w = wrapRef.current?.getBoundingClientRect();
+    if (w && w.width > 0 && w.height > 0) return w;
+    return boxRef.current?.getBoundingClientRect() ?? null;
+  };
   const toRender = (clientX: number, clientY: number): [number, number] => {
-    const el = (boxRef.current?.querySelector('svg') ?? boxRef.current) as Element | null;
-    const r = el!.getBoundingClientRect();
+    const r = svgRect();
     const w = render?.width ?? rw;
     const h = render?.height ?? rh;
+    if (!r) return [0, 0];
     return [((clientX - r.left) / r.width) * w, ((clientY - r.top) / r.height) * h];
   };
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 || !svg) return;
-    drag.current = { sx: e.clientX, sy: e.clientY };
-    const b = boxRef.current!.getBoundingClientRect();
-    const rb = rubberRef.current!;
-    rb.style.display = 'block';
-    rb.style.left = `${e.clientX - b.left}px`;
-    rb.style.top = `${e.clientY - b.top}px`;
-    rb.style.width = '0px';
-    rb.style.height = '0px';
-    try { (e.target as Element).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = drag.current;
-    if (!d) return;
-    const b = boxRef.current!.getBoundingClientRect();
-    const rb = rubberRef.current!;
-    rb.style.left = `${Math.min(d.sx, e.clientX) - b.left}px`;
-    rb.style.top = `${Math.min(d.sy, e.clientY) - b.top}px`;
-    rb.style.width = `${Math.abs(e.clientX - d.sx)}px`;
-    rb.style.height = `${Math.abs(e.clientY - d.sy)}px`;
-  };
-
-  const onPointerUp = async (e: React.PointerEvent) => {
-    const d = drag.current;
-    drag.current = null;
-    rubberRef.current!.style.display = 'none';
-    if (!d || !svg) return;
-    if (Math.abs(e.clientX - d.sx) < DRAG_THRESHOLD || Math.abs(e.clientY - d.sy) < DRAG_THRESHOLD) return;
-    const [x0, y0] = toRender(d.sx, d.sy);
-    const [x1, y1] = toRender(e.clientX, e.clientY);
-    const [a, b] = await Promise.all([rpc().render.pixelToData(x0, y0), rpc().render.pixelToData(x1, y1)]);
-    const ops = computeZoomOps(a.axes as AxisHit[], b.axes as AxisHit[]);
-    if (ops.length) {
-      await store.getState().setValues(ops);
-      requestRender(currentPage, rw, rh, BASE_DPI);
-    }
-  };
-
-  const onDoubleClick = async (e: React.MouseEvent) => {
-    const [x, y] = toRender(e.clientX, e.clientY);
-    const rr = await rpc().render.pixelToData(x, y);
-    const ops = computeResetOps((rr.axes as AxisHit[]).map((a) => a.path));
-    if (ops.length) {
-      await store.getState().setValues(ops);
-      requestRender(currentPage, rw, rh, BASE_DPI);
-    }
-  };
+  const { handlers, band, tip, preview, rotating } = usePlotInteractions({
+    store, scene3dPath,
+    toRenderPx: toRender,
+    getPlotRect: () => svgRect(),
+    requestRender: () => requestRender(currentPage, rw, rh, BASE_DPI),
+  });
 
   return (
     <div
       ref={boxRef}
       data-testid="embed-svg"
-      style={{ position: 'relative', width: '100%', touchAction: 'none', userSelect: 'none' }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onDoubleClick={onDoubleClick}
+      style={{
+        position: 'relative', width: '100%', touchAction: 'none', userSelect: 'none',
+        cursor: scene3dPath ? (rotating ? 'grabbing' : 'grab') : 'crosshair',
+      }}
+      onPointerDown={handlers.onPointerDown}
+      onPointerMove={handlers.onPointerMove}
+      onPointerUp={handlers.onPointerUp}
+      onPointerCancel={handlers.onPointerCancel}
+      onPointerLeave={handlers.onPointerLeave}
+      onDoubleClick={handlers.onDoubleClick}
     >
-      <div
-        ref={rubberRef}
-        style={{
-          position: 'absolute', display: 'none', pointerEvents: 'none',
-          border: '1px solid #1f6feb', background: 'rgba(31,111,235,0.12)', zIndex: 2,
-        }}
-      />
       {/* eslint-disable-next-line react/no-danger */}
-      <div style={{ width: '100%' }} dangerouslySetInnerHTML={{ __html: svg }} />
+      <div
+        ref={wrapRef}
+        style={{
+          width: '100%',
+          // Lock the box to the figure aspect so its rect is stable across svg
+          // replacements (the svg fills it). Pointer→data mapping reads this.
+          aspectRatio: `${render?.width ?? rw} / ${render?.height ?? rh}`,
+          transform: preview
+            ? `translate(${preview.tx}px, ${preview.ty}px) scale(${preview.scale})` : undefined,
+          transformOrigin: preview ? `${preview.ox}px ${preview.oy}px` : undefined,
+        }}
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+      {band && (
+        <div data-testid="embed-zoomband" style={{
+          position: 'absolute', pointerEvents: 'none', border: '1px solid #1f6feb',
+          background: 'rgba(31,111,235,0.12)', zIndex: 2,
+          left: band.left, top: band.top, width: band.width, height: band.height,
+        }} />
+      )}
+      {tip && (
+        <div data-testid="embed-tooltip" style={{
+          position: 'absolute', left: tip.left, right: tip.right, top: tip.top,
+          pointerEvents: 'none', background: 'rgba(20,22,26,0.9)', color: '#fff',
+          font: '12px system-ui', padding: '2px 6px', borderRadius: 4,
+          whiteSpace: 'nowrap', zIndex: 5,
+        }}>{tip.text}</div>
+      )}
     </div>
   );
 }
