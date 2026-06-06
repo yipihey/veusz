@@ -28,6 +28,8 @@ export interface RemoteEditorOptions {
    *  — a live notebook widget wants the editor up). */
   initialEditing?: boolean;
   title?: string;
+  /** Plot renderer: 'svg' (default — no WebGPU, works everywhere) or 'vello'. */
+  renderer?: 'vello' | 'svg';
 }
 
 export interface RemoteEditorHandle {
@@ -58,6 +60,9 @@ export function mountRemoteEditor(
       editable: opts.editable ?? true,
       initialEditing: opts.initialEditing ?? true,
       title: opts.title,
+      // The live/remote editor renders via SVG (no WebGPU) so it works in any
+      // browser and any notebook frontend. Override with renderer:'vello'.
+      renderer: opts.renderer ?? 'svg',
     }),
   );
   return { store, unmount: () => root.unmount() };

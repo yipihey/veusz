@@ -17,6 +17,7 @@ import { DataDialog, type DataMode } from '../components/data/DataDialog';
 import { DataEditDialog } from '../components/data/DataEditDialog';
 import { CustomDialog } from '../components/data/CustomDialog';
 import { EmbedPlot } from './EmbedPlot';
+import { SvgPlot } from './SvgPlot';
 import { EmbedToolbar } from './EmbedToolbar';
 import { makeEmbedActionCtx } from './embedActionCtx';
 import type { DialogId } from '../actions/types';
@@ -24,18 +25,21 @@ import type { DialogId } from '../actions/types';
 type Store = UseBoundStore<StoreApi<DocState>>;
 
 export function EditorModal({
-  store, title, width, height, toolbar, onReload, onClose,
+  store, title, width, height, renderer = 'vello', toolbar, onReload, onClose,
 }: {
   store: Store;
   title?: string;
   width: number;
   height: number;
+  /** Plot renderer: 'vello' (WebGPU canvas) or 'svg' (no-WebGPU SVG). */
+  renderer?: 'vello' | 'svg';
   /** Extra controls (e.g. the Download menu) shown in the modal header. */
   toolbar?: React.ReactNode;
   /** Reload-data hook forwarded to the modal toolbar — see VeuszFigureProps. */
   onReload?: () => Promise<void> | void;
   onClose: () => void;
 }) {
+  const Plot = renderer === 'svg' ? SvgPlot : EmbedPlot;
   const tree = store((s) => s.tree);
   const selected = store((s) => s.selected);
   const schema = store((s) => s.schema);
@@ -116,7 +120,7 @@ export function EditorModal({
         </header>
         <div style={body}>
           <div style={plotArea}>
-            <EmbedPlot store={store} width={width} height={height} />
+            <Plot store={store} width={width} height={height} />
           </div>
           <aside style={side} data-testid="veusz-edit-panel">
             {tree ? (

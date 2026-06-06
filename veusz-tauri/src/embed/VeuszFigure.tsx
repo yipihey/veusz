@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { UseBoundStore, StoreApi } from 'zustand';
 import type { DocState } from '../state/doc';
 import { EmbedPlot } from './EmbedPlot';
+import { SvgPlot } from './SvgPlot';
 import { EditorModal } from './EditorModal';
 import { DownloadMenu, type DownloadItem } from './DownloadMenu';
 import { EmbedToolbar } from './EmbedToolbar';
@@ -36,6 +37,10 @@ export interface VeuszFigureProps {
   poster?: string;
   /** URL of the source .vsz, offered in the Download menu. */
   vszUrl?: string;
+  /** Plot renderer. 'vello' (default) uses the WebGPU canvas; 'svg' rasterises
+   *  the Scene IR to inline SVG (no WebGPU — works in any browser, used by the
+   *  remote / live editor). */
+  renderer?: 'vello' | 'svg';
   /** Open the editor modal immediately on mount (e.g. user clicked Edit). */
   initialEditing?: boolean;
   /** Reload-data hook. The WASM embed wires this to refetch URL data sources
@@ -47,8 +52,9 @@ export interface VeuszFigureProps {
 
 export function VeuszFigure({
   store, width = 700, height = 500, editable = true, title, poster, vszUrl, initialEditing,
-  onReload,
+  renderer = 'vello', onReload,
 }: VeuszFigureProps) {
+  const Plot = renderer === 'svg' ? SvgPlot : EmbedPlot;
   const error = store((s) => s.error);
   const webgpu = store((s) => s.webgpuAvailable);
   const currentPage = store((s) => s.currentPage);
@@ -115,7 +121,8 @@ export function VeuszFigure({
     return items;
   };
 
-  if (webgpu === false) {
+  // The Vello canvas needs WebGPU; the SVG renderer does not.
+  if (renderer !== 'svg' && webgpu === false) {
     return (
       <div data-testid="veusz-figure" className="vz-fig" style={card}>
         <div data-testid="veusz-needs-webgpu" style={{ padding: 16, color: '#b06000' }}>
@@ -153,7 +160,7 @@ export function VeuszFigure({
             data-testid="veusz-inline-poster" />
         ) : (
           <div style={{ height: Math.round((height / width) * 100) + '%', minHeight: 200 }}>
-            <EmbedPlot store={store} width={width} height={height} />
+            <Plot store={store} width={width} height={height} />
           </div>
         )}
         {error && !editing && (
@@ -164,6 +171,7 @@ export function VeuszFigure({
       {editing && (
         <EditorModal
           store={store} title={title} width={width} height={height}
+          renderer={renderer}
           toolbar={<DownloadMenu items={downloadItems()} busy={busy} />}
           onReload={onReload}
           onClose={closeModal}

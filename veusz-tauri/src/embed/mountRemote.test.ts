@@ -42,6 +42,10 @@ describe('mountRemoteEditor', () => {
     await waitFor(() => expect(called).toContain('doc.tree'));
     await waitFor(() => expect(container.querySelector('[data-testid]')).toBeTruthy());
 
+    // The remote editor defaults to the SVG renderer, so it must NOT gate on
+    // WebGPU (jsdom has none) — the needs-webgpu message must be absent.
+    expect(container.querySelector('[data-testid="veusz-needs-webgpu"]')).toBeNull();
+
     handle.unmount();
     container.remove();
   });
